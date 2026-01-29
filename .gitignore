@@ -1,0 +1,16 @@
+# Streamlit
+.streamlit/
+static/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv
+venv/
+ENV/
+
+# Data & Backups (Private)
+backups_journal/
+bitacora_opciones.csv
+*.bak

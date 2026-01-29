@@ -1,0 +1,22 @@
+26-01-28 17:13:57.669 Uncaught app execution
+Traceback (most recent call last):
+  File "C:\Users\tajal\AppData\Roaming\Python\Python312\site-packages\streamlit\runtime\scriptrunner\exec_code.py", line 88, in exec_func_with_error_handling
+    result = func()
+             ^^^^^^
+  File "C:\Users\tajal\AppData\Roaming\Python\Python312\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 579, in code_to_exec
+    exec(code, module.__dict__)
+  File "C:\Users\tajal\OneDrive - Generalitat de Catalunya\OTHERS\TRADING\OPCIONES\BITACORA OPCIONES\STRIKELOG.py", line 529, in <module>
+    if __name__ == "__main__": main()
+                               ^^^^^^
+  File "C:\Users\tajal\OneDrive - Generalitat de Catalunya\OTHERS\TRADING\OPCIONES\BITACORA OPCIONES\STRIKELOG.py", line 449, in main
+    elif page == "Cartera Activa": render_active_portfolio(st.session_state.df)
+                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\tajal\OneDrive - Generalitat de Catalunya\OTHERS\TRADING\OPCIONES\BITACORA OPCIONES\STRIKELOG.py", line 289, in render_active_portfolio
+    st.dataframe(active_df[display_cols], width='stretch')
+  File "C:\Users\tajal\AppData\Roaming\Python\Python312\site-packages\streamlit\runtime\metrics_util.py", line 409, in wrapped_func
+    result = non_optional_func(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\tajal\AppData\Roaming\Python\Python312\site-packages\streamlit\elements\arrow.py", line 556, in dataframe
+    proto.width = width
+    ^^^^^^^^^^^
+TypeError: 'str' object cannot be interpreted as an integer

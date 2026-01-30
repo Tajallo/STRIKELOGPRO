@@ -1,0 +1,7 @@
+Descomprime el archivo ZIP que te he mandado en cualquier carpeta (ej. Documentos).
+IMPORTANTE: Asegúrate de tener Python instalado. Si no lo tienes, ábrete la Microsoft Store de Windows, busca "Python 3.12" e instálalo (es gratis y oficial).
+Haz doble clic en el archivo 
+INICIAR_APP.bat
+.
+Nota: La primera vez tardará un par de minutos porque descargará las librerías. Las siguientes veces se abrirá al instante.
+Se abrirá una ventana negra (déjala abierta) y automáticamente se abrirá tu navegador con la aplicación.

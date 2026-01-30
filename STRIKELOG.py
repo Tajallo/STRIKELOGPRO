@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import os
 import shutil
+import re
 from datetime import date, datetime, timedelta
 from uuid import uuid4
 import plotly.express as px
@@ -20,11 +21,13 @@ if not os.path.exists(BACKUP_DIR):
 # Columnas actualizadas
 COLUMNS = [
     "ID", "ChainID", "ParentID", "Ticker", "FechaApertura", "Expiry", 
-    "Estrategia", "Side", "OptionType", "Strike", "Delta", "PrimaRecibida", "CostoCierre", "Contratos", 
+    "Estrategia", "Setup", "Side", "OptionType", "Strike", "Delta", "PrimaRecibida", "CostoCierre", "Contratos", 
     "BuyingPower", "MaxLoss", "BreakEven", "POP",
     "Estado", "Notas", "UpdatedAt", "FechaCierre", "MaxProfitUSD", "ProfitPct", "PnL_Capital_Pct",
     "PrecioAccionCierre", "PnL_USD_Realizado"
 ]
+
+SETUPS = ["Earnings", "Soporte/Resistencia", "VIX alto", "Tendencial", "Reversión", "Inversión Largo Plazo", "Otro"]
 
 ESTADOS = ["Abierta", "Cerrada", "Rolada", "Asignada"]
 ESTRATEGIAS = [
@@ -61,6 +64,21 @@ class JournalManager:
 
     @staticmethod
     def normalize_df(df: pd.DataFrame) -> pd.DataFrame:
+        # Asegurar que Setup existe
+        if "Setup" not in df.columns:
+            df["Setup"] = "Otro"
+            
+        # Intentar recuperar fechas de cierre de las notas si faltan (como en el caso de JBLU)
+        def recover_closing_date(row):
+            if row.get("Estado") != "Abierta" and (pd.isna(row.get("FechaCierre")) or str(row.get("FechaCierre")) == "nan"):
+                # Buscar patrón YYYY-MM-DD en Notas o Estado
+                text = str(row.get("Notas", "")) + " " + str(row.get("Estado", ""))
+                match = re.search(r"(\d{4}-\d{2}-\d{2})", text)
+                if match: return match.group(1)
+            return row.get("FechaCierre")
+        
+        df["FechaCierre"] = df.apply(recover_closing_date, axis=1)
+            
         for c in COLUMNS:
             if c not in df.columns:
                 if c == "Side": df[c] = "Sell"
@@ -71,6 +89,8 @@ class JournalManager:
         df = df[COLUMNS].copy()
         df["FechaApertura"] = pd.to_datetime(df["FechaApertura"], errors='coerce').dt.date
         df["Expiry"] = pd.to_datetime(df["Expiry"], errors='coerce').dt.date
+        df["FechaCierre"] = pd.to_datetime(df["FechaCierre"], errors='coerce').dt.date
+        
         df["FechaApertura"] = df["FechaApertura"].fillna(date.today())
         df["Expiry"] = df["Expiry"].fillna(date.today())
         
@@ -141,14 +161,33 @@ def render_dashboard(df):
     
     # --- FILTROS ---
     with st.container():
-        c_f1, c_f2, c_f3 = st.columns([1, 1, 1])
+        c_f1, c_f2, c_f3, c_f4 = st.columns([1, 1, 1, 1])
         all_tickers = ["Todos"] + sorted(df["Ticker"].unique().tolist())
         ticker_filter = c_f1.selectbox("🔍 Ticker", all_tickers)
         
-        # Filtrado inicial
+        # Filtro de Periodo
+        meses = {
+            "Todos": "Todos",
+            "Este Mes": datetime.now().strftime("%Y-%m"),
+            "Mes Pasado": (datetime.now().replace(day=1) - timedelta(days=1)).strftime("%Y-%m"),
+            "Este Año": datetime.now().strftime("%Y")
+        }
+        periodo_filter = c_f2.selectbox("📅 Periodo", list(meses.keys()))
+        
+        setup_filter = c_f3.selectbox("🎯 Setup", ["Todos"] + SETUPS)
+        
+        # Aplicar Filtros
         df_view = df.copy()
         if ticker_filter != "Todos":
             df_view = df_view[df_view["Ticker"] == ticker_filter]
+        
+        if periodo_filter != "Todos":
+            filtro_val = meses[periodo_filter]
+            df_view["FechaFiltro"] = pd.to_datetime(df_view["FechaApertura"]).dt.strftime("%Y-%m" if len(filtro_val)==7 else "%Y")
+            df_view = df_view[df_view["FechaFiltro"] == filtro_val]
+            
+        if setup_filter != "Todos":
+            df_view = df_view[df_view["Setup"] == setup_filter]
         
         closed_trades = df_view[df_view["Estado"].isin(["Cerrada", "Rolada", "Asignada"])].copy()
         open_trades = df_view[df_view["Estado"] == "Abierta"].copy()
@@ -162,6 +201,9 @@ def render_dashboard(df):
         losses = len(losses_df)
         win_rate = (wins / (wins + losses) * 100) if (wins + losses) > 0 else 0
         
+        # Eficiencia de Captura (Avg de ProfitPct en trades positivos)
+        capture_eff = wins_df["ProfitPct"].mean() if not wins_df.empty else 0
+        
         # Profit Factor
         total_won = wins_df["PnL_USD_Realizado"].sum()
         total_lost = abs(losses_df["PnL_USD_Realizado"].sum())
@@ -171,10 +213,10 @@ def render_dashboard(df):
         
         # Fila 1: Métricas Principales
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("PnL Realizado", f"${pnl_total:,.2f}", delta=f"{pnl_total:,.2f}" if pnl_total != 0 else None)
+        m1.metric("PnL Realizado", f"${pnl_total:,.2f}", delta=f"${pnl_total:,.2f}" if pnl_total != 0 else None)
         m2.metric("Win Rate", f"{win_rate:.1f}%")
         m3.metric("Profit Factor", f"{profit_factor:.2f}x")
-        m4.metric("BP en Uso", f"${open_trades['BuyingPower'].sum():,.0f}")
+        m4.metric("Captura Media (Wins)", f"{capture_eff:.1f}%")
         
         # Fila 2: Estadísticas de Eficiencia
         s1, s2, s3, s4 = st.columns(4)
@@ -184,8 +226,8 @@ def render_dashboard(df):
         best_ticker = closed_trades.groupby("Ticker")["PnL_USD_Realizado"].sum().idxmax() if not closed_trades.empty else "-"
         s2.write(f"**Top Ticker:** `{best_ticker}`")
         
-        total_trades = len(df_view["ChainID"].unique())
-        s3.write(f"**Total Estrategias:** `{total_trades}`")
+        total_bp_open = open_trades['BuyingPower'].sum()
+        s3.write(f"**BP en Uso:** `${total_bp_open:,.0f}`")
         
         active_strats = len(open_trades["ChainID"].unique())
         s4.write(f"**Estrat. Abiertas:** `{active_strats}`")
@@ -255,7 +297,13 @@ def render_active_portfolio(df):
         total_premium = group["PrimaRecibida"].sum()
         dte = (expiry - date.today()).days
         
-        with st.expander(f"📦 {ticker} - {strategy} | Vence: {expiry} (DTE: {dte}) | BP: ${total_bp:,.0f}", expanded=True):
+        # Semáforo DTE
+        dte_color = "⚪"
+        if dte < 7: dte_color = "🔴"
+        elif dte <= 21: dte_color = "🟡"
+        else: dte_color = "🟢"
+        
+        with st.expander(f"{dte_color} {ticker} - {strategy} | Vence: {expiry} (DTE: {dte}) | BP: ${total_bp:,.0f}", expanded=True):
             # Vista resumen de la estrategia
             c1, c2, c3 = st.columns(3)
             c1.metric("Prima Total Recibida", f"${total_premium:,.2f}")
@@ -390,9 +438,10 @@ def render_active_portfolio(df):
 
 def render_new_trade():
     st.header("➕ Nueva Operación")
-    c_top1, c_top2 = st.columns(2)
+    c_top1, c_top2, c_top3 = st.columns(3)
     ticker = c_top1.text_input("Ticker").upper()
     estrategia = c_top2.selectbox("Estrategia", ESTRATEGIAS)
+    setup_val = c_top3.selectbox("🎯 Setup / Motivo", SETUPS)
     
     legs_count = 1
     if "Spread" in estrategia: legs_count = 2
@@ -448,7 +497,7 @@ def render_new_trade():
                 new_rows.append({
                     "ID": str(uuid4())[:8], "ChainID": chain_id, "ParentID": None,
                     "Ticker": ticker, "FechaApertura": date.today(), "Expiry": expiry,
-                    "Estrategia": estrategia, "Side": leg["Side"], "OptionType": leg["Type"], 
+                    "Estrategia": estrategia, "Setup": setup_val, "Side": leg["Side"], "OptionType": leg["Type"], 
                     "Strike": leg["Strike"], "Delta": leg["Delta"],
                     "PrimaRecibida": p_recibida, "CostoCierre": 0.0, "Contratos": contratos,
                     "BuyingPower": bp_leg, "MaxLoss": 0.0, "BreakEven": be_input if i == 0 else 0.0, 
@@ -473,10 +522,91 @@ def main():
     if page == "Dashboard": render_dashboard(st.session_state.df)
     elif page == "Nueva Operación": render_new_trade()
     elif page == "Cartera Activa": render_active_portfolio(st.session_state.df)
-    elif page == "Historial":
-        st.header("📜 Historial")
-        hist = st.session_state.df[st.session_state.df["Estado"] != "Abierta"]
-        st.dataframe(hist[["Ticker", "Estrategia", "FechaCierre", "PrecioAccionCierre", "PnL_USD_Realizado", "ProfitPct", "Estado"]], use_container_width=True)
+def render_history(df):
+    st.header("📜 Historial de Operaciones")
+    
+    # --- Datos de base ---
+    hist_df = df[df["Estado"] != "Abierta"].copy()
+    if hist_df.empty:
+        st.info("Aún no hay operaciones cerradas en el historial.")
+        return
+        
+    # Aseguramos que FechaCierre sea comparable de forma segura
+    hist_df["__dt_sort"] = pd.to_datetime(hist_df["FechaCierre"], errors='coerce')
+    
+    # Alerta de trades sin fecha (como JBLU antes del fix)
+    undated = hist_df[hist_df["FechaCierre"].isna()]
+    if not undated.empty:
+        st.warning(f"⚠️ Se han detectado {len(undated)} operaciones cerradas sin fecha de cierre. Aparecerán al final de la lista.")
+
+    # --- Filtros de Historial ---
+    c1, c2, c3 = st.columns(3)
+    hist_tickers = ["Todos"] + sorted(hist_df["Ticker"].unique().tolist())
+    t_filt = c1.selectbox("Filtrar Ticker", hist_tickers, key="hist_t")
+    
+    hist_setup = ["Todos"] + SETUPS
+    s_filt = c2.selectbox("Filtrar Setup", hist_setup, key="hist_s")
+    
+    hist_strat = ["Todos"] + ESTRATEGIAS
+    e_filt = c3.selectbox("Filtrar Estrategia", hist_strat, key="hist_e")
+
+    # Filtro de Fecha robusto
+    st.markdown("📅 **Filtrar por Rango de Cierre**")
+    valid_dates = hist_df["__dt_sort"].dropna()
+    fecha_min_val = valid_dates.min().date() if not valid_dates.empty else (date.today() - timedelta(days=30))
+    date_range = st.date_input("Rango de fechas", [fecha_min_val, date.today()], key="hist_d")
+    
+    # Aplicar filtros
+    if t_filt != "Todos": hist_df = hist_df[hist_df["Ticker"] == t_filt]
+    if s_filt != "Todos": hist_df = hist_df[hist_df["Setup"] == s_filt]
+    if e_filt != "Todos": hist_df = hist_df[hist_df["Estrategia"] == e_filt]
+    
+    if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+        # Comparación usando Timestamps para evitar el TypeError
+        start_ts = pd.Timestamp(date_range[0])
+        end_ts = pd.Timestamp(date_range[1]) + pd.Timedelta(hours=23, minutes=59, seconds=59)
+        # Incluimos los que están en rango O los que no tienen fecha si el usuario está buscando un ticker específico
+        if t_filt != "Todos":
+            hist_df = hist_df[(hist_df["__dt_sort"].isna()) | ((hist_df["__dt_sort"] >= start_ts) & (hist_df["__dt_sort"] <= end_ts))]
+        else:
+            hist_df = hist_df[(hist_df["__dt_sort"] >= start_ts) & (hist_df["__dt_sort"] <= end_ts)]
+    
+    if hist_df.empty:
+        st.info("No hay operaciones que coincidan con los filtros seleccionados.")
+        return
+
+    # Preparar visualización amigable
+    display_df = hist_df.copy()
+    display_df = display_df.sort_values("__dt_sort", ascending=False, na_position='last')
+    display_df["% Gestión"] = display_df["ProfitPct"].map("{:.1f}%".format)
+    display_df["PnL USD"] = display_df["PnL_USD_Realizado"].map("${:,.2f}".format)
+    
+    # Mapear nombres internos a nombres visibles para la UI
+    display_df = display_df.rename(columns={
+        "POP": "Prob. Éxito %",
+        "PrecioAccionCierre": "Precio Acción Cierre"
+    })
+    
+    # Columnas a mostrar
+    view_cols = [
+        "Ticker", "FechaCierre", "PnL USD", "% Gestión", "Estrategia", "Setup", 
+        "Contratos", "BuyingPower", "Side", "OptionType", "Strike", 
+        "Prob. Éxito %", "FechaApertura", "Expiry", "Precio Acción Cierre"
+    ]
+    
+    st.dataframe(display_df[view_cols], use_container_width=True, hide_index=True)
+
+def main():
+    st.set_page_config(page_title="STRIKELOG Pro", layout="wide")
+    if "df" not in st.session_state:
+        st.session_state.df = JournalManager.load_data()
+        
+    page = st.sidebar.radio("Navegación", ["Dashboard", "Nueva Operación", "Cartera Activa", "Historial", "Datos / Edición"])
+    
+    if page == "Dashboard": render_dashboard(st.session_state.df)
+    elif page == "Nueva Operación": render_new_trade()
+    elif page == "Cartera Activa": render_active_portfolio(st.session_state.df)
+    elif page == "Historial": render_history(st.session_state.df)
         
     elif page == "Datos / Edición":
         st.header("🛠️ Gestión de Datos")
@@ -496,16 +626,30 @@ def main():
                 n_strike = c4.number_input("Strike", value=float(row["Strike"]))
                 n_delta = c5.number_input("Delta", value=float(row["Delta"]), step=0.01)
                 
-                c6, c7, c8 = st.columns(3)
+                ce1, ce2 = st.columns(2)
+                n_setup = ce1.selectbox("Setup", SETUPS, index=SETUPS.index(row["Setup"]) if "Setup" in row and row["Setup"] in SETUPS else 0)
+                n_estatue = ce2.selectbox("Estrategia", ESTRATEGIAS, index=ESTRATEGIAS.index(row["Estrategia"]) if row["Estrategia"] in ESTRATEGIAS else 0)
+                
+                c6, c7, c8, c8_2, c8_3 = st.columns(5)
                 n_prima = c6.number_input("Prima Recibida", value=float(row["PrimaRecibida"]))
                 n_costo = c7.number_input("Costo Cierre (Prima)", value=float(row["CostoCierre"]))
-                n_stock_close = c8.number_input("Precio Acción Cierre", value=float(row["PrecioAccionCierre"]))
+                n_contracts = c8.number_input("Contratos", value=int(row["Contratos"]), min_value=1)
+                n_bp = c8_2.number_input("Buying Power", value=float(row["BuyingPower"]))
+                n_stock_close = c8_3.number_input("Precio Acción Cierre", value=float(row["PrecioAccionCierre"]))
+                
+                cd1, cd2, cd3 = st.columns(3)
+                n_fecha_ap = cd1.date_input("Fecha Apertura", value=pd.to_datetime(row["FechaApertura"]).date())
+                n_expiry = cd2.date_input("Fecha Vencimiento", value=pd.to_datetime(row["Expiry"]).date())
+                n_fecha_cl = cd3.date_input("Fecha Cierre", value=pd.to_datetime(row["FechaCierre"]).date() if not pd.isna(row["FechaCierre"]) else date.today())
                 
                 c9, c10, c11, c12 = st.columns(4)
                 n_pnl_usd = c9.number_input("PnL USD Realizado", value=float(row["PnL_USD_Realizado"]))
                 n_be = c10.number_input("Break Even", value=float(row["BreakEven"]))
                 n_pop = c11.number_input("Prob. Éxito %", value=float(row["POP"]))
                 n_estado = c12.selectbox("Estado", ESTADOS, index=ESTADOS.index(row["Estado"]))
+
+                if row["Estado"] != "Abierta":
+                    st.info(f"💡 Este trade tiene un beneficio del **{row['ProfitPct']:.1f}%** sobre la prima original.")
                 
                 n_notas = st.text_area("Notas", row["Notas"])
                 
@@ -515,14 +659,35 @@ def main():
                     st.session_state.df.at[idx, "OptionType"] = n_type
                     st.session_state.df.at[idx, "Strike"] = n_strike
                     st.session_state.df.at[idx, "Delta"] = n_delta
+                    st.session_state.df.at[idx, "Setup"] = n_setup
+                    st.session_state.df.at[idx, "Estrategia"] = n_estatue
+                    st.session_state.df.at[idx, "FechaApertura"] = n_fecha_ap
+                    st.session_state.df.at[idx, "Expiry"] = n_expiry
+                    st.session_state.df.at[idx, "FechaCierre"] = n_fecha_cl.strftime("%Y-%m-%d") if n_estado != "Abierta" else pd.NA
                     st.session_state.df.at[idx, "PrimaRecibida"] = n_prima
                     st.session_state.df.at[idx, "CostoCierre"] = n_costo
+                    st.session_state.df.at[idx, "Contratos"] = n_contracts
+                    st.session_state.df.at[idx, "BuyingPower"] = n_bp
                     st.session_state.df.at[idx, "PrecioAccionCierre"] = n_stock_close
                     st.session_state.df.at[idx, "PnL_USD_Realizado"] = n_pnl_usd
                     st.session_state.df.at[idx, "BreakEven"] = n_be
                     st.session_state.df.at[idx, "POP"] = n_pop
                     st.session_state.df.at[idx, "Notas"] = n_notas
                     st.session_state.df.at[idx, "Estado"] = n_estado
+                    
+                    # Reruncular KPIs calculados tras la edición manual para consistencia
+                    # MaxProfitUSD se basa en prima recibida * contratos * 100
+                    st.session_state.df.at[idx, "MaxProfitUSD"] = n_prima * n_contracts * 100
+                    # Profit % se basa en PnL Realizado vs MaxProfitUSD (o prima bruta)
+                    if n_estado != "Abierta":
+                        total_gross_premium = n_prima * n_contracts * 100
+                        if total_gross_premium != 0:
+                            st.session_state.df.at[idx, "ProfitPct"] = (n_pnl_usd / total_gross_premium) * 100
+                        else:
+                            st.session_state.df.at[idx, "ProfitPct"] = 0.0
+                    else:
+                        st.session_state.df.at[idx, "ProfitPct"] = 0.0
+
                     JournalManager.save_with_backup(st.session_state.df)
                     st.success("¡Actualizado con éxito!")
                     st.rerun()

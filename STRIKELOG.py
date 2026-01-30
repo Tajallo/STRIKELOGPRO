@@ -28,10 +28,16 @@ COLUMNS = [
 
 ESTADOS = ["Abierta", "Cerrada", "Rolada", "Asignada"]
 ESTRATEGIAS = [
-    "CSP (Cash Secured Put)", "CC (Covered Call)", "Put Credit Spread", 
-    "Call Credit Spread", "Put Debit Spread", "Call Debit Spread",
-    "Long Call", "Long Put", "Iron Condor", "Iron Fly",
-    "Strangle", "Straddle", "Calendar", "Diagonal", "Butterfly", "Custom"
+    "CSP (Cash Secured Put)", "CC (Covered Call)", "Collar",
+    "Put Credit Spread", "Call Credit Spread", 
+    "Put Debit Spread", "Call Debit Spread",
+    "Iron Condor", "Iron Fly",
+    "Butterfly", "Broken Wing Butterfly (BWB)",
+    "Strangle", "Straddle",
+    "Calendar", "Diagonal",
+    "Ratio Spread", "Backspread", 
+    "Long Call", "Long Put",
+    "Custom / Other"
 ]
 SIDES = ["Sell", "Buy"]
 OPTION_TYPES = ["Put", "Call"]
@@ -107,64 +113,126 @@ def calculate_pnl_metrics(row):
     pnl_capital_pct = (pnl_usd / bp * 100) if bp > 0 else 0.0
     return pnl_usd, profit_pct, pnl_capital_pct
 
+def suggest_breakeven(strategy, legs_data, total_premium):
+    if not legs_data: return 0.0
+    try:
+        main_strike = float(legs_data[0]["Strike"])
+        if "Put" in strategy or "CSP" in strategy or "Put Credit Spread" in strategy:
+            return main_strike - total_premium
+        if "Call" in strategy or "CC" in strategy or "Call Credit Spread" in strategy:
+            return main_strike + total_premium
+    except:
+        pass
+    return 0.0
+
+def suggest_pop(delta, side):
+    """Calcula la probabilidad de éxito aproximada basada en el Delta."""
+    abs_delta = abs(delta)
+    if side == "Sell":
+        return round((1.0 - abs_delta) * 100, 1)
+    else:
+        return round(abs_delta * 100, 1)
+
 # ----------------------------
 # UI Components
 # ----------------------------
 def render_dashboard(df):
-    st.header("📊 Dashboard Ejecutivo")
-    c_f1, c_f2, c_f3 = st.columns([1, 1, 1])
-    periodo = c_f1.selectbox("Periodo", ["Todos", "Este Mes", "Este Año", "Personalizado"])
-    custom_range = None
-    if periodo == "Personalizado":
-        custom_range = c_f2.date_input("Rango", [date.today() - timedelta(days=30), date.today()])
-    all_tickers = ["Todos"] + sorted(df["Ticker"].unique().tolist())
-    ticker_filter = c_f3.selectbox("Filtrar por Ticker", all_tickers)
+    st.title("📊 Resumen de Rendimiento")
     
-    df_view = df.copy()
-    if ticker_filter != "Todos":
-        df_view = df_view[df_view["Ticker"] == ticker_filter]
-    
-    closed_trades = df_view[df_view["Estado"].isin(["Cerrada", "Rolada", "Asignada"])].copy()
-    open_trades = df_view[df_view["Estado"] == "Abierta"].copy()
-    
-    pnl_total = closed_trades["PnL_USD_Realizado"].sum()
-    wins = len(closed_trades[closed_trades["PnL_USD_Realizado"] > 0])
-    losses = len(closed_trades[closed_trades["PnL_USD_Realizado"] < 0])
-    
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("PnL Realizado Total", f"${pnl_total:,.2f}")
-    k2.metric("Win Rate", f"{(wins/(wins+losses)*100 if (wins+losses)>0 else 0):.1f}%")
-    k3.metric("BP en Uso", f"${open_trades['BuyingPower'].sum():,.2f}")
-    k4.metric("Trades Abiertos", len(open_trades))
-    
-    # Desglose de Estados
-    c_closed = len(df_view[df_view["Estado"] == "Cerrada"])
-    c_rolled = len(df_view[df_view["Estado"] == "Rolada"])
-    c_assigned = len(df_view[df_view["Estado"] == "Asignada"])
-    
-    k5, k6, k7 = st.columns(3)
-    k5.metric("Trades Cerrados", c_closed)
-    k6.metric("Trades Rolados", c_rolled)
-    k7.metric("Trades Asignados", c_assigned)
-    
+    # --- FILTROS ---
+    with st.container():
+        c_f1, c_f2, c_f3 = st.columns([1, 1, 1])
+        all_tickers = ["Todos"] + sorted(df["Ticker"].unique().tolist())
+        ticker_filter = c_f1.selectbox("🔍 Ticker", all_tickers)
+        
+        # Filtrado inicial
+        df_view = df.copy()
+        if ticker_filter != "Todos":
+            df_view = df_view[df_view["Ticker"] == ticker_filter]
+        
+        closed_trades = df_view[df_view["Estado"].isin(["Cerrada", "Rolada", "Asignada"])].copy()
+        open_trades = df_view[df_view["Estado"] == "Abierta"].copy()
+        
+        # --- KPIs DE ALTO NIVEL ---
+        pnl_total = closed_trades["PnL_USD_Realizado"].sum()
+        wins_df = closed_trades[closed_trades["PnL_USD_Realizado"] > 0]
+        losses_df = closed_trades[closed_trades["PnL_USD_Realizado"] < 0]
+        
+        wins = len(wins_df)
+        losses = len(losses_df)
+        win_rate = (wins / (wins + losses) * 100) if (wins + losses) > 0 else 0
+        
+        # Profit Factor
+        total_won = wins_df["PnL_USD_Realizado"].sum()
+        total_lost = abs(losses_df["PnL_USD_Realizado"].sum())
+        profit_factor = (total_won / total_lost) if total_lost > 0 else (total_won if total_won > 0 else 0.0)
+        
+        st.divider()
+        
+        # Fila 1: Métricas Principales
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("PnL Realizado", f"${pnl_total:,.2f}", delta=f"{pnl_total:,.2f}" if pnl_total != 0 else None)
+        m2.metric("Win Rate", f"{win_rate:.1f}%")
+        m3.metric("Profit Factor", f"{profit_factor:.2f}x")
+        m4.metric("BP en Uso", f"${open_trades['BuyingPower'].sum():,.0f}")
+        
+        # Fila 2: Estadísticas de Eficiencia
+        s1, s2, s3, s4 = st.columns(4)
+        avg_profit = closed_trades["PnL_USD_Realizado"].mean() if not closed_trades.empty else 0
+        s1.write(f"**Avg per Trade:** `${avg_profit:,.2f}`")
+        
+        best_ticker = closed_trades.groupby("Ticker")["PnL_USD_Realizado"].sum().idxmax() if not closed_trades.empty else "-"
+        s2.write(f"**Top Ticker:** `{best_ticker}`")
+        
+        total_trades = len(df_view["ChainID"].unique())
+        s3.write(f"**Total Estrategias:** `{total_trades}`")
+        
+        active_strats = len(open_trades["ChainID"].unique())
+        s4.write(f"**Estrat. Abiertas:** `{active_strats}`")
+        
     st.divider()
     
-    col_graph1, col_graph2 = st.columns(2)
+    # --- GRÁFICOS ---
+    col_chart1, col_chart2 = st.columns([2, 1])
     
-    with col_graph1:
+    with col_chart1:
+        st.subheader("📈 Curva de Equidad")
         if not closed_trades.empty:
-            fig_equity = px.line(closed_trades.sort_values("FechaCierre"), x="FechaCierre", y=closed_trades["PnL_USD_Realizado"].cumsum(), title="Curva de Equidad")
+            # Asegurar que FechaCierre es datetime para el eje X
+            closed_trades["FechaCierre"] = pd.to_datetime(closed_trades["FechaCierre"])
+            closed_trades = closed_trades.sort_values("FechaCierre")
+            closed_trades["Equity"] = closed_trades["PnL_USD_Realizado"].cumsum()
+            
+            fig_equity = px.area(closed_trades, x="FechaCierre", y="Equity", 
+                                 labels={"Equity": "Balance ($)"},
+                                 template="plotly_dark")
+            
+            # Cambiar color de línea y relleno manualmente
+            fig_equity.update_traces(line_color="#00FFAA", fillcolor="rgba(0, 255, 170, 0.2)")
+            fig_equity.update_layout(height=350, margin=dict(l=20, r=20, t=30, b=20))
             st.plotly_chart(fig_equity, use_container_width=True)
         else:
-            st.info("No hay datos suficientes para la curva de equidad.")
-            
-    with col_graph2:
-        st.subheader("Distribución por Estrategia")
+            st.info("Sin datos cerrados para mostrar la curva.")
+
+    with col_chart2:
+        st.subheader("🎯 Por Estrategia")
         if not df_view.empty:
-            strat_counts = df_view["Estrategia"].value_counts().reset_index()
-            strat_counts.columns = ["Estrategia", "Cantidad"]
-            fig_strat = px.bar(strat_counts, x="Cantidad", y="Estrategia", orientation='h', text="Cantidad", title="Trades por Estrategia")
+            strat_data = df_view.groupby("Estrategia")["PnL_USD_Realizado"].sum().reset_index()
+            fig_strat = px.bar(strat_data, x="PnL_USD_Realizado", y="Estrategia", 
+                               orientation='h', color="PnL_USD_Realizado",
+                               color_continuous_scale="RdYlGn")
+            fig_strat.update_layout(height=350, showlegend=False, margin=dict(l=20, r=20, t=30, b=20))
             st.plotly_chart(fig_strat, use_container_width=True)
+
+    # Gráfico de barras mensual (Opcional pero muy útil)
+    if not closed_trades.empty:
+        st.subheader("📅 Rendimiento Mensual")
+        closed_trades['Mes'] = pd.to_datetime(closed_trades['FechaCierre']).dt.strftime('%Y-%m')
+        monthly_pnl = closed_trades.groupby('Mes')['PnL_USD_Realizado'].sum().reset_index()
+        fig_monthly = px.bar(monthly_pnl, x='Mes', y='PnL_USD_Realizado', 
+                             color='PnL_USD_Realizado', color_continuous_scale="RdYlGn")
+        fig_monthly.update_layout(height=300)
+        st.plotly_chart(fig_monthly, use_container_width=True)
 
 def render_active_portfolio(df):
     st.header("📂 Cartera Activa")
@@ -329,7 +397,12 @@ def render_new_trade():
     legs_count = 1
     if "Spread" in estrategia: legs_count = 2
     elif "Iron" in estrategia: legs_count = 4
+    elif "Butterfly" in estrategia: legs_count = 3
     elif estrategia in ["Strangle", "Straddle"]: legs_count = 2
+    elif "Ratio" in estrategia: legs_count = 2
+    
+    if estrategia == "Custom / Other":
+        legs_count = st.number_input("Especifique el número de patas", min_value=1, max_value=10, value=1)
     
     st.markdown(f"### 🛠️ Configuración de {estrategia}")
     
@@ -350,6 +423,18 @@ def render_new_trade():
     expiry = st.date_input("Vencimiento")
     contratos = st.number_input("Contratos", value=1, min_value=1)
     
+    # Cálculos sugeridos
+    suggested_be = suggest_breakeven(estrategia, legs_data, total_premium)
+    # Usamos el delta de la pata principal para la sugerencia de éxito
+    main_delta = legs_data[0]["Delta"] if legs_data else 0.0
+    main_side = legs_data[0]["Side"] if legs_data else "Sell"
+    suggested_pop = suggest_pop(main_delta, main_side)
+    
+    st.markdown("### 📊 Métricas Adicionales")
+    c_ad1, c_ad2 = st.columns(2)
+    be_input = c_ad1.number_input("Break Even (Manual/Sugerido)", value=float(suggested_be), step=0.01)
+    pop_input = c_ad2.number_input("Prob. Éxito % (Sugerida)", value=float(suggested_pop), step=0.1)
+    
     if st.button("Registrar Estrategia", type="primary"):
         if not ticker:
             st.error("Ticker obligatorio.")
@@ -366,7 +451,8 @@ def render_new_trade():
                     "Estrategia": estrategia, "Side": leg["Side"], "OptionType": leg["Type"], 
                     "Strike": leg["Strike"], "Delta": leg["Delta"],
                     "PrimaRecibida": p_recibida, "CostoCierre": 0.0, "Contratos": contratos,
-                    "BuyingPower": bp_leg, "MaxLoss": 0.0, "BreakEven": 0.0, "POP": 0.0,
+                    "BuyingPower": bp_leg, "MaxLoss": 0.0, "BreakEven": be_input if i == 0 else 0.0, 
+                    "POP": pop_input if i == 0 else 0.0,
                     "Estado": "Abierta", "Notas": f"Parte de {estrategia}",
                     "UpdatedAt": datetime.now().isoformat(), "FechaCierre": pd.NA,
                     "MaxProfitUSD": (p_recibida * contratos * 100), "ProfitPct": 0.0, "PnL_Capital_Pct": 0.0,
@@ -403,20 +489,23 @@ def main():
             row = st.session_state.df.iloc[idx]
             
             with st.form("edit_form"):
-                c1, c2, c3, c4 = st.columns(4)
+                c1, c2, c3, c4, c5 = st.columns(5)
                 n_ticker = c1.text_input("Ticker", row["Ticker"])
                 n_side = c2.selectbox("Side", SIDES, index=SIDES.index(row["Side"]) if row["Side"] in SIDES else 0)
                 n_type = c3.selectbox("Type", OPTION_TYPES, index=OPTION_TYPES.index(row["OptionType"]) if row["OptionType"] in OPTION_TYPES else 0)
                 n_strike = c4.number_input("Strike", value=float(row["Strike"]))
+                n_delta = c5.number_input("Delta", value=float(row["Delta"]), step=0.01)
                 
-                c5, c6, c7 = st.columns(3)
-                n_prima = c5.number_input("Prima Recibida", value=float(row["PrimaRecibida"]))
-                n_costo = c6.number_input("Costo Cierre (Prima)", value=float(row["CostoCierre"]))
-                n_stock_close = c7.number_input("Precio Acción Cierre", value=float(row["PrecioAccionCierre"]))
+                c6, c7, c8 = st.columns(3)
+                n_prima = c6.number_input("Prima Recibida", value=float(row["PrimaRecibida"]))
+                n_costo = c7.number_input("Costo Cierre (Prima)", value=float(row["CostoCierre"]))
+                n_stock_close = c8.number_input("Precio Acción Cierre", value=float(row["PrecioAccionCierre"]))
                 
-                c8, c9 = st.columns(2)
-                n_pnl_usd = c8.number_input("PnL USD Realizado (DINERO GANADO/PERDIDO)", value=float(row["PnL_USD_Realizado"]))
-                n_estado = c9.selectbox("Estado", ESTADOS, index=ESTADOS.index(row["Estado"]))
+                c9, c10, c11, c12 = st.columns(4)
+                n_pnl_usd = c9.number_input("PnL USD Realizado", value=float(row["PnL_USD_Realizado"]))
+                n_be = c10.number_input("Break Even", value=float(row["BreakEven"]))
+                n_pop = c11.number_input("Prob. Éxito %", value=float(row["POP"]))
+                n_estado = c12.selectbox("Estado", ESTADOS, index=ESTADOS.index(row["Estado"]))
                 
                 n_notas = st.text_area("Notas", row["Notas"])
                 
@@ -425,14 +514,17 @@ def main():
                     st.session_state.df.at[idx, "Side"] = n_side
                     st.session_state.df.at[idx, "OptionType"] = n_type
                     st.session_state.df.at[idx, "Strike"] = n_strike
+                    st.session_state.df.at[idx, "Delta"] = n_delta
                     st.session_state.df.at[idx, "PrimaRecibida"] = n_prima
                     st.session_state.df.at[idx, "CostoCierre"] = n_costo
                     st.session_state.df.at[idx, "PrecioAccionCierre"] = n_stock_close
                     st.session_state.df.at[idx, "PnL_USD_Realizado"] = n_pnl_usd
+                    st.session_state.df.at[idx, "BreakEven"] = n_be
+                    st.session_state.df.at[idx, "POP"] = n_pop
                     st.session_state.df.at[idx, "Notas"] = n_notas
                     st.session_state.df.at[idx, "Estado"] = n_estado
                     JournalManager.save_with_backup(st.session_state.df)
-                    st.success("Actualizado!")
+                    st.success("¡Actualizado con éxito!")
                     st.rerun()
 
 if __name__ == "__main__":

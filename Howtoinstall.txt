@@ -1,7 +1,44 @@
-Descomprime el archivo ZIP que te he mandado en cualquier carpeta (ej. Documentos).
-IMPORTANTE: Asegúrate de tener Python instalado. Si no lo tienes, ábrete la Microsoft Store de Windows, busca "Python 3.12" e instálalo (es gratis y oficial).
-Haz doble clic en el archivo 
-INICIAR_APP.bat
-.
-Nota: La primera vez tardará un par de minutos porque descargará las librerías. Las siguientes veces se abrirá al instante.
-Se abrirá una ventana negra (déjala abierta) y automáticamente se abrirá tu navegador con la aplicación.
+🚀 Guía de Instalación y Ejecución
+Sigue estos pasos para configurar y poner en marcha la aplicación en tu equipo con Windows.
+
+1. Preparación de archivos
+Localiza el archivo ZIP descargado.
+
+Descomprímelo en la carpeta que prefieras (ej. Documentos o Escritorio).
+
+Nota: No ejecutes la aplicación directamente desde el archivo ZIP; asegúrate de extraer los archivos primero.
+
+2. Instalación de Python 3.12 (Obligatorio)
+Para que la aplicación funcione, necesitas tener instalado Python. Tienes dos opciones:
+
+Opción A: Microsoft Store (Recomendado por sencillez)
+Abre la Microsoft Store en Windows.
+
+Busca "Python 3.12" e instálalo (es la versión oficial y gratuita).
+
+Opción B: Instalador oficial (Web)
+Ve a python.org.
+
+Descarga el Windows installer (64-bit) de la versión 3.12.x.
+
+Paso Crítico: Al abrir el instalador, marca la casilla "Add Python.exe to PATH" en la parte inferior.
+
+Haz clic en "Install Now".
+
+3. Ejecución de la Aplicación
+Una vez instalado Python, iniciar el programa es muy sencillo:
+
+Entra en la carpeta donde descomprimiste los archivos.
+
+Haz doble clic en el archivo INICIAR_APP.bat.
+
+Espera un momento: La primera vez que lo abras, el sistema descargará las librerías necesarias. Esto puede tardar un par de minutos.
+
+Se abrirá una ventana negra (consola) y, automáticamente, tu navegador mostrará la aplicación.
+
+[!IMPORTANT] No cierres la ventana negra mientras estés usando la aplicación, ya que es el "motor" que la mantiene funcionando.
+
+Solución de problemas comunes
+Error "Python no se reconoce": Asegúrate de haber marcado la casilla "Add Python to PATH" durante la instalación. Si no lo hiciste, te recomiendo reinstalarlo marcando esa opción.
+
+El archivo .bat se cierra rápido: Intenta ejecutar Python desde la terminal para confirmar que está bien instalado.

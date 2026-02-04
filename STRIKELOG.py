@@ -50,17 +50,19 @@ OPTION_TYPES = ["Put", "Call"]
 # ----------------------------
 class JournalManager:
     @staticmethod
-    def save_with_backup(df: pd.DataFrame):
+    def save_with_backup(df: pd.DataFrame) -> pd.DataFrame:
         try:
             if os.path.exists(FILE_NAME):
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 shutil.copy(FILE_NAME, f"{BACKUP_DIR}/journal_{timestamp}.csv.bak")
             df = JournalManager.normalize_df(df)
             df.to_csv(FILE_NAME, index=False)
+            return df
         except PermissionError:
             st.error(f"❌ Error al guardar: El archivo '{FILE_NAME}' está bloqueado. Ciérralo si lo tienes abierto en Excel.")
         except Exception as e:
             st.error(f"❌ Error al guardar: {e}")
+        return df
 
     @staticmethod
     def normalize_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -87,18 +89,20 @@ class JournalManager:
                 else: df[c] = pd.NA
         
         df = df[COLUMNS].copy()
-        df["FechaApertura"] = pd.to_datetime(df["FechaApertura"], errors='coerce').dt.date
-        df["Expiry"] = pd.to_datetime(df["Expiry"], errors='coerce').dt.date
-        df["FechaCierre"] = pd.to_datetime(df["FechaCierre"], errors='coerce').dt.date
+        df["FechaApertura"] = pd.to_datetime(df["FechaApertura"], errors='coerce')
+        df["Expiry"] = pd.to_datetime(df["Expiry"], errors='coerce')
+        df["FechaCierre"] = pd.to_datetime(df["FechaCierre"], errors='coerce')
         
-        df["FechaApertura"] = df["FechaApertura"].fillna(date.today())
-        df["Expiry"] = df["Expiry"].fillna(date.today())
+        # Forzar tipo datetime64[ns] para compatibilidad total con Arrow
+        df["FechaApertura"] = df["FechaApertura"].fillna(pd.Timestamp.now().normalize())
+        df["Expiry"] = df["Expiry"].fillna(pd.Timestamp.now().normalize())
         
         numeric_cols = ["PrimaRecibida", "CostoCierre", "BuyingPower", "MaxLoss", "BreakEven", "POP", "Delta", "MaxProfitUSD", "ProfitPct", "PnL_Capital_Pct", "PrecioAccionCierre", "PnL_USD_Realizado"]
         for col in numeric_cols:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
             
         df["Contratos"] = pd.to_numeric(df["Contratos"], errors='coerce').fillna(1).astype(int)
+            
         df["UpdatedAt"] = datetime.now().isoformat(timespec="seconds")
         return df
 
@@ -358,7 +362,10 @@ def render_active_portfolio(df):
         # Métricas agregadas del grupo
         total_bp = group["BuyingPower"].sum()
         total_premium = group["PrimaRecibida"].sum()
-        dte = (expiry - date.today()).days
+        
+        # Asegurar que expiry es objeto fecha para el cálculo
+        expiry_dt = pd.to_datetime(expiry).date() if pd.notna(expiry) else date.today()
+        dte = (expiry_dt - date.today()).days
         
         # Semáforo DTE
         dte_color = "⚪"
@@ -372,7 +379,7 @@ def render_active_portfolio(df):
         
         roll_label = f" 🔄 [ROL #{num_rolls}]" if num_rolls > 0 else ""
         
-        with st.expander(f"{dte_color}{roll_label} {ticker} - {strategy} | Vence: {expiry} (DTE: {dte}) | BP: ${total_bp:,.0f}", expanded=False):
+        with st.expander(f"{dte_color}{roll_label} {ticker} - {strategy} | Vence: {expiry_dt} (DTE: {dte}) | BP: ${total_bp:,.0f}", expanded=False):
             # Vista resumen de la estrategia
             c1, c2, c3 = st.columns(3)
             c1.metric("Prima Total Recibida", f"${total_premium:,.2f}")
@@ -386,15 +393,17 @@ def render_active_portfolio(df):
                 origin = reversed_chain[0]
                 
                 # Resumen de evolución
-                st.info(f"📍 **Origen:** Abierto el `{origin['FechaApertura']}` con Strike `{origin['Strike']} {origin['OptionType']}`.")
+                origin_date = pd.to_datetime(origin['FechaApertura']).strftime("%Y-%m-%d")
+                st.info(f"📍 **Origen:** Abierto el `{origin_date}` con Strike `{origin['Strike']} {origin['OptionType']}`.")
                 
                 # Pequeña tabla con la evolución
                 hist_data = []
                 for i, r in enumerate(reversed_chain):
                     label = "ORIGEN" if i == 0 else f"ROL #{i}"
+                    f_apertura = pd.to_datetime(r["FechaApertura"]).strftime("%Y-%m-%d")
                     hist_data.append({
                         "Etapa": label,
-                        "Fecha": r["FechaApertura"],
+                        "Fecha": f_apertura,
                         "Strike": f"{r['Strike']} {r['OptionType']}",
                         "BE": r["BreakEven"],
                         "PnL Realizado": f"${r['PnL_USD_Realizado']:.2f}" if r['Estado'] != 'Abierta' else "-"
@@ -466,7 +475,7 @@ def render_active_portfolio(df):
                             df.at[real_idx, "CostoCierre"] = 0.0
                             df.at[real_idx, "PnL_USD_Realizado"] = 0.0
                             
-                    JournalManager.save_with_backup(df)
+                    st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
                     del st.session_state["manage_chain_id"]
                     st.success("Estrategia cerrada completamente.")
                     st.rerun()
@@ -538,13 +547,16 @@ def render_active_portfolio(df):
                         # Calcular BE y POP sugerido
                         suggested_be_roll = suggest_breakeven(legs_to_roll[0]["Estrategia"], new_legs_data, new_net_premium)
                         suggested_pop_roll = suggest_pop(new_legs_data[0]["Delta"], new_legs_data[0]["Side"])
+                        
+                        # Obtener el Buying Power original de la estrategia para arrastrarlo a la nueva
+                        original_bp = target_group["BuyingPower"].sum()
 
                         for i, n_leg in enumerate(new_legs_data):
                             p_recibida = new_net_premium if i == 0 else 0.0
                             # Heredamos el BP de la pata original si existe
                             new_rows.append({
                                 "ID": str(uuid4())[:8], "ChainID": new_chain_id, "ParentID": n_leg["OldID"],
-                                "Ticker": n_leg["Ticker"], "FechaApertura": date.today(), "Expiry": new_expiry,
+                                "Ticker": n_leg["Ticker"], "FechaApertura": pd.Timestamp.now().normalize(), "Expiry": pd.to_datetime(new_expiry).normalize(),
                                 "Estrategia": n_leg["Estrategia"], "Side": n_leg["Side"], "OptionType": n_leg["Type"], 
                                 "Strike": n_leg["Strike"], "Delta": n_leg["Delta"],
                                 "PrimaRecibida": p_recibida, "CostoCierre": 0.0, "Contratos": n_leg["Contratos"],
@@ -557,8 +569,9 @@ def render_active_portfolio(df):
                                 "PrecioAccionCierre": 0.0, "PnL_USD_Realizado": 0.0
                             })
                         
-                        st.session_state.df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
-                        JournalManager.save_with_backup(st.session_state.df)
+                        if new_rows:
+                            st.session_state.df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
+                        st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
                         del st.session_state["manage_chain_id"]
                         st.success("Ajuste de patas completado.")
                         st.rerun()
@@ -569,11 +582,14 @@ def render_active_portfolio(df):
 
 def render_new_trade():
     st.header("➕ Nueva Operación")
+    
+    # 1. Selección de estrategia FUERA del form para que el UI reaccione al cambio
     c_top1, c_top2, c_top3 = st.columns(3)
     ticker = c_top1.text_input("Ticker").upper()
     estrategia = c_top2.selectbox("Estrategia", ESTRATEGIAS)
     setup_val = c_top3.selectbox("🎯 Setup / Motivo", SETUPS)
     
+    # Determinar patas según selección
     legs_count = 1
     if "Spread" in estrategia: legs_count = 2
     elif "Iron" in estrategia: legs_count = 4
@@ -586,36 +602,43 @@ def render_new_trade():
     
     st.markdown(f"### 🛠️ Configuración de {estrategia}")
     
-    c_p1, c_p2 = st.columns(2)
-    total_premium = c_p1.number_input("Prima Neta (Precio contrato)", value=0.0, step=0.01, help="Pon el precio del contrato (ej: 1.50). NO multipliques por 100.")
-    total_bp = c_p2.number_input("Buying Power Total ($)", value=0.0, step=100.0)
-    
-    legs_data = []
-    for i in range(legs_count):
-        with st.expander(f"Pata {i+1}", expanded=True):
-            c1, c2, c3, c4 = st.columns(4)
-            l_side = c1.selectbox(f"Side {i+1}", SIDES, key=f"side_{i}")
-            l_type = c2.selectbox(f"Type {i+1}", OPTION_TYPES, key=f"type_{i}")
-            l_strike = c3.number_input(f"Strike {i+1}", key=f"strike_{i}")
-            l_delta = c4.number_input(f"Delta {i+1}", key=f"delta_{i}", step=0.01)
-            legs_data.append({"Side": l_side, "Type": l_type, "Strike": l_strike, "Delta": l_delta})
-            
-    expiry = st.date_input("Vencimiento")
-    contratos = st.number_input("Contratos", value=1, min_value=1)
-    
-    # Cálculos sugeridos
-    suggested_be = suggest_breakeven(estrategia, legs_data, total_premium)
-    # Usamos el delta de la pata principal para la sugerencia de éxito
-    main_delta = legs_data[0]["Delta"] if legs_data else 0.0
-    main_side = legs_data[0]["Side"] if legs_data else "Sell"
-    suggested_pop = suggest_pop(main_delta, main_side)
-    
-    st.markdown("### 📊 Métricas Adicionales")
-    c_ad1, c_ad2 = st.columns(2)
-    be_input = c_ad1.number_input("Break Even (Manual/Sugerido)", value=float(suggested_be), step=0.01)
-    pop_input = c_ad2.number_input("Prob. Éxito % (Sugerida)", value=float(suggested_pop), step=0.1)
-    
-    if st.button("Registrar Estrategia", type="primary"):
+    # 2. El Formulario para los datos que NO cambian la estructura del UI
+    with st.form("new_trade_form", clear_on_submit=True):
+        c_p1, c_p2 = st.columns(2)
+        total_premium = c_p1.number_input("Prima Neta (Precio contrato)", value=0.0, step=0.01, help="Pon el precio del contrato (ej: 1.50). NO multipliques por 100.")
+        total_bp = c_p2.number_input("Buying Power Total ($)", value=0.0, step=100.0)
+        
+        legs_data = []
+        for i in range(legs_count):
+            with st.expander(f"Pata {i+1}", expanded=True):
+                c1, c2, c3, c4 = st.columns(4)
+                # Incluimos la estrategia en la key para forzar el refresco al cambiar
+                l_side = c1.selectbox(f"Side {i+1}", SIDES, key=f"side_{estrategia}_{i}")
+                l_type = c2.selectbox(f"Type {i+1}", OPTION_TYPES, key=f"type_{estrategia}_{i}")
+                l_strike = c3.number_input(f"Strike {i+1}", key=f"strike_{estrategia}_{i}")
+                l_delta = c4.number_input(f"Delta {i+1}", key=f"delta_{estrategia}_{i}", step=0.01)
+                legs_data.append({"Side": l_side, "Type": l_type, "Strike": l_strike, "Delta": l_delta})
+        
+        # Guardar en session_state para el procesamiento posterior al submit
+        st.session_state[f"legs_cfg_active"] = legs_data
+                
+        expiry = st.date_input("Vencimiento")
+        contratos = st.number_input("Contratos", value=1, min_value=1)
+        
+        # Cálculos sugeridos
+        suggested_be = suggest_breakeven(estrategia, legs_data, total_premium)
+        main_delta = legs_data[0]["Delta"] if legs_data else 0.0
+        main_side = legs_data[0]["Side"] if legs_data else "Sell"
+        suggested_pop = suggest_pop(main_delta, main_side)
+        
+        st.markdown("### 📊 Métricas Adicionales")
+        c_ad1, c_ad2 = st.columns(2)
+        be_input = c_ad1.number_input("Break Even (Manual/Sugerido)", value=float(suggested_be), step=0.01)
+        pop_input = c_ad2.number_input("Prob. Éxito % (Sugerida)", value=float(suggested_pop), step=0.1)
+        
+        submit_button = st.form_submit_button("Registrar Estrategia", type="primary")
+
+    if submit_button:
         if not ticker:
             st.error("Ticker obligatorio.")
         else:
@@ -625,9 +648,13 @@ def render_new_trade():
                 p_recibida = total_premium if i == 0 else 0.0
                 bp_leg = total_bp if i == 0 else 0.0
                 
+                # Usar pd.Timestamp para evitar conflictos con Arrow
+                today_ts = pd.Timestamp.now().normalize()
+                expiry_ts = pd.to_datetime(expiry).normalize()
+
                 new_rows.append({
                     "ID": str(uuid4())[:8], "ChainID": chain_id, "ParentID": None,
-                    "Ticker": ticker, "FechaApertura": date.today(), "Expiry": expiry,
+                    "Ticker": ticker, "FechaApertura": today_ts, "Expiry": expiry_ts,
                     "Estrategia": estrategia, "Setup": setup_val, "Side": leg["Side"], "OptionType": leg["Type"], 
                     "Strike": leg["Strike"], "Delta": leg["Delta"],
                     "PrimaRecibida": p_recibida, "CostoCierre": 0.0, "Contratos": contratos,
@@ -638,24 +665,18 @@ def render_new_trade():
                     "MaxProfitUSD": (p_recibida * contratos * 100), "ProfitPct": 0.0, "PnL_Capital_Pct": 0.0,
                     "PrecioAccionCierre": 0.0, "PnL_USD_Realizado": 0.0
                 })
-            st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame(new_rows)], ignore_index=True)
-            JournalManager.save_with_backup(st.session_state.df)
-            st.success("Estrategia registrada!")
+            if new_rows:
+                st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame(new_rows)], ignore_index=True)
+            st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+            st.success(f"✅ ¡Estrategia {ticker} registrada con éxito!")
+            import time
+            time.sleep(1.5)
             st.rerun()
             
     if st.button("🗑️ Limpiar / Cancelar Formulario"):
         st.rerun()
 
-def main():
-    st.set_page_config(page_title="STRIKELOG Pro", layout="wide")
-    if "df" not in st.session_state:
-        st.session_state.df = JournalManager.load_data()
-        
-    page = st.sidebar.radio("Navegación", ["Dashboard", "Nueva Operación", "Cartera Activa", "Historial", "Datos / Edición"])
-    
-    if page == "Dashboard": render_dashboard(st.session_state.df)
-    elif page == "Nueva Operación": render_new_trade()
-    elif page == "Cartera Activa": render_active_portfolio(st.session_state.df)
+
 def render_history(df):
     st.header("📜 Historial de Operaciones")
     
@@ -715,6 +736,10 @@ def render_history(df):
     display_df["% Gestión"] = display_df["ProfitPct"].map("{:.1f}%".format)
     display_df["PnL USD"] = display_df["PnL_USD_Realizado"].map("${:,.2f}".format)
     display_df["Prima"] = display_df["PrimaRecibida"].map("${:,.2f}".format)
+    
+    # Formatear fechas para visualización limpia
+    for col in ["FechaApertura", "Expiry", "FechaCierre"]:
+        display_df[col] = pd.to_datetime(display_df[col]).dt.strftime("%Y-%m-%d")
     
     # Mapear nombres internos a nombres visibles para la UI
     display_df = display_df.rename(columns={
@@ -800,9 +825,9 @@ def main():
                         st.session_state.df.at[idx, "Delta"] = n_delta
                         st.session_state.df.at[idx, "Setup"] = n_setup
                         st.session_state.df.at[idx, "Estrategia"] = n_estatue
-                        st.session_state.df.at[idx, "FechaApertura"] = n_fecha_ap
-                        st.session_state.df.at[idx, "Expiry"] = n_expiry
-                        st.session_state.df.at[idx, "FechaCierre"] = n_fecha_cl.strftime("%Y-%m-%d") if n_estado != "Abierta" else pd.NA
+                        st.session_state.df.at[idx, "FechaApertura"] = pd.to_datetime(n_fecha_ap)
+                        st.session_state.df.at[idx, "Expiry"] = pd.to_datetime(n_expiry)
+                        st.session_state.df.at[idx, "FechaCierre"] = pd.to_datetime(n_fecha_cl) if n_estado != "Abierta" else pd.NA
                         st.session_state.df.at[idx, "PrimaRecibida"] = n_prima
                         st.session_state.df.at[idx, "CostoCierre"] = n_costo
                         st.session_state.df.at[idx, "Contratos"] = n_contracts
@@ -824,7 +849,7 @@ def main():
                         else:
                             st.session_state.df.at[idx, "ProfitPct"] = 0.0
 
-                        JournalManager.save_with_backup(st.session_state.df)
+                        st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
                         st.success("¡Actualizado con éxito!")
                         st.rerun()
 

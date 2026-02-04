@@ -1,0 +1,16 @@
+¡Hola!
+
+Para usar la aplicación bitácora STRIKELOG Pro, sigue estos sencillos pasos:
+
+1. Asegúrate de tener Python instalado en tu ordenador.
+   Si no lo tienes, descárgalo aquí: https://www.python.org/downloads/
+   (IMPORTANTE: Al instalar, marca la casilla "Model Add Python to PATH")
+
+2. Haz doble clic en el archivo "Lanzar_App.bat".
+
+Eso es todo.
+
+- La primera vez tardará unos minutos instalando todo lo necesario.
+- Las siguientes veces se abrirá al instante.
+
+¡Buen trading!

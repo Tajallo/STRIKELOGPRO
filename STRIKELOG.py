@@ -570,7 +570,11 @@ def render_active_portfolio(df):
                             })
                         
                         if new_rows:
-                            st.session_state.df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
+                            new_df = pd.DataFrame(new_rows)
+                            if st.session_state.df.empty:
+                                st.session_state.df = new_df
+                            else:
+                                st.session_state.df = pd.concat([st.session_state.df.dropna(how='all', axis=0), new_df], ignore_index=True)
                         st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
                         del st.session_state["manage_chain_id"]
                         st.success("Ajuste de patas completado.")
@@ -636,6 +640,8 @@ def render_new_trade():
         be_input = c_ad1.number_input("Break Even (Manual/Sugerido)", value=float(suggested_be), step=0.01)
         pop_input = c_ad2.number_input("Prob. Éxito % (Sugerida)", value=float(suggested_pop), step=0.1)
         
+        user_notes = st.text_area("Notas / Observaciones", help="Cualquier detalle adicional de la operación")
+        
         submit_button = st.form_submit_button("Registrar Estrategia", type="primary")
 
     if submit_button:
@@ -660,13 +666,18 @@ def render_new_trade():
                     "PrimaRecibida": p_recibida, "CostoCierre": 0.0, "Contratos": contratos,
                     "BuyingPower": bp_leg, "MaxLoss": 0.0, "BreakEven": be_input if i == 0 else 0.0, 
                     "POP": pop_input if i == 0 else 0.0,
-                    "Estado": "Abierta", "Notas": f"Parte de {estrategia}",
+                    "Estado": "Abierta", "Notas": user_notes if user_notes else f"Parte de {estrategia}",
                     "UpdatedAt": datetime.now().isoformat(), "FechaCierre": pd.NA,
                     "MaxProfitUSD": (p_recibida * contratos * 100), "ProfitPct": 0.0, "PnL_Capital_Pct": 0.0,
                     "PrecioAccionCierre": 0.0, "PnL_USD_Realizado": 0.0
                 })
             if new_rows:
-                st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame(new_rows)], ignore_index=True)
+                new_df = pd.DataFrame(new_rows)
+                if st.session_state.df.empty:
+                    st.session_state.df = new_df
+                else:
+                    # Filtramos entradas vacías o nulas para evitar el FutureWarning de Pandas
+                    st.session_state.df = pd.concat([st.session_state.df.dropna(how='all', axis=0), new_df], ignore_index=True)
             st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
             st.success(f"✅ ¡Estrategia {ticker} registrada con éxito!")
             import time

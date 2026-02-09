@@ -378,13 +378,66 @@ def render_active_portfolio(df):
         num_rolls = len(roll_chain) - 1 # El actual no cuenta como roll
         
         roll_label = f" 🔄 [ROL #{num_rolls}]" if num_rolls > 0 else ""
+
+        # Cálculos extendidos de la cadena (Rolls + Actual)
+        hist_credits = sum(float(r["PrimaRecibida"] or 0) for r in roll_chain)
+        # Solo restamos el costo de cierre de las operaciones que ya están cerradas (los pasos previos del roll)
+        hist_debits = sum(float(r["CostoCierre"] or 0) for r in roll_chain if r["Estado"] != "Abierta")
+        net_credit_chain = hist_credits - hist_debits
+
+        realized_pnl_chain = sum(float(r["PnL_USD_Realizado"] or 0) for r in roll_chain if r["Estado"] != "Abierta")
         
-        with st.expander(f"{dte_color}{roll_label} {ticker} - {strategy} | Vence: {expiry_dt} (DTE: {dte}) | BP: ${total_bp:,.0f}", expanded=False):
+        # Recálculo dinámico del Break Even REAL basado en el Crédito Neto Acumulado
+        # La base de datos tiene el BE de la pata actual aislada, aquí queremos el BE de la CAMPAÑA completa.
+        calculated_be = 0.0
+        try:
+            # Usamos el strike de la pata principal actual (la primera encontrada)
+            main_strike = float(first_row["Strike"])
+            # Lógica estándar de BE:
+            # Puts/CSPs/Put Spreads -> BE = Strike - Crédito Total (o + Débito Total)
+            # Calls/CCs/Call Spreads -> BE = Strike + Crédito Total (o - Débito Total)
+            
+            # net_credit_chain es POSITIVO si es CRÉDITO, NEGATIVO si es DÉBITO.
+            
+            if "Put" in strategy or "CSP" in strategy:
+                 # Ejemplo: Strike 85, Credito Neto 4.00 -> BE 81.00
+                 # Ejemplo: Strike 85, Debito Neto -1.00 -> BE 86.00 (85 - (-1))
+                calculated_be = main_strike - net_credit_chain
+            elif "Call" in strategy or "CC" in strategy:
+                # Ejemplo: Strike 100, Credito Neto 4.00 -> BE 104.00
+                # Ejemplo: Strike 100, Debito Neto -1.00 -> BE 99.00 (100 + (-1))
+                calculated_be = main_strike + net_credit_chain
+            else:
+                # Fallback para estrategias complejas donde el BE no es lineal
+                calculated_be = float(first_row["BreakEven"] or 0)
+        except:
+            calculated_be = float(first_row["BreakEven"] or 0)
+
+        # Lógica de visualización directa (sin redondeos, con signo)
+        formatted_net = f"${net_credit_chain:,.2f}"
+        
+        # Etiquetas para el Detalle (Métricas)
+        metric_net_label = "Prima Total (Cadena)"
+        metric_net_val = formatted_net
+        
+        # Construcción del Header Limpio
+        roll_pnl_str = ""
+        # Sin redondeos en PnL de rolls
+        if abs(realized_pnl_chain) > 0.01:
+            roll_pnl_str = f" • Rolls: ${realized_pnl_chain:,.2f}"
+
+        # Formato solicitado: Prima explícita y sin redondeos, y BE recalculado
+        header_text = f"{dte_color}{roll_label} **{ticker}** • {strategy} • {dte}d • **BE ${calculated_be:,.2f}** • Prima: {formatted_net}{roll_pnl_str}"
+        
+        with st.expander(header_text, expanded=False):
             # Vista resumen de la estrategia
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Prima Total Recibida", f"${total_premium:,.2f}")
-            c2.metric("Patas Activas", len(group))
+            st.caption(f"📅 Vencimiento: {expiry_dt} | BP Reservado: ${total_bp:,.2f} | BE Original Pata Actual: ${float(first_row['BreakEven'] or 0):.2f}")
+            
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric(metric_net_label, metric_net_val, help="Crédito neto total (Suma primas - Costos cierre históricos).")
+            c2.metric("Break Even (Campaña)", f"${calculated_be:,.2f}", help="BE ajustado considerando pérdidas/ganancias de rolls anteriores.")
             c3.metric("Buying Power", f"${total_bp:,.2f}")
+            c4.metric("PnL Realizado (Rolls)", f"${realized_pnl_chain:,.2f}", delta=realized_pnl_chain if realized_pnl_chain != 0 else None)
             
             if num_rolls > 0:
                 st.markdown("#### 🕒 Historial de esta posición")
@@ -502,9 +555,31 @@ def render_active_portfolio(df):
                 else:
                     st.divider()
                     st.markdown("#### 1. Cierre de Posición Actual")
+                    st.divider()
+                    st.markdown("#### 1. Cierre de Posición Actual")
+                    
+                    # Estimación de PnL basada en input
                     c_r1, c_r2 = st.columns(2)
-                    roll_close_cost = c_r1.number_input("Costo de cierre de las patas seleccionadas", value=0.0, step=0.01)
-                    roll_pnl_manual = c_r2.number_input("PnL Realizado del cierre actual ($)", value=0.0, step=1.0)
+                    roll_close_cost = c_r1.number_input("Precio Cierre Unitario (Ej: 1.50)", value=0.0, step=0.01, help="Introduce el precio por acción (Premium). NO el total en dólares.")
+                    
+                    # Calcular PnL Estimado automáticamente
+                    # Asumimos que la prima está en la pata principal o sumamos
+                    total_entry_to_roll = sum(float(l["PrimaRecibida"]) for l in legs_to_roll)
+                    qty_roll = legs_to_roll[0]["Contratos"] if legs_to_roll else 1
+                    
+                    # Detectar dirección principal (si la pata con prima es Sell o Buy)
+                    # Buscamos la pata que tiene la prima más grande o la primera
+                    main_leg_roll = next((l for l in legs_to_roll if l["PrimaRecibida"] > 0), legs_to_roll[0] if legs_to_roll else None)
+                    side_direction = main_leg_roll["Side"] if main_leg_roll is not None else "Sell"
+                    
+                    if side_direction == "Sell":
+                        # Crédito: Ganamos si cerramos más barato (Entry - Exit)
+                        est_pnl_val = (total_entry_to_roll - roll_close_cost) * qty_roll * 100
+                    else:
+                        # Débito: Ganamos si cerramos más caro (Exit - Entry)
+                        est_pnl_val = (roll_close_cost - total_entry_to_roll) * qty_roll * 100
+                    
+                    roll_pnl_manual = c_r2.number_input("PnL Realizado TOTAL ($)", value=float(est_pnl_val), step=1.0, help="El resultado final en Dólares de cerrar estas patas.")
                     
                     st.divider()
                     st.markdown("#### 2. Apertura del Nuevo Vencimiento")
@@ -798,11 +873,20 @@ def main():
         with tab1:
             st.dataframe(st.session_state.df, width="stretch")
         with tab2:
-            all_ids = ["--- Seleccione un ID ---"] + sorted(st.session_state.df["ID"].tolist())
-            # Usamos un key para poder resetear el selectbox programáticamente
-            trade_id = st.selectbox("Seleccione el ID del trade que desea modificar:", all_ids, key="edit_selector")
+            # Crear una lista de opciones descriptivas para el selectbox
+            # Formato: "TICKER - ESTRATEGIA - FECHA - (ID)"
+            opciones_dict = {
+                f"{row['Ticker']} - {row['Estrategia']} ({row['FechaApertura']}) [ID: {row['ID']}]": row['ID'] 
+                for int_idx, row in st.session_state.df.iterrows()
+            }
             
-            if trade_id != "--- Seleccione un ID ---":
+            # Ordenar las opciones alfabéticamente para facilitar la búsqueda
+            opciones_desc = ["--- Seleccione una operación ---"] + sorted(list(opciones_dict.keys()))
+            
+            sel_desc = st.selectbox("Busque y seleccione la operación a editar:", opciones_desc, key="edit_selector")
+            
+            if sel_desc != "--- Seleccione una operación ---":
+                trade_id = opciones_dict[sel_desc]
                 idx = st.session_state.df.index[st.session_state.df["ID"] == trade_id][0]
                 row = st.session_state.df.iloc[idx]
             

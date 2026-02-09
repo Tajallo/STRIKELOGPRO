@@ -525,6 +525,20 @@ def render_active_portfolio(df):
                             "OldID": leg["ID"]
                         })
                     
+                    # Pre-cálculo para mostrar al usuario el impacto en el BE
+                    hist_chain_be = get_roll_history(df, legs_to_roll[0]["ID"])
+                    hist_credits_be = sum(float(h["PrimaRecibida"]) for h in hist_chain_be)
+                    # Restamos costos de cierres ANTERIORES (donde Estado no es Abierta)
+                    hist_debits_be = sum(float(h["CostoCierre"]) for h in hist_chain_be if h["Estado"] != "Abierta")
+                    
+                    # Crédito Neto Total = (Histórico Ganado - Histórico Gastado) - Costo Cierre Actual + Nueva Prima
+                    total_net_credit_for_be = hist_credits_be - hist_debits_be - roll_close_cost + new_net_premium
+                    
+                    # Estimación del nuevo BE
+                    suggested_be_roll = suggest_breakeven(legs_to_roll[0]["Estrategia"], new_legs_data, total_net_credit_for_be)
+                    
+                    st.info(f"📊 **Nuevo Break Even Estimado:** `${suggested_be_roll:.2f}` (Basado en Crédito Neto Acumulado de la cadena: `${total_net_credit_for_be:.2f}`)")
+
                     c_btn1, c_btn2 = st.columns([1, 1])
                     if c_btn1.button("🚀 Ejecutar Ajuste Seleccionado", type="primary"):
                         # 1. Marcar las patas originales como Roladas
@@ -544,8 +558,7 @@ def render_active_portfolio(df):
                         new_chain_id = str(uuid4())[:8]
                         new_rows = []
                         
-                        # Calcular BE y POP sugerido
-                        suggested_be_roll = suggest_breakeven(legs_to_roll[0]["Estrategia"], new_legs_data, new_net_premium)
+                        # Calcular POP sugerido (El BE ya lo calculamos arriba)
                         suggested_pop_roll = suggest_pop(new_legs_data[0]["Delta"], new_legs_data[0]["Side"])
                         
                         # Obtener el Buying Power original de la estrategia para arrastrarlo a la nueva

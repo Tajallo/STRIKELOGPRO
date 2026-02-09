@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta
 from uuid import uuid4
 import plotly.express as px
 import plotly.graph_objects as go
+import streamlit.components.v1 as components
 
 # ----------------------------
 # Configuración
@@ -478,6 +479,22 @@ def render_active_portfolio(df):
                 hide_index=True
             )
             
+            # --- NOTAS RÁPIDAS ---
+            current_notes = first_row["Notas"] if pd.notna(first_row["Notas"]) else ""
+            new_notes = st.text_area("Notas / Bitácora de Vuelo", value=current_notes, key=f"notes_{chain_id}", height=70, help="Edita las notas de toda la estrategia aquí mismo.")
+            
+            if new_notes != current_notes:
+                if st.button("💾 Guardar Notas", key=f"save_notes_{chain_id}"):
+                    # Actualizar notas en todas las patas del ChainID
+                    for idx, row in group.iterrows():
+                         real_idx = df.index[df["ID"] == row["ID"]][0]
+                         df.at[real_idx, "Notas"] = new_notes
+                         df.at[real_idx, "UpdatedAt"] = datetime.now().isoformat()
+                    
+                    st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+                    st.success("Notas actualizadas.")
+                    st.rerun()
+            
             # Acciones Rápidas para la Estrategia Completa
             if st.button(f"Gestionar Estrategia {ticker}", key=f"btn_manage_{chain_id}"):
                 st.session_state["manage_chain_id"] = chain_id
@@ -485,61 +502,128 @@ def render_active_portfolio(df):
 
     st.divider()
     
+    # Ancla invisible para scroll automático
+    st.markdown("<div id='manage_panel'></div>", unsafe_allow_html=True)
+    
     # Panel de Gestión (aparece si seleccionas una estrategia arriba)
     if "manage_chain_id" in st.session_state:
+        # Script JS para hacer scroll al ancla
+        components.html(
+            """
+            <script>
+                // Esperamos un poco a que el DOM se renderice
+                setTimeout(function() {
+                    const element = window.parent.document.getElementById('manage_panel');
+                    if (element) {
+                        element.scrollIntoView({behavior: 'smooth', block: 'start'});
+                    }
+                }, 300);
+            </script>
+            """,
+            height=0
+        )
+        
         target_chain = st.session_state["manage_chain_id"]
         target_group = active_df[active_df["ChainID"] == target_chain]
         
         if not target_group.empty:
-            st.markdown(f"### 🎯 Gestión de {target_group.iloc[0]['Ticker']} ({target_group.iloc[0]['Estrategia']})")
             
-            tab_close, tab_roll = st.tabs(["Cerrar Estrategia Completa", "🔄 Rolar Estrategia"])
+            # Cabecera de Gestión con Botón de Cierre
+            c_head1, c_head2 = st.columns([4, 1])
+            c_head1.markdown(f"### 🎯 Gestión de {target_group.iloc[0]['Ticker']} ({target_group.iloc[0]['Estrategia']})")
+            if c_head2.button("❌ Cerrar Panel", key="top_close_panel"):
+                del st.session_state["manage_chain_id"]
+                st.rerun()
             
+            tab_close, tab_roll, tab_assign = st.tabs(["Cerrar Estrategia", "🔄 Rolar Est.", "📜 Asignación de Acciones"])
+            
+            # --- TAB 1: CERRAR (Parcial o Total) ---
             with tab_close:
-                st.info("Esto cerrará TODAS las patas de esta estrategia a la vez.")
-                c1, c2 = st.columns(2)
-                stock_price = c1.number_input("Precio Acción al Cierre", value=0.0, step=0.01)
-                total_close_cost = c2.number_input("Costo Total de Cierre (Precio del contrato)", value=0.0, step=0.01, help="Pon el precio del contrato (ej: 1.50). NO multipliques por 100.")
+                st.info("Cierra posiciones para asegurar ganancias o detener pérdidas.")
                 
-                # Preview del PnL
+                c1, c2, c3 = st.columns(3)
+                qty_to_close = c1.number_input("Cantidad de Contratos a Cerrar", min_value=1, max_value=int(target_group.iloc[0]["Contratos"]), value=int(target_group.iloc[0]["Contratos"]), step=1)
+                total_close_cost = c2.number_input("Costo Cierre Unitario (Precio/Contrato)", value=0.0, step=0.01, help="Precio actual del contrato.")
+                stock_price = c3.number_input("Precio Acción (Opcional)", value=0.0, step=0.01)
+
+                is_partial = qty_to_close < int(target_group.iloc[0]["Contratos"])
+                
+                # Cálculo de PnL Estimado
                 total_entry = target_group["PrimaRecibida"].sum()
+                qty_total = int(target_group.iloc[0]["Contratos"])
                 
-                # Calculo preliminar
-                pnl_preview = (total_entry - total_close_cost) * 100 # x100 por contrato estándar
+                # Proporción de prima recibida afectada
+                entry_affected = (total_entry * qty_to_close) if qty_total == 1 else (total_entry / qty_total * qty_to_close) # Ajuste si la prima unitaria ya estaba totalizada o es unitaria (asumimos unitaria en logica de UI)
+                # NOTA: En la App las primas se guardan UNITARIAS generalmente.
                 
-                st.markdown("#### 📊 Resultados del Cierre")
-                cp1, cp2 = st.columns(2)
-                cp1.metric("PnL Calculado", f"${pnl_preview:,.2f}")
+                # Detectar dirección (Credit vs Debit) para PnL
+                main_leg = next((l for l in target_group.iterrows() if l[1]["PrimaRecibida"] > 0), target_group.iloc[0])[1]
+                side = main_leg["Side"]
                 
-                manual_pnl = cp2.number_input("PnL Realizado Manual (TOTAL $)", value=float(pnl_preview), step=1.0, help="Aquí SÍ pon el total en dólares ganados o perdidos (ej: 150.00)")
+                if side == "Sell":
+                    pnl_preview = (total_entry - total_close_cost) * qty_to_close * 100
+                else:
+                    pnl_preview = (total_close_cost - total_entry) * qty_to_close * 100
+                    
+                st.markdown("#### 📊 Resultado Estimado")
+                c_res1, c_res2 = st.columns(2)
+                c_res1.metric(f"PnL Estimado ({'Credit' if side=='Sell' else 'Debit'})", f"${pnl_preview:,.2f}")
                 
-                if st.button("Confirmar Cierre Total", type="primary"):
+                manual_pnl = c_res2.number_input("PnL Realizado Manual (TOTAL $)", value=float(pnl_preview), step=1.0)
+                
+                if pnl_preview < -500:
+                    st.warning(f"⚠️ Atención: Estás registrando una pérdida significativa de ${pnl_preview:,.2f}")
+
+                btn_label = "Confirmar Cierre Parcial" if is_partial else "Confirmar Cierre Total"
+                
+                if st.button(btn_label, type="primary"):
                     for idx, row in target_group.iterrows():
                         real_idx = df.index[df["ID"] == row["ID"]][0]
-                        df.at[real_idx, "Estado"] = "Cerrada"
-                        df.at[real_idx, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        df.at[real_idx, "PrecioAccionCierre"] = stock_price
                         
-                        # Asignar PnL solo a la primera pata para no duplicar en sumas
-                        if row["ID"] == target_group.iloc[0]["ID"]:
-                            df.at[real_idx, "CostoCierre"] = total_close_cost
-                            df.at[real_idx, "PnL_USD_Realizado"] = manual_pnl
+                        if is_partial:
+                            # 1. Reducir contratos en la posición original
+                            df.at[real_idx, "Contratos"] = qty_total - qty_to_close
+                            
+                            # 2. Crear nueva entrada CERRADA con la cantidad cerrada
+                            new_closed_row = row.copy()
+                            new_closed_row["ID"] = str(uuid4())[:8]
+                            new_closed_row["Contratos"] = qty_to_close
+                            new_closed_row["Estado"] = "Cerrada"
+                            new_closed_row["FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            new_closed_row["PrecioAccionCierre"] = stock_price
+                            
+                            # Asignar COSTO y PNL solo a la primera pata para no duplicar
+                            if row["ID"] == target_group.iloc[0]["ID"]:
+                                new_closed_row["CostoCierre"] = total_close_cost
+                                new_closed_row["PnL_USD_Realizado"] = manual_pnl
+                            else:
+                                new_closed_row["CostoCierre"] = 0.0
+                                new_closed_row["PnL_USD_Realizado"] = 0.0
+                            
+                            # Añadir la fila cerrada
+                            st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_closed_row])], ignore_index=True)
+                            
                         else:
-                            df.at[real_idx, "CostoCierre"] = 0.0
-                            df.at[real_idx, "PnL_USD_Realizado"] = 0.0
+                            # Cierre TOTAL normal
+                            df.at[real_idx, "Estado"] = "Cerrada"
+                            df.at[real_idx, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            df.at[real_idx, "PrecioAccionCierre"] = stock_price
+                            if row["ID"] == target_group.iloc[0]["ID"]:
+                                df.at[real_idx, "CostoCierre"] = total_close_cost
+                                df.at[real_idx, "PnL_USD_Realizado"] = manual_pnl
+                            else:
+                                df.at[real_idx, "CostoCierre"] = 0.0
+                                df.at[real_idx, "PnL_USD_Realizado"] = 0.0
                             
                     st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
                     del st.session_state["manage_chain_id"]
-                    st.success("Estrategia cerrada completamente.")
+                    st.success("Operación actualizada correctamente.")
                     st.rerun()
 
-                if st.button("Cancelar Gestión", key="cancel_close"):
-                    del st.session_state["manage_chain_id"]
-                    st.rerun()
-            
+            # --- TAB 2: ROLL ---
             with tab_roll:
-                st.markdown("#### 🔄 Configuración del Roll Parcial o Total")
-                st.caption("Selecciona qué patas quieres mover al nuevo vencimiento.")
+                st.markdown("#### 🔄 Configuración del Roll")
+                st.caption("Mueve tu posición a una nueva fecha/strike.")
                 
                 # Selección de patas a rolar
                 legs_to_roll = []
@@ -555,28 +639,28 @@ def render_active_portfolio(df):
                 else:
                     st.divider()
                     st.markdown("#### 1. Cierre de Posición Actual")
-                    st.divider()
-                    st.markdown("#### 1. Cierre de Posición Actual")
                     
                     # Estimación de PnL basada en input
                     c_r1, c_r2 = st.columns(2)
-                    roll_close_cost = c_r1.number_input("Precio Cierre Unitario (Ej: 1.50)", value=0.0, step=0.01, help="Introduce el precio por acción (Premium). NO el total en dólares.")
+                    roll_close_cost = c_r1.number_input("Precio Cierre Unitario (Ej: 1.50)", value=0.0, step=0.01, help="Precio unitario para cerrar el contrato actual.")
                     
                     # Calcular PnL Estimado automáticamente
-                    # Asumimos que la prima está en la pata principal o sumamos
                     total_entry_to_roll = sum(float(l["PrimaRecibida"]) for l in legs_to_roll)
-                    qty_roll = legs_to_roll[0]["Contratos"] if legs_to_roll else 1
+                    qty_roll = int(legs_to_roll[0]["Contratos"]) if legs_to_roll else 1
                     
-                    # Detectar dirección principal (si la pata con prima es Sell o Buy)
-                    # Buscamos la pata que tiene la prima más grande o la primera
+                    # Input de Cantidad a Rolar (Scaling)
+                    qty_new_roll = st.number_input("Cantidad de Contratos a Abrir (Nuevo Roll)", min_value=1, value=qty_roll, step=1, help="Puedes reducir o aumentar el tamaño de la posición en el nuevo roll.")
+                    
+                    # Detectar dirección
                     main_leg_roll = next((l for l in legs_to_roll if l["PrimaRecibida"] > 0), legs_to_roll[0] if legs_to_roll else None)
                     side_direction = main_leg_roll["Side"] if main_leg_roll is not None else "Sell"
                     
+                    # Mostrar dirección inferida
+                    st.caption(f"ℹ️ Dirección detectada: **{side_direction}** (Basado en patas seleccionadas)")
+
                     if side_direction == "Sell":
-                        # Crédito: Ganamos si cerramos más barato (Entry - Exit)
                         est_pnl_val = (total_entry_to_roll - roll_close_cost) * qty_roll * 100
                     else:
-                        # Débito: Ganamos si cerramos más caro (Exit - Entry)
                         est_pnl_val = (roll_close_cost - total_entry_to_roll) * qty_roll * 100
                     
                     roll_pnl_manual = c_r2.number_input("PnL Realizado TOTAL ($)", value=float(est_pnl_val), step=1.0, help="El resultado final en Dólares de cerrar estas patas.")
@@ -584,8 +668,18 @@ def render_active_portfolio(df):
                     st.divider()
                     st.markdown("#### 2. Apertura del Nuevo Vencimiento")
                     c_n1, c_n2 = st.columns(2)
-                    new_expiry = c_n1.date_input("Nuevo Vencimiento", value=date.today() + timedelta(days=7))
+                    
+                    default_date = date.today() + timedelta(days=7)
+                    if pd.notna(target_group.iloc[0]["Expiry"]):
+                         # Intentar sugerir fecha posterior al vencimiento actual
+                         current_exp = pd.to_datetime(target_group.iloc[0]["Expiry"]).date()
+                         if current_exp >= date.today(): default_date = current_exp + timedelta(days=7)
+                    
+                    new_expiry = c_n1.date_input("Nuevo Vencimiento", value=default_date)
                     new_net_premium = c_n2.number_input("Nueva Prima Neta ($)", value=0.0, step=0.01)
+                    
+                    if new_expiry < date.today():
+                        st.error("⚠️ Error: La nueva fecha de vencimiento es en el pasado.")
                     
                     new_legs_data = []
                     for leg in legs_to_roll:
@@ -596,81 +690,101 @@ def render_active_portfolio(df):
                         
                         new_legs_data.append({
                             "Side": leg["Side"], "Type": leg["OptionType"], "Strike": n_strike, "Delta": n_delta,
-                            "Contratos": leg["Contratos"], "Ticker": leg["Ticker"], "Estrategia": leg["Estrategia"],
+                            "Contratos": qty_new_roll, "Ticker": leg["Ticker"], "Estrategia": leg["Estrategia"],
                             "OldID": leg["ID"]
                         })
                     
-                    # Pre-cálculo para mostrar al usuario el impacto en el BE
-                    hist_chain_be = get_roll_history(df, legs_to_roll[0]["ID"])
-                    hist_credits_be = sum(float(h["PrimaRecibida"]) for h in hist_chain_be)
-                    # Restamos costos de cierres ANTERIORES (donde Estado no es Abierta)
-                    hist_debits_be = sum(float(h["CostoCierre"]) for h in hist_chain_be if h["Estado"] != "Abierta")
+                    # ... [Lógica de Pre-cálculo BE insertada en pasos anteriores] ...
+                    # Re-insertamos lógica de BE aquí para mantener consistencia con el bloque reemplazado
                     
-                    # Crédito Neto Total = (Histórico Ganado - Histórico Gastado) - Costo Cierre Actual + Nueva Prima
+                    hist_chain_be = get_roll_history(df, legs_to_roll[0]["ID"])
+                    hist_credits_be = sum(float(h["PrimaRecibida"] or 0) for h in hist_chain_be)
+                    hist_debits_be = sum(float(h["CostoCierre"] or 0) for h in hist_chain_be if h["Estado"] != "Abierta")
                     total_net_credit_for_be = hist_credits_be - hist_debits_be - roll_close_cost + new_net_premium
                     
-                    # Estimación del nuevo BE
                     suggested_be_roll = suggest_breakeven(legs_to_roll[0]["Estrategia"], new_legs_data, total_net_credit_for_be)
-                    
-                    st.info(f"📊 **Nuevo Break Even Estimado:** `${suggested_be_roll:.2f}` (Basado en Crédito Neto Acumulado de la cadena: `${total_net_credit_for_be:.2f}`)")
+                    st.info(f"📊 **Nuevo Break Even Estimado:** `${suggested_be_roll:.2f}` (Crédito Neto Acumulado: `${total_net_credit_for_be:.2f}`)")
 
                     c_btn1, c_btn2 = st.columns([1, 1])
-                    if c_btn1.button("🚀 Ejecutar Ajuste Seleccionado", type="primary"):
-                        # 1. Marcar las patas originales como Roladas
-                        for leg in legs_to_roll:
-                            real_idx = df.index[df["ID"] == leg["ID"]][0]
-                            df.at[real_idx, "Estado"] = "Rolada"
-                            df.at[real_idx, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            # Solo ponemos el coste en la primera pata del roll para no duplicar sumas
-                            if leg["ID"] == legs_to_roll[0]["ID"]:
-                                df.at[real_idx, "CostoCierre"] = roll_close_cost
-                                df.at[real_idx, "PnL_USD_Realizado"] = roll_pnl_manual
-                            else:
-                                df.at[real_idx, "CostoCierre"] = 0.0
-                                df.at[real_idx, "PnL_USD_Realizado"] = 0.0
+                    if c_btn1.button("🚀 Ejecutar Ajuste", type="primary"):
+                        if new_expiry < date.today():
+                            st.error("No se puede rolar a una fecha pasada.")
+                        else:
+                            # 1. Marcar ORIGINALES como Roladas
+                            for leg in legs_to_roll:
+                                real_idx = df.index[df["ID"] == leg["ID"]][0]
+                                df.at[real_idx, "Estado"] = "Rolada"
+                                df.at[real_idx, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                if leg["ID"] == legs_to_roll[0]["ID"]:
+                                    df.at[real_idx, "CostoCierre"] = roll_close_cost
+                                    df.at[real_idx, "PnL_USD_Realizado"] = roll_pnl_manual
+                                else:
+                                    df.at[real_idx, "CostoCierre"] = 0.0
+                                    df.at[real_idx, "PnL_USD_Realizado"] = 0.0
 
-                        # 2. Crear las nuevas patas en un nuevo ChainID
-                        new_chain_id = str(uuid4())[:8]
-                        new_rows = []
-                        
-                        # Calcular POP sugerido (El BE ya lo calculamos arriba)
-                        suggested_pop_roll = suggest_pop(new_legs_data[0]["Delta"], new_legs_data[0]["Side"])
-                        
-                        # Obtener el Buying Power original de la estrategia para arrastrarlo a la nueva
-                        original_bp = target_group["BuyingPower"].sum()
+                            # 2. Crear NUEVAS filas
+                            new_chain_id = str(uuid4())[:8]
+                            new_rows = []
+                            suggested_pop_roll = suggest_pop(new_legs_data[0]["Delta"], new_legs_data[0]["Side"])
+                            original_bp = target_group["BuyingPower"].sum() # Mantenemos BP, usuario puede editar luego
 
-                        for i, n_leg in enumerate(new_legs_data):
-                            p_recibida = new_net_premium if i == 0 else 0.0
-                            # Heredamos el BP de la pata original si existe
-                            new_rows.append({
-                                "ID": str(uuid4())[:8], "ChainID": new_chain_id, "ParentID": n_leg["OldID"],
-                                "Ticker": n_leg["Ticker"], "FechaApertura": pd.Timestamp.now().normalize(), "Expiry": pd.to_datetime(new_expiry).normalize(),
-                                "Estrategia": n_leg["Estrategia"], "Side": n_leg["Side"], "OptionType": n_leg["Type"], 
-                                "Strike": n_leg["Strike"], "Delta": n_leg["Delta"],
-                                "PrimaRecibida": p_recibida, "CostoCierre": 0.0, "Contratos": n_leg["Contratos"],
-                                "BuyingPower": original_bp if i == 0 else 0.0, "MaxLoss": 0.0, 
-                                "BreakEven": suggested_be_roll if i == 0 else 0.0, 
-                                "POP": suggested_pop_roll if i == 0 else 0.0,
-                                "Estado": "Abierta", "Notas": f"Roll parcial desde {target_chain}",
-                                "UpdatedAt": datetime.now().isoformat(), "FechaCierre": pd.NA,
-                                "MaxProfitUSD": (p_recibida * n_leg["Contratos"] * 100), "ProfitPct": 0.0, "PnL_Capital_Pct": 0.0,
-                                "PrecioAccionCierre": 0.0, "PnL_USD_Realizado": 0.0
-                            })
+                            for i, n_leg in enumerate(new_legs_data):
+                                p_recibida = new_net_premium if i == 0 else 0.0
+                                new_rows.append({
+                                    "ID": str(uuid4())[:8], "ChainID": new_chain_id, "ParentID": n_leg["OldID"],
+                                    "Ticker": n_leg["Ticker"], "FechaApertura": pd.Timestamp.now().normalize(), "Expiry": pd.to_datetime(new_expiry).normalize(),
+                                    "Estrategia": n_leg["Estrategia"], "Side": n_leg["Side"], "OptionType": n_leg["Type"], 
+                                    "Strike": n_leg["Strike"], "Delta": n_leg["Delta"],
+                                    "PrimaRecibida": p_recibida, "CostoCierre": 0.0, "Contratos": n_leg["Contratos"],
+                                    "BuyingPower": original_bp if i == 0 else 0.0, "MaxLoss": 0.0, 
+                                    "BreakEven": suggested_be_roll if i == 0 else 0.0, 
+                                    "POP": suggested_pop_roll if i == 0 else 0.0,
+                                    "Estado": "Abierta", "Notas": f"Roll (x{n_leg['Contratos']}) desde ID {n_leg['OldID'][:4]}",
+                                    "UpdatedAt": datetime.now().isoformat(), "FechaCierre": pd.NA,
+                                    "MaxProfitUSD": (p_recibida * n_leg["Contratos"] * 100), "ProfitPct": 0.0, "PnL_Capital_Pct": 0.0,
+                                    "PrecioAccionCierre": 0.0, "PnL_USD_Realizado": 0.0
+                                })
+                            
+                            if new_rows:
+                                st.session_state.df = pd.concat([st.session_state.df.dropna(how='all', axis=0), pd.DataFrame(new_rows)], ignore_index=True)
+                            
+                            st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+                            del st.session_state["manage_chain_id"]
+                            st.success("Roll ejecutado con éxito.")
+                            st.rerun()
+            
+            # --- TAB 3: ASIGNACIÓN ---
+            with tab_assign:
+                st.markdown("#### 📜 Registro de Asignación (Assignment)")
+                st.warning("Esto marcará la estrategia como 'Asignada'. Asegúrate de actualizar tu broker con las acciones resultantes.")
+                
+                c_a1, c_a2 = st.columns(2)
+                assign_price = c_a1.number_input("Precio de Asignación (Strike)", value=float(target_group.iloc[0]["Strike"]), disabled=True, help="El strike se convierte en el precio de compra/venta de las acciones.")
+                assign_fee = c_a2.number_input("Comisiones de Asignación / Otros Costos", value=0.0)
+                
+                st.info(f"Se te asignarán {int(target_group.iloc[0]['Contratos']) * 100} acciones de {target_group.iloc[0]['Ticker']} a ${assign_price:.2f}.")
+                
+                if st.button("Confirmar Asignación", type="primary"):
+                    for idx, row in target_group.iterrows():
+                        real_idx = df.index[df["ID"] == row["ID"]][0]
+                        df.at[real_idx, "Estado"] = "Asignada"
+                        df.at[real_idx, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        df.at[real_idx, "MaxProfitUSD"] = 0.0 # Reseteamos MaxProfit ya que cambió la naturaleza
                         
-                        if new_rows:
-                            new_df = pd.DataFrame(new_rows)
-                            if st.session_state.df.empty:
-                                st.session_state.df = new_df
-                            else:
-                                st.session_state.df = pd.concat([st.session_state.df.dropna(how='all', axis=0), new_df], ignore_index=True)
-                        st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
-                        del st.session_state["manage_chain_id"]
-                        st.success("Ajuste de patas completado.")
-                        st.rerun()
-                    
-                    if c_btn2.button("Cancelar Gestión", key="cancel_roll"):
-                        del st.session_state["manage_chain_id"]
-                        st.rerun()
+                        # En asignación, el PnL de la OPCIÓN suele ser la prima completa que te quedas (si es short)
+                        # Pero el "Costo" real es la compra de acciones. 
+                        # Simplificación: PnL Realizado = Prima Recibida (ya que la opción expiró/se ejerció) - Comisiones
+                        if row["ID"] == target_group.iloc[0]["ID"]:
+                            pnl_assign = (row["PrimaRecibida"] * row["Contratos"] * 100) - assign_fee
+                            df.at[real_idx, "PnL_USD_Realizado"] = pnl_assign
+                            df.at[real_idx, "Notas"] = str(row["Notas"]) + f" [ASIGNADA a {assign_price}]"
+                        else:
+                            df.at[real_idx, "PnL_USD_Realizado"] = 0.0
+                            
+                    st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+                    del st.session_state["manage_chain_id"]
+                    st.success("Operación marcada como Asignada.")
+                    st.rerun()
 
 def render_new_trade():
     st.header("➕ Nueva Operación")

@@ -1,68 +1,64 @@
-# 🚀 STRIKELOG Pro
+# 🚀 STRIKELOG Pro | Opcion Sigma Edition
 
-**STRIKELOG Pro** es una bitácora profesional de trading de opciones diseñada para traders que buscan un control exhaustivo de su operativa, análisis de riesgo avanzado y visualización de datos en tiempo real. Construida con **Streamlit** y **Plotly**, ofrece una interfaz limpia, moderna e interactiva.
-
----
-
-## ✨ Características Principales
-
-### 📊 Dashboard Ejecutivo Interactivo
-- **Métricas Clave (KPIs)**: PnL Realizado, Win Rate, Profit Factor, Buying Power en uso y % de Asignaciones.
-- **Gráficos Plotly**: Curva de equidad acumulada, distribución de Win/Loss y rendimiento por Ticker/Estrategia.
-- **Filtros Avanzados**: Filtra todo tu historial por periodos de tiempo (Mes, Año, Personalizado) o por Tickers específicos.
-
-### 📂 Gestión de Cartera Activa
-- **Seguimiento de DTE**: Indicadores visuales de color según los días restantes para el vencimiento (🟢 Seguro, 🟠 Atención, 🔴 Peligro).
-- **Cálculo de ROI sobre Capital**: Visualiza el rendimiento potencial de cada operación respecto al capital retenido (Buying Power).
-- **Acciones Rápidas**: Cierra posiciones o ejecuta **Rolls (Roleos)** con un solo clic, manteniendo la trazabilidad de la cadena de opciones.
-
-### ➕ Registro de Operaciones Profesional
-- **Soporte Credit/Debit**: Manejo automático de estrategias de crédito (ventas) y débito (compras).
-- **POP Automático**: Cálculo de la Probabilidad de Ganancia (POP) basado en el **Delta** de la operación.
-- **Amplio catálogo de estrategias**: CSP, Covered Calls, Spreads, Iron Condors, Straddles, Strangles, Butterflies y más.
-
-### 🛠️ Herramientas de Datos
-- **Edición y Eliminación**: Control total sobre tus datos históricos.
-- **Backups Automáticos**: El sistema crea una copia de seguridad cada vez que guardas cambios.
-- **Exportación**: Descarga toda tu bitácora en formato CSV en cualquier momento.
+**STRIKELOG Pro** es una bitácora de trading de opciones de nivel profesional, optimizada para la comunidad de **Opcion Sigma**. Esta herramienta no solo registra tus operaciones, sino que te ayuda a gestionar el riesgo, entender tus estadísticas y mantener el control total sobre tus estrategias complejas.
 
 ---
 
-## 🛠️ Instalación y Uso
+## 🧭 Tour por las Pantallas
 
-### Requisitos Previos
-- Python 3.8 o superior
-- Pip (gestor de paquetes de Python)
+### 📊 1. Dashboard (Tu Centro de Mando)
+Es la primera pantalla que verás. Está diseñada para darte una visión clara de tu salud financiera:
+- **KPIs de Rendimiento**: PnL Realizado, % de acierto (*Win Rate*) y Factor de Beneficio.
+- **Curva de Equidad**: Un gráfico interactivo que muestra cómo crece tu capital con el tiempo.
+- **Análisis por Estrategia**: Descubre visualmente qué te funciona mejor (¿vender Puts o hacer Iron Condors?).
+- **Filtros Potentes**: Busca por Ticker (ej: SPY), por motivo de entrada (*Setup*) o por fechas.
 
-### Instalación
-1. Clona este repositorio:
-   ```bash
-   git clone https://github.com/Tajallo/STRIKELOGPRO.git
-   cd STRIKELOGPRO
-   ```
+### ➕ 2. Nueva Operación (Registro Inteligente)
+Aquí es donde empieza todo. La app hace el trabajo duro por ti:
+- **Formulario Adaptable**: Si seleccionas "Iron Condor", la app te pedirá las 4 patas automáticamente. Si eliges "CSP", solo una.
+- **Asistente de Delta y BE**: Al introducir tus datos, la app te sugiere el **Break Even** y la **Probabilidad de Éxito (POP)** basándose en el Delta de la operación.
+- **Setups Personalizados**: Marca si tu entrada fue por *Earnings*, *VIX alto* o *Tendencial* para analizar tu psicología después.
 
-2. Instala las dependencias necesarias:
-   ```bash
-   pip install streamlit pandas plotly
-   ```
+### 📂 3. Cartera Activa (Gestión de Riesgo)
+Esta es la "joya de la corona" para el día a día:
+- **Semáforo DTE**: Un código de colores te avisa del riesgo:
+    - 🟢 **Verde (> 21 días)**: Operación bajo control.
+    - 🟡 **Amarillo (7-21 días)**: Atención, evalúa el cierre o ajuste.
+    - 🔴 **Rojo (< 7 días)**: Peligro de asignación o aceleración de Gamma.
+- **Gestión de Roles (🔄 Roll)**: Única en su clase. Al rolar una posición, la app la vincula con la anterior, permitiéndote ver todo el árbol genealógico del trade y cuánta prima has acumulado en total.
+- **Cierre en Bloque**: Cierra estrategias multi-pata con un solo botón y deja que la app calcule el beneficio neto.
 
-### Ejecución
-Para iniciar la aplicación, ejecuta el siguiente comando en tu terminal:
-```bash
-streamlit run STRIKELOG.py
-```
+### 📜 4. Historial y Datos
+- **Filtros Históricos**: Revisa cualquier operación del pasado con detalles técnicos.
+- **Editor de Errores**: En la pestaña "Datos / Edición", puedes corregir cualquier número que hayas introducido mal sin romper la base de datos.
+
+---
+
+### 🚀 ¿Qué hace el archivo "Lanzar_App.bat"?
+
+Para que no tengas que usar códigos complicados, he creado el archivo **`Lanzar_App.bat`**. Al hacer doble clic, esto es lo que ocurre por dentro:
+
+1.  **Verifica Python**: Revisa si tienes Python instalado. Si no lo tienes, te avisará con un mensaje claro.
+2.  **Configuración Automática (Solo la primera vez)**: 
+    - Crea una "cápsula" (entorno virtual) para que la app no interfiera con otros programas.
+    - Instala automáticamente las librerías necesarias (*Streamlit, Pandas, Plotly*).
+3.  **Inicia la App**: Abre tu navegador habitual (Chrome, Edge, etc.) y carga la interfaz de **STRIKELOG Pro**.
+
+> **Nota IMPORTANTE**: Verás que se abre una "ventana negra" (consola). **No la cierres** mientras estés usando la app, ya que es el motor que la mantiene viva. Puedes minimizarla si te molesta.
 
 ---
 
-## 🔒 Privacidad y Seguridad
-El proyecto incluye un archivo `.gitignore` preconfigurado para asegurar que tus datos reales (`bitacora_opciones.csv`) y tus copias de seguridad locales **nunca** se suban a repositorios públicos. Tu información financiera permanece local y privada.
+## ⚙️ Preparación (Solo para el primer uso)
+
+Si es la primera vez que lo instalas en un ordenador nuevo:
+1.  **Instala Python**: [Descárgalo aquí](https://www.python.org/downloads/). *Recuerda marcar la casilla "Add Python to PATH" durante la instalación.*
+2.  **Doble Clic**: Ejecuta `Lanzar_App.bat`. La primera vez tardará un par de minutos mientras configura todo. ¡Las siguientes veces será instantáneo!
 
 ---
 
-## 📈 Roadmap / Próximas Mejoras
-- [ ] Integración con APIs de brokers para importación automática.
-- [ ] Calculadora de gestión de riesgo integrada.
-- [ ] Diario psicológico con etiquetas de estado emocional.
+## � Seguridad y Privacidad
+- **Datos Locales**: Todo se guarda en `bitacora_opciones.csv`. Tus datos financieros **nunca** salen de tu ordenador.
+- **Backups Automáticos**: El sistema genera copias de seguridad en la carpeta `backups_journal/` cada vez que guardas algo, protegiendo tu trabajo contra errores accidentales.
 
 ---
-Desarrollado con ❤️ para la comunidad de trading de opciones.
+Desarrollado con ❤️ para la comunidad de **Opcion Sigma**. ¡Buenos trades! 📈

@@ -22,8 +22,8 @@ if not os.path.exists(BACKUP_DIR):
 # Columnas actualizadas
 COLUMNS = [
     "ID", "ChainID", "ParentID", "Ticker", "FechaApertura", "Expiry", 
-    "Estrategia", "Setup", "Side", "OptionType", "Strike", "Delta", "PrimaRecibida", "CostoCierre", "Contratos", 
-    "BuyingPower", "MaxLoss", "BreakEven", "POP",
+    "Estrategia", "Setup", "Tags", "Side", "OptionType", "Strike", "Delta", "PrimaRecibida", "CostoCierre", "Contratos", 
+    "BuyingPower", "MaxLoss", "BreakEven", "BreakEven_Upper", "POP",
     "Estado", "Notas", "UpdatedAt", "FechaCierre", "MaxProfitUSD", "ProfitPct", "PnL_Capital_Pct",
     "PrecioAccionCierre", "PnL_USD_Realizado"
 ]
@@ -45,6 +45,32 @@ ESTRATEGIAS = [
 ]
 SIDES = ["Sell", "Buy"]
 OPTION_TYPES = ["Put", "Call"]
+
+# Estrategias que tienen dos Break Even (zona de beneficio entre dos strikes)
+DUAL_BE_STRATEGIES = ["Iron Condor", "Iron Fly", "Strangle", "Straddle", "Butterfly", "Broken Wing Butterfly (BWB)"]
+
+# Auto-populate de patas según estrategia (Side, OptionType por pata)
+LEG_DEFAULTS = {
+    "CSP (Cash Secured Put)": [("Sell", "Put")],
+    "CC (Covered Call)": [("Sell", "Call")],
+    "Put Credit Spread": [("Sell", "Put"), ("Buy", "Put")],
+    "Call Credit Spread": [("Sell", "Call"), ("Buy", "Call")],
+    "Put Debit Spread": [("Buy", "Put"), ("Sell", "Put")],
+    "Call Debit Spread": [("Buy", "Call"), ("Sell", "Call")],
+    "Iron Condor": [("Sell", "Put"), ("Buy", "Put"), ("Sell", "Call"), ("Buy", "Call")],
+    "Iron Fly": [("Sell", "Put"), ("Buy", "Put"), ("Sell", "Call"), ("Buy", "Call")],
+    "Butterfly": [("Buy", "Call"), ("Sell", "Call"), ("Buy", "Call")],
+    "Broken Wing Butterfly (BWB)": [("Buy", "Put"), ("Sell", "Put"), ("Buy", "Put")],
+    "Strangle": [("Sell", "Put"), ("Sell", "Call")],
+    "Straddle": [("Sell", "Put"), ("Sell", "Call")],
+    "Collar": [("Sell", "Call"), ("Buy", "Put")],
+    "Long Call": [("Buy", "Call")],
+    "Long Put": [("Buy", "Put")],
+    "Calendar": [("Sell", "Put"), ("Buy", "Put")],
+    "Diagonal": [("Sell", "Put"), ("Buy", "Put")],
+    "Ratio Spread": [("Sell", "Put"), ("Buy", "Put")],
+    "Backspread": [("Buy", "Put"), ("Sell", "Put")],
+}
 
 # ----------------------------
 # Gestión de Datos
@@ -86,7 +112,8 @@ class JournalManager:
             if c not in df.columns:
                 if c == "Side": df[c] = "Sell"
                 elif c == "OptionType": df[c] = "Put"
-                elif c in ["BuyingPower", "MaxLoss", "BreakEven", "POP", "Delta", "PnL_Capital_Pct", "PrecioAccionCierre", "PnL_USD_Realizado"]: df[c] = 0.0
+                elif c == "Tags": df[c] = ""
+                elif c in ["BuyingPower", "MaxLoss", "BreakEven", "BreakEven_Upper", "POP", "Delta", "PnL_Capital_Pct", "PrecioAccionCierre", "PnL_USD_Realizado"]: df[c] = 0.0
                 else: df[c] = pd.NA
         
         df = df[COLUMNS].copy()
@@ -98,7 +125,7 @@ class JournalManager:
         df["FechaApertura"] = df["FechaApertura"].fillna(pd.Timestamp.now().normalize())
         df["Expiry"] = df["Expiry"].fillna(pd.Timestamp.now().normalize())
         
-        numeric_cols = ["PrimaRecibida", "CostoCierre", "BuyingPower", "MaxLoss", "BreakEven", "POP", "Delta", "MaxProfitUSD", "ProfitPct", "PnL_Capital_Pct", "PrecioAccionCierre", "PnL_USD_Realizado"]
+        numeric_cols = ["PrimaRecibida", "CostoCierre", "BuyingPower", "MaxLoss", "BreakEven", "BreakEven_Upper", "POP", "Delta", "MaxProfitUSD", "ProfitPct", "PnL_Capital_Pct", "PrecioAccionCierre", "PnL_USD_Realizado"]
         for col in numeric_cols:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
             
@@ -121,34 +148,232 @@ class JournalManager:
 # ----------------------------
 # Lógica de Negocio
 # ----------------------------
-def calculate_pnl_metrics(row):
-    entry = row["PrimaRecibida"]
-    exit_price = row["CostoCierre"]
-    contracts = row["Contratos"]
-    side = row["Side"]
-    bp = row["BuyingPower"]
+
+# Estrategias cuya prima neta es un CRÉDITO recibido (estrategias vendedoras / neutrales)
+CREDIT_STRATEGIES = [
+    "CSP (Cash Secured Put)", "CC (Covered Call)", "Collar",
+    "Put Credit Spread", "Call Credit Spread",
+    "Iron Condor", "Iron Fly",
+    "Strangle", "Straddle",
+    "Ratio Spread",
+]
+
+def detect_strategy_direction(strategy, side_first_leg="Sell"):
+    """
+    Detecta si una estrategia opera en CRÉDITO (Sell) o DÉBITO (Buy).
+    Devuelve 'Sell' para crédito, 'Buy' para débito.
+    """
+    if strategy in CREDIT_STRATEGIES:
+        return "Sell"
+    # Para estrategias dual/ambiguas, usar la dirección de la primera pata
+    if strategy in ["Custom / Other", "Calendar", "Diagonal"]:
+        return side_first_leg
+    return "Buy"
+
+def calculate_pnl_metrics(prima_neta, costo_cierre_neto, contracts, strategy, bp=0.0, side_first_leg="Sell"):
+    """
+    Calcula métricas de PnL de forma estandarizada.
     
-    if side == "Sell":
-        pnl_usd = (entry - exit_price) * contracts * 100
-        profit_pct = ((entry - exit_price) / entry * 100) if entry > 0 else 0.0
+    TODOS los precios son POR ACCIÓN (ej: 1.50, NO 150).
+    Para multi-pata (Iron Condor, Spreads, etc.), tanto prima_neta como 
+    costo_cierre_neto representan el NETO de todas las patas combinadas.
+    
+    Args:
+        prima_neta: Prima neta recibida/pagada por acción (valor del contrato)
+        costo_cierre_neto: Costo neto para cerrar por acción
+        contracts: Número de contratos
+        strategy: Nombre de la estrategia (para detectar crédito/débito)
+        bp: Buying Power reservado (para calcular RoC)
+        side_first_leg: Side de la primera pata (fallback para estrategias ambiguas)
+    
+    Returns:
+        (pnl_usd, profit_pct, pnl_capital_pct)
+    """
+    direction = detect_strategy_direction(strategy, side_first_leg)
+    
+    if direction == "Sell":
+        # Crédito: ganas si el costo de cierre es menor que la prima cobrada
+        pnl_usd = (prima_neta - costo_cierre_neto) * contracts * 100
+        profit_pct = ((prima_neta - costo_cierre_neto) / prima_neta * 100) if prima_neta > 0 else 0.0
     else:
-        pnl_usd = (exit_price - entry) * contracts * 100
-        profit_pct = ((exit_price - entry) / entry * 100) if entry > 0 else 0.0
+        # Débito: ganas si el precio de cierre es mayor que lo que pagaste
+        pnl_usd = (costo_cierre_neto - prima_neta) * contracts * 100
+        profit_pct = ((costo_cierre_neto - prima_neta) / prima_neta * 100) if prima_neta > 0 else 0.0
         
     pnl_capital_pct = (pnl_usd / bp * 100) if bp > 0 else 0.0
     return pnl_usd, profit_pct, pnl_capital_pct
 
 def suggest_breakeven(strategy, legs_data, total_premium):
-    if not legs_data: return 0.0
+    """
+    Calcula Break Even(s) según la estrategia.
+    Devuelve una tupla (be_lower, be_upper).
+    - Para estrategias de un solo BE: be_upper será 0.0
+    - Para estrategias duales: ambos valores estarán poblados
+    
+    Estrategias duales: Iron Condor, Iron Fly, Butterfly, BWB, Strangle, Straddle
+    """
+    if not legs_data:
+        return (0.0, 0.0)
+    
     try:
-        main_strike = float(legs_data[0]["Strike"])
-        if "Put" in strategy or "CSP" in strategy or "Put Credit Spread" in strategy:
-            return main_strike - total_premium
-        if "Call" in strategy or "CC" in strategy or "Call Credit Spread" in strategy:
-            return main_strike + total_premium
-    except:
-        pass
-    return 0.0
+        premium = abs(total_premium)
+        
+        # --- IRON CONDOR (4 patas): Sell Put + Buy Put + Sell Call + Buy Call ---
+        if strategy == "Iron Condor":
+            # Identificar Short Put y Short Call por sus propiedades
+            short_put_strike = None
+            short_call_strike = None
+            for leg in legs_data:
+                s = leg.get("Side", "")
+                t = leg.get("Type", leg.get("OptionType", ""))
+                strike = float(leg.get("Strike", 0))
+                if s == "Sell" and t == "Put" and strike > 0:
+                    short_put_strike = strike
+                elif s == "Sell" and t == "Call" and strike > 0:
+                    short_call_strike = strike
+            
+            if short_put_strike and short_call_strike:
+                return (short_put_strike - premium, short_call_strike + premium)
+            # Fallback: usar strikes ordenados (patas 1 y 2 suelen ser los shorts)
+            strikes = sorted([float(l.get("Strike", 0)) for l in legs_data if float(l.get("Strike", 0)) > 0])
+            if len(strikes) >= 4:
+                return (strikes[1] - premium, strikes[2] + premium)
+            return (0.0, 0.0)
+        
+        # --- IRON FLY (4 patas): Short Straddle ATM + Long Strangle OTM ---
+        if strategy == "Iron Fly":
+            short_strikes = []
+            for leg in legs_data:
+                if leg.get("Side") == "Sell":
+                    short_strikes.append(float(leg.get("Strike", 0)))
+            if short_strikes:
+                atm = short_strikes[0]  # Ambos shorts suelen estar en el mismo strike
+                return (atm - premium, atm + premium)
+            return (0.0, 0.0)
+        
+        # --- BUTTERFLY (3 patas): Buy 1 + Sell 2 (ATM) + Buy 1 ---
+        if "Butterfly" in strategy:
+            strikes = sorted([float(l.get("Strike", 0)) for l in legs_data if float(l.get("Strike", 0)) > 0])
+            if len(strikes) >= 3:
+                # BE inferior = strike más bajo + débito pagado
+                # BE superior = strike más alto - débito pagado
+                return (strikes[0] + premium, strikes[-1] - premium)
+            return (0.0, 0.0)
+        
+        # --- STRANGLE (2 patas): Put + Call a diferentes strikes ---
+        if strategy == "Strangle":
+            put_strike = None
+            call_strike = None
+            for leg in legs_data:
+                t = leg.get("Type", leg.get("OptionType", ""))
+                strike = float(leg.get("Strike", 0))
+                if t == "Put" and strike > 0:
+                    put_strike = strike
+                elif t == "Call" and strike > 0:
+                    call_strike = strike
+            if put_strike and call_strike:
+                main_side = legs_data[0].get("Side", "Sell")
+                if main_side == "Sell":
+                    return (put_strike - premium, call_strike + premium)
+                else:
+                    return (put_strike - premium, call_strike + premium)
+            return (0.0, 0.0)
+        
+        # --- STRADDLE (2 patas): Put + Call al mismo strike ---
+        if strategy == "Straddle":
+            strike = float(legs_data[0].get("Strike", 0))
+            if strike > 0:
+                return (strike - premium, strike + premium)
+            return (0.0, 0.0)
+        
+        # --- COLLAR (2 patas): Sell Call + Buy Put (o viceversa) ---
+        if strategy == "Collar":
+            put_strike = None
+            call_strike = None
+            for leg in legs_data:
+                t = leg.get("Type", leg.get("OptionType", ""))
+                strike = float(leg.get("Strike", 0))
+                if t == "Put" and strike > 0:
+                    put_strike = strike
+                elif t == "Call" and strike > 0:
+                    call_strike = strike
+            if put_strike and call_strike:
+                return (put_strike + premium, call_strike - premium)
+            return (0.0, 0.0)
+        
+        # --- ESTRATEGIAS SIMPLES (1 BE) ---
+        main_strike = float(legs_data[0].get("Strike", 0))
+        
+        # Put Credit Spread / CSP
+        if "Put Credit Spread" in strategy or "CSP" in strategy:
+            # Buscar el Short Put strike específicamente
+            for leg in legs_data:
+                if leg.get("Side") == "Sell":
+                    main_strike = float(leg.get("Strike", main_strike))
+                    break
+            return (main_strike - premium, 0.0)
+        
+        # Call Credit Spread / CC
+        if "Call Credit Spread" in strategy or "CC" in strategy:
+            for leg in legs_data:
+                if leg.get("Side") == "Sell":
+                    main_strike = float(leg.get("Strike", main_strike))
+                    break
+            return (main_strike + premium, 0.0)
+        
+        # Put Debit Spread
+        if "Put Debit Spread" in strategy:
+            for leg in legs_data:
+                if leg.get("Side") == "Buy":
+                    main_strike = float(leg.get("Strike", main_strike))
+                    break
+            return (main_strike - premium, 0.0)
+        
+        # Call Debit Spread
+        if "Call Debit Spread" in strategy:
+            for leg in legs_data:
+                if leg.get("Side") == "Buy":
+                    main_strike = float(leg.get("Strike", main_strike))
+                    break
+            return (main_strike + premium, 0.0)
+        
+        # Long Put
+        if strategy == "Long Put":
+            return (main_strike - premium, 0.0)
+        
+        # Long Call
+        if strategy == "Long Call":
+            return (main_strike + premium, 0.0)
+        
+        # Calendar / Diagonal - BE aproximado basado en el strike vendido
+        if strategy in ["Calendar", "Diagonal"]:
+            for leg in legs_data:
+                if leg.get("Side") == "Sell":
+                    main_strike = float(leg.get("Strike", main_strike))
+                    break
+            t = legs_data[0].get("Type", legs_data[0].get("OptionType", "Put"))
+            if t == "Put":
+                return (main_strike - premium, 0.0)
+            else:
+                return (main_strike + premium, 0.0)
+        
+        # Ratio Spread / Backspread - BE simple basado en dirección
+        if strategy in ["Ratio Spread", "Backspread"]:
+            t = legs_data[0].get("Type", legs_data[0].get("OptionType", "Put"))
+            if t == "Put":
+                return (main_strike - premium, 0.0)
+            else:
+                return (main_strike + premium, 0.0)
+        
+        # Fallback genérico
+        t = legs_data[0].get("Type", legs_data[0].get("OptionType", "Put"))
+        if t == "Put":
+            return (main_strike - premium, 0.0)
+        else:
+            return (main_strike + premium, 0.0)
+            
+    except Exception:
+        return (0.0, 0.0)
 
 def suggest_pop(delta, side):
     """Calcula la probabilidad de éxito aproximada basada en el Delta."""
@@ -207,7 +432,7 @@ def render_dashboard(df):
     
     # --- FILTROS ---
     with st.container():
-        c_f1, c_f2, c_f3 = st.columns([1, 1, 1])
+        c_f1, c_f2, c_f3, c_f4 = st.columns([1, 1, 1, 1])
         all_tickers = ["Todos Tickers"] + sorted(df["Ticker"].unique().tolist())
         ticker_filter = c_f1.selectbox("🔍 Ticker", all_tickers)
         
@@ -219,6 +444,7 @@ def render_dashboard(df):
         }
         periodo_filter = c_f2.selectbox("📅 Periodo", list(meses.keys()))
         setup_filter = c_f3.selectbox("🎯 Setup", ["Todos los Setups"] + SETUPS)
+        estado_filter = c_f4.selectbox("📋 Estado", ["Todos"] + ESTADOS)
         
         # Aplicar Filtros
         df_view = df.copy()
@@ -232,6 +458,9 @@ def render_dashboard(df):
             
         if setup_filter != "Todos los Setups":
             df_view = df_view[df_view["Setup"] == setup_filter]
+        
+        if estado_filter != "Todos":
+            df_view = df_view[df_view["Estado"] == estado_filter]
         
         closed_trades = df_view[df_view["Estado"].isin(["Cerrada", "Rolada", "Asignada"])].copy()
         open_trades = df_view[df_view["Estado"] == "Abierta"].copy()
@@ -254,11 +483,22 @@ def render_dashboard(df):
         st.divider()
         
         # Fila 1: Métricas Principales con diseño mejorado
-        m1, m2, m3, m4 = st.columns(4)
+        m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("PnL Realizado", f"${pnl_total:,.2f}", delta=f"${pnl_total:,.2f}" if pnl_total != 0 else None)
         m2.metric("Win Rate", f"{win_rate:.1f}%", help="Porcentaje de operaciones positivas")
         m3.metric("Profit Factor", f"{profit_factor:.2f}x", help="Ratio Ganancia Total / Pérdida Total")
         m4.metric("Captura Media", f"{capture_eff:.1f}%", help="Promedio de beneficio sobre la prima recibida")
+        
+        # Drawdown máximo
+        if not closed_trades.empty:
+            sorted_closed = closed_trades.sort_values("FechaCierre")
+            equity_series = sorted_closed["PnL_USD_Realizado"].cumsum()
+            running_max = equity_series.cummax()
+            drawdown = running_max - equity_series
+            max_dd = drawdown.max()
+        else:
+            max_dd = 0.0
+        m5.metric("Max Drawdown", f"-${max_dd:,.2f}", help="Mayor caída desde un pico de equidad")
         
         st.write("") # Espaciado
         
@@ -325,24 +565,46 @@ def render_dashboard(df):
             )
             st.plotly_chart(fig_strat, width="stretch")
 
-    # Gráfico de barras mensual
+    # Gráficos inferiores: Mensual + Por Setup
     if not closed_trades.empty:
-        st.markdown("### 📅 Rendimiento Mensual")
-        closed_trades['Mes'] = pd.to_datetime(closed_trades['FechaCierre']).dt.strftime('%b %Y')
-        monthly_pnl = closed_trades.groupby('Mes')['PnL_USD_Realizado'].sum().reset_index()
+        col_bottom1, col_bottom2 = st.columns([2, 1])
         
-        fig_monthly = px.bar(monthly_pnl, x='Mes', y='PnL_USD_Realizado', 
-                             color='PnL_USD_Realizado', 
-                             color_continuous_scale="RdYlGn",
-                             template="plotly_dark")
-        fig_monthly.update_layout(
-            height=320,
-            margin=dict(l=10, r=10, t=10, b=10),
-            xaxis_title=None,
-            yaxis_title="PnL USD",
-            coloraxis_showscale=False
-        )
-        st.plotly_chart(fig_monthly, width="stretch")
+        with col_bottom1:
+            st.markdown("### 📅 Rendimiento Mensual")
+            closed_trades['Mes'] = pd.to_datetime(closed_trades['FechaCierre']).dt.strftime('%b %Y')
+            monthly_pnl = closed_trades.groupby('Mes')['PnL_USD_Realizado'].sum().reset_index()
+            
+            fig_monthly = px.bar(monthly_pnl, x='Mes', y='PnL_USD_Realizado', 
+                                 color='PnL_USD_Realizado', 
+                                 color_continuous_scale="RdYlGn",
+                                 template="plotly_dark")
+            fig_monthly.update_layout(
+                height=320,
+                margin=dict(l=10, r=10, t=10, b=10),
+                xaxis_title=None,
+                yaxis_title="PnL USD",
+                coloraxis_showscale=False
+            )
+            st.plotly_chart(fig_monthly, width="stretch")
+        
+        with col_bottom2:
+            st.markdown("### 🎯 PnL por Setup")
+            setup_data = closed_trades.groupby("Setup")["PnL_USD_Realizado"].sum().reset_index()
+            setup_data = setup_data.sort_values("PnL_USD_Realizado", ascending=True)
+            
+            fig_setup = px.bar(setup_data, x="PnL_USD_Realizado", y="Setup",
+                               orientation='h', color="PnL_USD_Realizado",
+                               color_continuous_scale="RdYlGn",
+                               template="plotly_dark")
+            fig_setup.update_layout(
+                height=320,
+                showlegend=False,
+                margin=dict(l=10, r=10, t=10, b=10),
+                xaxis_title="PnL USD",
+                yaxis_title=None,
+                coloraxis_showscale=False
+            )
+            st.plotly_chart(fig_setup, width="stretch")
 
 def render_active_portfolio(df):
     st.header("📂 Cartera Activa")
@@ -351,10 +613,20 @@ def render_active_portfolio(df):
         st.info("No hay posiciones abiertas.")
         return
 
-    # Agrupación por ChainID
+    # Agrupación por ChainID y ordenar por DTE (más urgente primero)
     grouped = active_df.groupby("ChainID")
     
+    # Pre-calcular DTE para ordenar
+    chain_dte = {}
     for chain_id, group in grouped:
+        expiry_val = group.iloc[0]["Expiry"]
+        expiry_dt_sort = pd.to_datetime(expiry_val).date() if pd.notna(expiry_val) else date.today()
+        chain_dte[chain_id] = (expiry_dt_sort - date.today()).days
+    
+    sorted_chains = sorted(chain_dte.keys(), key=lambda x: chain_dte[x])
+    
+    for chain_id in sorted_chains:
+        group = active_df[active_df["ChainID"] == chain_id]
         first_row = group.iloc[0]
         ticker = first_row["Ticker"]
         strategy = first_row["Estrategia"]
@@ -368,11 +640,19 @@ def render_active_portfolio(df):
         expiry_dt = pd.to_datetime(expiry).date() if pd.notna(expiry) else date.today()
         dte = (expiry_dt - date.today()).days
         
+        # Días en Trade (DIT)
+        apertura_dt = pd.to_datetime(first_row["FechaApertura"]).date() if pd.notna(first_row["FechaApertura"]) else date.today()
+        dit = (date.today() - apertura_dt).days
+        
         # Semáforo DTE
         dte_color = "⚪"
         if dte < 7: dte_color = "🔴"
         elif dte <= 21: dte_color = "🟡"
         else: dte_color = "🟢"
+        
+        # Icono de dirección crédito/débito
+        strat_dir = detect_strategy_direction(strategy, first_row["Side"])
+        dir_icon = "📥" if strat_dir == "Sell" else "📤"
         
         # Identificar historial de Rolls
         roll_chain = get_roll_history(df, first_row["ID"])
@@ -389,30 +669,37 @@ def render_active_portfolio(df):
         realized_pnl_chain = sum(float(r["PnL_USD_Realizado"] or 0) for r in roll_chain if r["Estado"] != "Abierta")
         
         # Recálculo dinámico del Break Even REAL basado en el Crédito Neto Acumulado
-        # La base de datos tiene el BE de la pata actual aislada, aquí queremos el BE de la CAMPAÑA completa.
+        # Para estrategias duales, calculamos BE inferior y superior
+        is_dual_be = strategy in DUAL_BE_STRATEGIES
         calculated_be = 0.0
+        calculated_be_upper = 0.0
+        
         try:
-            # Usamos el strike de la pata principal actual (la primera encontrada)
-            main_strike = float(first_row["Strike"])
-            # Lógica estándar de BE:
-            # Puts/CSPs/Put Spreads -> BE = Strike - Crédito Total (o + Débito Total)
-            # Calls/CCs/Call Spreads -> BE = Strike + Crédito Total (o - Débito Total)
-            
-            # net_credit_chain es POSITIVO si es CRÉDITO, NEGATIVO si es DÉBITO.
-            
-            if "Put" in strategy or "CSP" in strategy:
-                 # Ejemplo: Strike 85, Credito Neto 4.00 -> BE 81.00
-                 # Ejemplo: Strike 85, Debito Neto -1.00 -> BE 86.00 (85 - (-1))
-                calculated_be = main_strike - net_credit_chain
-            elif "Call" in strategy or "CC" in strategy:
-                # Ejemplo: Strike 100, Credito Neto 4.00 -> BE 104.00
-                # Ejemplo: Strike 100, Debito Neto -1.00 -> BE 99.00 (100 + (-1))
-                calculated_be = main_strike + net_credit_chain
+            if is_dual_be:
+                # Para estrategias duales, recalcular usando los datos de las patas del grupo actual
+                legs_for_be = [{"Side": r["Side"], "Type": r["OptionType"], "OptionType": r["OptionType"], 
+                                "Strike": float(r["Strike"])} for _, r in group.iterrows()]
+                calculated_be, calculated_be_upper = suggest_breakeven(strategy, legs_for_be, net_credit_chain)
+                
+                # Si el cálculo devolvió 0, usar los valores almacenados como fallback
+                if calculated_be == 0.0 and calculated_be_upper == 0.0:
+                    calculated_be = float(first_row["BreakEven"] or 0)
+                    calculated_be_upper = float(first_row.get("BreakEven_Upper", 0) or 0)
             else:
-                # Fallback para estrategias complejas donde el BE no es lineal
-                calculated_be = float(first_row["BreakEven"] or 0)
-        except:
+                # Estrategias de un solo BE (lógica original mejorada)
+                legs_for_be = [{"Side": first_row["Side"], "Type": first_row["OptionType"], 
+                                "OptionType": first_row["OptionType"], "Strike": float(first_row["Strike"])}]
+                # Para spreads, incluir ambas patas
+                if len(group) > 1:
+                    legs_for_be = [{"Side": r["Side"], "Type": r["OptionType"], "OptionType": r["OptionType"],
+                                    "Strike": float(r["Strike"])} for _, r in group.iterrows()]
+                
+                calculated_be, _ = suggest_breakeven(strategy, legs_for_be, net_credit_chain)
+                if calculated_be == 0.0:
+                    calculated_be = float(first_row["BreakEven"] or 0)
+        except Exception as e:
             calculated_be = float(first_row["BreakEven"] or 0)
+            calculated_be_upper = float(first_row.get("BreakEven_Upper", 0) or 0)
 
         # Lógica de visualización directa (sin redondeos, con signo)
         formatted_net = f"${net_credit_chain:,.2f}"
@@ -427,16 +714,27 @@ def render_active_portfolio(df):
         if abs(realized_pnl_chain) > 0.01:
             roll_pnl_str = f" • Rolls: ${realized_pnl_chain:,.2f}"
 
-        # Formato solicitado: Prima explícita y sin redondeos, y BE recalculado
-        header_text = f"{dte_color}{roll_label} **{ticker}** • {strategy} • {dte}d • **BE ${calculated_be:,.2f}** • Prima: {formatted_net}{roll_pnl_str}"
+        # Formato con BE dual o simple según estrategia
+        if is_dual_be and calculated_be_upper > 0:
+            be_display = f"**BE ${calculated_be:,.2f} / ${calculated_be_upper:,.2f}**"
+        else:
+            be_display = f"**BE ${calculated_be:,.2f}**"
+        
+        header_text = f"{dte_color}{dir_icon}{roll_label} **{ticker}** • {strategy} • {dte}d (DIT:{dit}d) • {be_display} • Prima: {formatted_net}{roll_pnl_str}"
         
         with st.expander(header_text, expanded=False):
             # Vista resumen de la estrategia
-            st.caption(f"📅 Vencimiento: {expiry_dt} | BP Reservado: ${total_bp:,.2f} | BE Original Pata Actual: ${float(first_row['BreakEven'] or 0):.2f}")
+            if is_dual_be and calculated_be_upper > 0:
+                st.caption(f"📅 Vencimiento: {expiry_dt} | DIT: {dit}d | BP Reservado: ${total_bp:,.2f} | Zona de Max Profit: ${calculated_be:,.2f} — ${calculated_be_upper:,.2f}")
+            else:
+                st.caption(f"📅 Vencimiento: {expiry_dt} | DIT: {dit}d | BP Reservado: ${total_bp:,.2f} | BE Original: ${float(first_row['BreakEven'] or 0):.2f}")
             
             c1, c2, c3, c4 = st.columns(4)
             c1.metric(metric_net_label, metric_net_val, help="Crédito neto total (Suma primas - Costos cierre históricos).")
-            c2.metric("Break Even (Campaña)", f"${calculated_be:,.2f}", help="BE ajustado considerando pérdidas/ganancias de rolls anteriores.")
+            if is_dual_be and calculated_be_upper > 0:
+                c2.metric("BE Campaña (↓ / ↑)", f"${calculated_be:,.2f} / ${calculated_be_upper:,.2f}", help="BEs inferior y superior ajustados con rolls.")
+            else:
+                c2.metric("Break Even (Campaña)", f"${calculated_be:,.2f}", help="BE ajustado considerando pérdidas/ganancias de rolls anteriores.")
             c3.metric("Buying Power", f"${total_bp:,.2f}")
             c4.metric("PnL Realizado (Rolls)", f"${realized_pnl_chain:,.2f}", delta=realized_pnl_chain if realized_pnl_chain != 0 else None)
             
@@ -539,42 +837,64 @@ def render_active_portfolio(df):
             
             # --- TAB 1: CERRAR (Parcial o Total) ---
             with tab_close:
-                st.info("Cierra posiciones para asegurar ganancias o detener pérdidas.")
+                current_strategy = target_group.iloc[0]["Estrategia"]
+                is_multi_leg = len(target_group) > 1
+                direction = detect_strategy_direction(current_strategy, target_group.iloc[0]["Side"])
+                is_credit = (direction == "Sell")
+                
+                # Ayuda contextual según tipo de estrategia
+                if is_multi_leg:
+                    strategy_type = "Crédito" if is_credit else "Débito"
+                    st.info(f"📋 **{current_strategy}** ({strategy_type}) — Introduce el precio **NETO por acción** para cerrar todas las patas combinadas. Ejemplo: si tu broker muestra $1.20 como coste del spread, pon 1.20.")
+                else:
+                    st.info("Cierra posiciones para asegurar ganancias o detener pérdidas.")
+                
+                # Resumen de tiempo en la posición
+                manage_apertura = pd.to_datetime(target_group.iloc[0]["FechaApertura"]).date()
+                manage_dit = (date.today() - manage_apertura).days
+                st.caption(f"⏱️ Posición abierta hace **{manage_dit} días** (desde {manage_apertura})")
                 
                 c1, c2, c3 = st.columns(3)
-                qty_to_close = c1.number_input("Cantidad de Contratos a Cerrar", min_value=1, max_value=int(target_group.iloc[0]["Contratos"]), value=int(target_group.iloc[0]["Contratos"]), step=1)
-                total_close_cost = c2.number_input("Costo Cierre Unitario (Precio/Contrato)", value=0.0, step=0.01, help="Precio actual del contrato.")
-                stock_price = c3.number_input("Precio Acción (Opcional)", value=0.0, step=0.01)
+                qty_to_close = c1.number_input("Contratos a Cerrar", min_value=1, max_value=int(target_group.iloc[0]["Contratos"]), value=int(target_group.iloc[0]["Contratos"]), step=1)
+                
+                close_help = "Precio NETO por acción para cerrar la estrategia completa. NO multipliques por 100." if is_multi_leg else "Precio por acción (ej: 0.50). NO multipliques por 100."
+                total_close_cost = c2.number_input("Precio Cierre Neto (por acción)", value=0.0, step=0.01, help=close_help)
+                stock_price = c3.number_input("Precio Acción Subyacente", value=0.0, step=0.01, help="Precio actual de la acción al momento de cerrar (opcional, para referencia).")
 
                 is_partial = qty_to_close < int(target_group.iloc[0]["Contratos"])
                 
-                # Cálculo de PnL Estimado
+                # Prima neta original (suma de todas las patas, que realmente solo está en pata 0)
                 total_entry = target_group["PrimaRecibida"].sum()
                 qty_total = int(target_group.iloc[0]["Contratos"])
+                total_bp = target_group["BuyingPower"].sum()
                 
-                # Proporción de prima recibida afectada
-                entry_affected = (total_entry * qty_to_close) if qty_total == 1 else (total_entry / qty_total * qty_to_close) # Ajuste si la prima unitaria ya estaba totalizada o es unitaria (asumimos unitaria en logica de UI)
-                # NOTA: En la App las primas se guardan UNITARIAS generalmente.
-                
-                # Detectar dirección (Credit vs Debit) para PnL
-                main_leg = next((l for l in target_group.iterrows() if l[1]["PrimaRecibida"] > 0), target_group.iloc[0])[1]
-                side = main_leg["Side"]
-                
-                if side == "Sell":
-                    pnl_preview = (total_entry - total_close_cost) * qty_to_close * 100
-                else:
-                    pnl_preview = (total_close_cost - total_entry) * qty_to_close * 100
+                # Cálculo de PnL usando la función centralizada
+                pnl_preview, profit_pct_preview, roc_preview = calculate_pnl_metrics(
+                    prima_neta=total_entry,
+                    costo_cierre_neto=total_close_cost,
+                    contracts=qty_to_close,
+                    strategy=current_strategy,
+                    bp=total_bp,
+                    side_first_leg=target_group.iloc[0]["Side"]
+                )
                     
                 st.markdown("#### 📊 Resultado Estimado")
-                c_res1, c_res2 = st.columns(2)
-                c_res1.metric(f"PnL Estimado ({'Credit' if side=='Sell' else 'Debit'})", f"${pnl_preview:,.2f}")
+                c_res1, c_res2, c_res3 = st.columns(3)
+                c_res1.metric(f"PnL Estimado ({'Crédito' if is_credit else 'Débito'})", f"${pnl_preview:,.2f}")
+                c_res2.metric("% Captura", f"{profit_pct_preview:.1f}%", help="Porcentaje de la prima máxima capturada")
+                if total_bp > 0:
+                    c_res3.metric("RoC (Retorno/Capital)", f"{roc_preview:.1f}%")
                 
-                manual_pnl = c_res2.number_input("PnL Realizado Manual (TOTAL $)", value=float(pnl_preview), step=1.0)
+                manual_pnl = st.number_input("PnL Realizado Final (TOTAL en $)", value=float(pnl_preview), step=1.0, help="Se pre-calcula automáticamente. Ajústalo solo si tu broker reporta un valor diferente.")
                 
                 if pnl_preview < -500:
                     st.warning(f"⚠️ Atención: Estás registrando una pérdida significativa de ${pnl_preview:,.2f}")
 
                 btn_label = "Confirmar Cierre Parcial" if is_partial else "Confirmar Cierre Total"
+                
+                # Calcular ProfitPct final basado en el PnL que realmente se va a guardar
+                max_profit_usd = total_entry * qty_to_close * 100
+                final_profit_pct = (manual_pnl / max_profit_usd * 100) if max_profit_usd > 0 else 0.0
                 
                 if st.button(btn_label, type="primary"):
                     for idx, row in target_group.iterrows():
@@ -592,13 +912,17 @@ def render_active_portfolio(df):
                             new_closed_row["FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             new_closed_row["PrecioAccionCierre"] = stock_price
                             
-                            # Asignar COSTO y PNL solo a la primera pata para no duplicar
+                            # Asignar COSTO, PNL y ProfitPct solo a la primera pata para no duplicar
                             if row["ID"] == target_group.iloc[0]["ID"]:
                                 new_closed_row["CostoCierre"] = total_close_cost
                                 new_closed_row["PnL_USD_Realizado"] = manual_pnl
+                                new_closed_row["ProfitPct"] = final_profit_pct
+                                new_closed_row["PnL_Capital_Pct"] = (manual_pnl / total_bp * 100) if total_bp > 0 else 0.0
                             else:
                                 new_closed_row["CostoCierre"] = 0.0
                                 new_closed_row["PnL_USD_Realizado"] = 0.0
+                                new_closed_row["ProfitPct"] = 0.0
+                                new_closed_row["PnL_Capital_Pct"] = 0.0
                             
                             # Añadir la fila cerrada
                             st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_closed_row])], ignore_index=True)
@@ -611,9 +935,13 @@ def render_active_portfolio(df):
                             if row["ID"] == target_group.iloc[0]["ID"]:
                                 df.at[real_idx, "CostoCierre"] = total_close_cost
                                 df.at[real_idx, "PnL_USD_Realizado"] = manual_pnl
+                                df.at[real_idx, "ProfitPct"] = final_profit_pct
+                                df.at[real_idx, "PnL_Capital_Pct"] = (manual_pnl / total_bp * 100) if total_bp > 0 else 0.0
                             else:
                                 df.at[real_idx, "CostoCierre"] = 0.0
                                 df.at[real_idx, "PnL_USD_Realizado"] = 0.0
+                                df.at[real_idx, "ProfitPct"] = 0.0
+                                df.at[real_idx, "PnL_Capital_Pct"] = 0.0
                             
                     st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
                     del st.session_state["manage_chain_id"]
@@ -637,33 +965,45 @@ def render_active_portfolio(df):
                 if not legs_to_roll:
                     st.warning("Selecciona al menos una pata para realizar un Roll.")
                 else:
+                    roll_strategy = legs_to_roll[0]["Estrategia"]
+                    roll_direction = detect_strategy_direction(roll_strategy, legs_to_roll[0]["Side"])
+                    is_roll_credit = (roll_direction == "Sell")
+                    
                     st.divider()
                     st.markdown("#### 1. Cierre de Posición Actual")
                     
                     # Estimación de PnL basada en input
                     c_r1, c_r2 = st.columns(2)
-                    roll_close_cost = c_r1.number_input("Precio Cierre Unitario (Ej: 1.50)", value=0.0, step=0.01, help="Precio unitario para cerrar el contrato actual.")
+                    roll_close_help = "Precio NETO por acción para cerrar. NO multipliques por 100." if len(legs_to_roll) > 1 else "Precio por acción (ej: 0.50). NO multipliques por 100."
+                    roll_close_cost = c_r1.number_input("Precio Cierre Neto (por acción)", value=0.0, step=0.01, help=roll_close_help)
                     
                     # Calcular PnL Estimado automáticamente
                     total_entry_to_roll = sum(float(l["PrimaRecibida"]) for l in legs_to_roll)
                     qty_roll = int(legs_to_roll[0]["Contratos"]) if legs_to_roll else 1
+                    roll_bp = sum(float(l["BuyingPower"]) for l in legs_to_roll)
                     
                     # Input de Cantidad a Rolar (Scaling)
                     qty_new_roll = st.number_input("Cantidad de Contratos a Abrir (Nuevo Roll)", min_value=1, value=qty_roll, step=1, help="Puedes reducir o aumentar el tamaño de la posición en el nuevo roll.")
                     
-                    # Detectar dirección
-                    main_leg_roll = next((l for l in legs_to_roll if l["PrimaRecibida"] > 0), legs_to_roll[0] if legs_to_roll else None)
-                    side_direction = main_leg_roll["Side"] if main_leg_roll is not None else "Sell"
-                    
-                    # Mostrar dirección inferida
-                    st.caption(f"ℹ️ Dirección detectada: **{side_direction}** (Basado en patas seleccionadas)")
+                    # Dirección robusta basada en tipo de estrategia
+                    dir_label = "Crédito" if is_roll_credit else "Débito"
+                    st.caption(f"ℹ️ Dirección detectada: **{dir_label}** (Basado en estrategia: {roll_strategy})")
 
-                    if side_direction == "Sell":
-                        est_pnl_val = (total_entry_to_roll - roll_close_cost) * qty_roll * 100
-                    else:
-                        est_pnl_val = (roll_close_cost - total_entry_to_roll) * qty_roll * 100
+                    # Cálculo de PnL del cierre usando función centralizada
+                    est_pnl_val, est_profit_pct, _ = calculate_pnl_metrics(
+                        prima_neta=total_entry_to_roll,
+                        costo_cierre_neto=roll_close_cost,
+                        contracts=qty_roll,
+                        strategy=roll_strategy,
+                        bp=roll_bp,
+                        side_first_leg=legs_to_roll[0]["Side"]
+                    )
                     
-                    roll_pnl_manual = c_r2.number_input("PnL Realizado TOTAL ($)", value=float(est_pnl_val), step=1.0, help="El resultado final en Dólares de cerrar estas patas.")
+                    roll_pnl_manual = c_r2.number_input("PnL Realizado del Cierre (TOTAL $)", value=float(est_pnl_val), step=1.0, help="Resultado en dólares de cerrar las patas seleccionadas. Se pre-calcula automáticamente.")
+                    
+                    # ProfitPct para las patas que se cierran al rolar
+                    roll_max_profit = total_entry_to_roll * qty_roll * 100
+                    roll_profit_pct = (roll_pnl_manual / roll_max_profit * 100) if roll_max_profit > 0 else 0.0
                     
                     st.divider()
                     st.markdown("#### 2. Apertura del Nuevo Vencimiento")
@@ -676,7 +1016,7 @@ def render_active_portfolio(df):
                          if current_exp >= date.today(): default_date = current_exp + timedelta(days=7)
                     
                     new_expiry = c_n1.date_input("Nuevo Vencimiento", value=default_date)
-                    new_net_premium = c_n2.number_input("Nueva Prima Neta ($)", value=0.0, step=0.01)
+                    new_net_premium = c_n2.number_input("Nueva Prima Neta (por acción)", value=0.0, step=0.01, help="Precio por acción de la nueva posición. NO multipliques por 100.")
                     
                     if new_expiry < date.today():
                         st.error("⚠️ Error: La nueva fecha de vencimiento es en el pasado.")
@@ -702,8 +1042,13 @@ def render_active_portfolio(df):
                     hist_debits_be = sum(float(h["CostoCierre"] or 0) for h in hist_chain_be if h["Estado"] != "Abierta")
                     total_net_credit_for_be = hist_credits_be - hist_debits_be - roll_close_cost + new_net_premium
                     
-                    suggested_be_roll = suggest_breakeven(legs_to_roll[0]["Estrategia"], new_legs_data, total_net_credit_for_be)
-                    st.info(f"📊 **Nuevo Break Even Estimado:** `${suggested_be_roll:.2f}` (Crédito Neto Acumulado: `${total_net_credit_for_be:.2f}`)")
+                    roll_be_lower, roll_be_upper = suggest_breakeven(roll_strategy, new_legs_data, total_net_credit_for_be)
+                    is_roll_dual = roll_strategy in DUAL_BE_STRATEGIES
+                    
+                    if is_roll_dual and roll_be_upper > 0:
+                        st.info(f"📊 **Nuevo Break Even Estimado:** `${roll_be_lower:.2f}` / `${roll_be_upper:.2f}` (Crédito Neto Acumulado: `${total_net_credit_for_be:.2f}`)")
+                    else:
+                        st.info(f"📊 **Nuevo Break Even Estimado:** `${roll_be_lower:.2f}` (Crédito Neto Acumulado: `${total_net_credit_for_be:.2f}`)")
 
                     c_btn1, c_btn2 = st.columns([1, 1])
                     if c_btn1.button("🚀 Ejecutar Ajuste", type="primary"):
@@ -718,9 +1063,13 @@ def render_active_portfolio(df):
                                 if leg["ID"] == legs_to_roll[0]["ID"]:
                                     df.at[real_idx, "CostoCierre"] = roll_close_cost
                                     df.at[real_idx, "PnL_USD_Realizado"] = roll_pnl_manual
+                                    df.at[real_idx, "ProfitPct"] = roll_profit_pct
+                                    df.at[real_idx, "PnL_Capital_Pct"] = (roll_pnl_manual / roll_bp * 100) if roll_bp > 0 else 0.0
                                 else:
                                     df.at[real_idx, "CostoCierre"] = 0.0
                                     df.at[real_idx, "PnL_USD_Realizado"] = 0.0
+                                    df.at[real_idx, "ProfitPct"] = 0.0
+                                    df.at[real_idx, "PnL_Capital_Pct"] = 0.0
 
                             # 2. Crear NUEVAS filas
                             new_chain_id = str(uuid4())[:8]
@@ -737,7 +1086,8 @@ def render_active_portfolio(df):
                                     "Strike": n_leg["Strike"], "Delta": n_leg["Delta"],
                                     "PrimaRecibida": p_recibida, "CostoCierre": 0.0, "Contratos": n_leg["Contratos"],
                                     "BuyingPower": original_bp if i == 0 else 0.0, "MaxLoss": 0.0, 
-                                    "BreakEven": suggested_be_roll if i == 0 else 0.0, 
+                                    "BreakEven": roll_be_lower if i == 0 else 0.0,
+                                    "BreakEven_Upper": roll_be_upper if i == 0 else 0.0,
                                     "POP": suggested_pop_roll if i == 0 else 0.0,
                                     "Estado": "Abierta", "Notas": f"Roll (x{n_leg['Contratos']}) desde ID {n_leg['OldID'][:4]}",
                                     "UpdatedAt": datetime.now().isoformat(), "FechaCierre": pd.NA,
@@ -795,6 +1145,12 @@ def render_new_trade():
     estrategia = c_top2.selectbox("Estrategia", ESTRATEGIAS)
     setup_val = c_top3.selectbox("🎯 Setup / Motivo", SETUPS)
     
+    # Fechas y Tags a nivel de estrategia (FUERA del expander de patas)
+    c_date1, c_date2, c_date3 = st.columns(3)
+    fecha_apertura = c_date1.date_input("📅 Fecha Apertura", value=date.today(), help="Cambia si registras la operación un día diferente al que la abriste.")
+    expiry = c_date2.date_input("📅 Vencimiento")
+    user_tags = c_date3.text_input("🏷️ Tags (separados por coma)", placeholder="income, hedge, ER play", help="Etiquetas libres para filtrar después.")
+    
     # Determinar patas según selección
     legs_count = 1
     if "Spread" in estrategia: legs_count = 2
@@ -804,43 +1160,58 @@ def render_new_trade():
     elif "Ratio" in estrategia: legs_count = 2
     
     if estrategia == "Custom / Other":
-        legs_count = st.number_input("Especifique el número de patas", min_value=1, max_value=10, value=1)
+        legs_count = st.number_input("Número de patas", min_value=1, max_value=10, value=1)
+    
+    # Obtener defaults de patas para auto-populate
+    leg_defaults = LEG_DEFAULTS.get(estrategia, [])
     
     st.markdown(f"### 🛠️ Configuración de {estrategia}")
     
     # 2. El Formulario para los datos que NO cambian la estructura del UI
     with st.form("new_trade_form", clear_on_submit=True):
-        c_p1, c_p2 = st.columns(2)
-        total_premium = c_p1.number_input("Prima Neta (Precio contrato)", value=0.0, step=0.01, help="Pon el precio del contrato (ej: 1.50). NO multipliques por 100.")
+        c_p1, c_p2, c_p3 = st.columns(3)
+        premium_help = "Precio NETO por acción de todas las patas combinadas. NO multipliques por 100." if legs_count > 1 else "Precio por acción (ej: 1.50). NO multipliques por 100."
+        total_premium = c_p1.number_input("Prima Neta (por acción)", value=0.0, step=0.01, help=premium_help)
         total_bp = c_p2.number_input("Buying Power Total ($)", value=0.0, step=100.0)
+        contratos = c_p3.number_input("Contratos", value=1, min_value=1)
         
         legs_data = []
         for i in range(legs_count):
+            # Auto-populate Side y Type según estrategia
+            default_side_idx = 0
+            default_type_idx = 0
+            if i < len(leg_defaults):
+                def_side, def_type = leg_defaults[i]
+                default_side_idx = SIDES.index(def_side) if def_side in SIDES else 0
+                default_type_idx = OPTION_TYPES.index(def_type) if def_type in OPTION_TYPES else 0
+            
             with st.expander(f"Pata {i+1}", expanded=True):
                 c1, c2, c3, c4 = st.columns(4)
-                # Incluimos la estrategia en la key para forzar el refresco al cambiar
-                l_side = c1.selectbox(f"Side {i+1}", SIDES, key=f"side_{estrategia}_{i}")
-                l_type = c2.selectbox(f"Type {i+1}", OPTION_TYPES, key=f"type_{estrategia}_{i}")
+                l_side = c1.selectbox(f"Side {i+1}", SIDES, index=default_side_idx, key=f"side_{estrategia}_{i}")
+                l_type = c2.selectbox(f"Type {i+1}", OPTION_TYPES, index=default_type_idx, key=f"type_{estrategia}_{i}")
                 l_strike = c3.number_input(f"Strike {i+1}", key=f"strike_{estrategia}_{i}")
                 l_delta = c4.number_input(f"Delta {i+1}", key=f"delta_{estrategia}_{i}", step=0.01)
                 legs_data.append({"Side": l_side, "Type": l_type, "Strike": l_strike, "Delta": l_delta})
         
-        # Guardar en session_state para el procesamiento posterior al submit
-        st.session_state[f"legs_cfg_active"] = legs_data
-                
-        expiry = st.date_input("Vencimiento")
-        contratos = st.number_input("Contratos", value=1, min_value=1)
-        
         # Cálculos sugeridos
-        suggested_be = suggest_breakeven(estrategia, legs_data, total_premium)
+        be_lower, be_upper = suggest_breakeven(estrategia, legs_data, total_premium)
         main_delta = legs_data[0]["Delta"] if legs_data else 0.0
         main_side = legs_data[0]["Side"] if legs_data else "Sell"
         suggested_pop = suggest_pop(main_delta, main_side)
         
+        is_dual_be = estrategia in DUAL_BE_STRATEGIES
+        
         st.markdown("### 📊 Métricas Adicionales")
-        c_ad1, c_ad2 = st.columns(2)
-        be_input = c_ad1.number_input("Break Even (Manual/Sugerido)", value=float(suggested_be), step=0.01)
-        pop_input = c_ad2.number_input("Prob. Éxito % (Sugerida)", value=float(suggested_pop), step=0.1)
+        if is_dual_be:
+            c_ad1, c_ad2, c_ad3 = st.columns(3)
+            be_input = c_ad1.number_input("BE Inferior (Put side)", value=float(be_lower), step=0.01, help="Break Even del lado bajista")
+            be_upper_input = c_ad2.number_input("BE Superior (Call side)", value=float(be_upper), step=0.01, help="Break Even del lado alcista")
+            pop_input = c_ad3.number_input("Prob. Éxito % (Sugerida)", value=float(suggested_pop), step=0.1)
+        else:
+            c_ad1, c_ad2 = st.columns(2)
+            be_input = c_ad1.number_input("Break Even (Manual/Sugerido)", value=float(be_lower), step=0.01)
+            be_upper_input = 0.0
+            pop_input = c_ad2.number_input("Prob. Éxito % (Sugerida)", value=float(suggested_pop), step=0.1)
         
         user_notes = st.text_area("Notas / Observaciones", help="Cualquier detalle adicional de la operación")
         
@@ -856,17 +1227,18 @@ def render_new_trade():
                 p_recibida = total_premium if i == 0 else 0.0
                 bp_leg = total_bp if i == 0 else 0.0
                 
-                # Usar pd.Timestamp para evitar conflictos con Arrow
-                today_ts = pd.Timestamp.now().normalize()
+                apertura_ts = pd.to_datetime(fecha_apertura).normalize()
                 expiry_ts = pd.to_datetime(expiry).normalize()
 
                 new_rows.append({
                     "ID": str(uuid4())[:8], "ChainID": chain_id, "ParentID": None,
-                    "Ticker": ticker, "FechaApertura": today_ts, "Expiry": expiry_ts,
-                    "Estrategia": estrategia, "Setup": setup_val, "Side": leg["Side"], "OptionType": leg["Type"], 
+                    "Ticker": ticker, "FechaApertura": apertura_ts, "Expiry": expiry_ts,
+                    "Estrategia": estrategia, "Setup": setup_val, "Tags": user_tags.strip(),
+                    "Side": leg["Side"], "OptionType": leg["Type"], 
                     "Strike": leg["Strike"], "Delta": leg["Delta"],
                     "PrimaRecibida": p_recibida, "CostoCierre": 0.0, "Contratos": contratos,
-                    "BuyingPower": bp_leg, "MaxLoss": 0.0, "BreakEven": be_input if i == 0 else 0.0, 
+                    "BuyingPower": bp_leg, "MaxLoss": 0.0, "BreakEven": be_input if i == 0 else 0.0,
+                    "BreakEven_Upper": be_upper_input if i == 0 else 0.0,
                     "POP": pop_input if i == 0 else 0.0,
                     "Estado": "Abierta", "Notas": user_notes if user_notes else f"Parte de {estrategia}",
                     "UpdatedAt": datetime.now().isoformat(), "FechaCierre": pd.NA,
@@ -878,12 +1250,9 @@ def render_new_trade():
                 if st.session_state.df.empty:
                     st.session_state.df = new_df
                 else:
-                    # Filtramos entradas vacías o nulas para evitar el FutureWarning de Pandas
                     st.session_state.df = pd.concat([st.session_state.df.dropna(how='all', axis=0), new_df], ignore_index=True)
             st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
             st.success(f"✅ ¡Estrategia {ticker} registrada con éxito!")
-            import time
-            time.sleep(1.5)
             st.rerun()
             
     if st.button("🗑️ Limpiar / Cancelar Formulario"):
@@ -960,14 +1329,18 @@ def render_history(df):
         "PrecioAccionCierre": "Precio Acción Cierre"
     })
     
-    # Columnas a mostrar
+    # Columnas a mostrar (incluye Estado)
     view_cols = [
-        "Ticker", "FechaCierre", "PnL USD", "Prima", "% Gestión", "Estrategia", "Setup", 
+        "Ticker", "FechaCierre", "Estado", "PnL USD", "Prima", "% Gestión", "Estrategia", "Setup", 
         "Contratos", "BuyingPower", "Side", "OptionType", "Strike", 
         "Prob. Éxito %", "FechaApertura", "Expiry", "Precio Acción Cierre"
     ]
     
     st.dataframe(display_df[view_cols], width="stretch", hide_index=True)
+    
+    # Exportar historial filtrado
+    csv_export = display_df[view_cols].to_csv(index=False).encode('utf-8')
+    st.download_button("📥 Exportar historial filtrado (CSV)", data=csv_export, file_name=f"strikelog_historial_{date.today()}.csv", mime="text/csv")
 
 def main():
     st.set_page_config(page_title="STRIKELOG Pro", layout="wide")
@@ -1012,13 +1385,14 @@ def main():
                     n_strike = c4.number_input("Strike", value=float(row["Strike"]))
                     n_delta = c5.number_input("Delta", value=float(row["Delta"]), step=0.01)
                     
-                    ce1, ce2 = st.columns(2)
+                    ce1, ce2, ce3 = st.columns(3)
                     n_setup = ce1.selectbox("Setup", SETUPS, index=SETUPS.index(row["Setup"]) if "Setup" in row and row["Setup"] in SETUPS else 0)
-                    n_estatue = ce2.selectbox("Estrategia", ESTRATEGIAS, index=ESTRATEGIAS.index(row["Estrategia"]) if row["Estrategia"] in ESTRATEGIAS else 0)
+                    n_estrategia = ce2.selectbox("Estrategia", ESTRATEGIAS, index=ESTRATEGIAS.index(row["Estrategia"]) if row["Estrategia"] in ESTRATEGIAS else 0)
+                    n_tags = ce3.text_input("Tags", value=str(row.get("Tags", "") or ""), help="Etiquetas separadas por coma")
                     
                     c6, c7, c8, c8_2, c8_3 = st.columns(5)
-                    n_prima = c6.number_input("Prima Recibida", value=float(row["PrimaRecibida"]))
-                    n_costo = c7.number_input("Costo Cierre (Prima)", value=float(row["CostoCierre"]))
+                    n_prima = c6.number_input("Prima Neta (por acción)", value=float(row["PrimaRecibida"]))
+                    n_costo = c7.number_input("Cierre Neto (por acción)", value=float(row["CostoCierre"]))
                     n_contracts = c8.number_input("Contratos", value=int(row["Contratos"]), min_value=1)
                     n_bp = c8_2.number_input("Buying Power", value=float(row["BuyingPower"]))
                     n_stock_close = c8_3.number_input("Precio Acción Cierre", value=float(row["PrecioAccionCierre"]))
@@ -1028,9 +1402,10 @@ def main():
                     n_expiry = cd2.date_input("Fecha Vencimiento", value=pd.to_datetime(row["Expiry"]).date())
                     n_fecha_cl = cd3.date_input("Fecha Cierre", value=pd.to_datetime(row["FechaCierre"]).date() if not pd.isna(row["FechaCierre"]) else date.today())
                     
-                    c9, c10, c11, c12 = st.columns(4)
+                    c9, c10, c10b, c11, c12 = st.columns(5)
                     n_pnl_usd = c9.number_input("PnL USD Realizado", value=float(row["PnL_USD_Realizado"]))
-                    n_be = c10.number_input("Break Even", value=float(row["BreakEven"]))
+                    n_be = c10.number_input("Break Even (Inf)", value=float(row["BreakEven"]))
+                    n_be_upper = c10b.number_input("BE Superior", value=float(row.get("BreakEven_Upper", 0) or 0), help="Solo para Iron Condor, Butterfly, Strangle, Straddle")
                     n_pop = c11.number_input("Prob. Éxito %", value=float(row["POP"]))
                     n_estado = c12.selectbox("Estado", ESTADOS, index=ESTADOS.index(row["Estado"]))
 
@@ -1039,14 +1414,18 @@ def main():
                     
                     n_notas = st.text_area("Notas", row["Notas"])
                     
-                    if st.form_submit_button("Guardar Cambios"):
+                    # Resumen de cambios antes de guardar
+                    st.warning("⚠️ Revisa los cambios antes de guardar. Se creará un backup automático del CSV actual.")
+                    
+                    if st.form_submit_button("💾 Guardar Cambios"):
                         st.session_state.df.at[idx, "Ticker"] = n_ticker
                         st.session_state.df.at[idx, "Side"] = n_side
                         st.session_state.df.at[idx, "OptionType"] = n_type
                         st.session_state.df.at[idx, "Strike"] = n_strike
                         st.session_state.df.at[idx, "Delta"] = n_delta
                         st.session_state.df.at[idx, "Setup"] = n_setup
-                        st.session_state.df.at[idx, "Estrategia"] = n_estatue
+                        st.session_state.df.at[idx, "Estrategia"] = n_estrategia
+                        st.session_state.df.at[idx, "Tags"] = n_tags.strip()
                         st.session_state.df.at[idx, "FechaApertura"] = pd.to_datetime(n_fecha_ap)
                         st.session_state.df.at[idx, "Expiry"] = pd.to_datetime(n_expiry)
                         st.session_state.df.at[idx, "FechaCierre"] = pd.to_datetime(n_fecha_cl) if n_estado != "Abierta" else pd.NA
@@ -1057,6 +1436,7 @@ def main():
                         st.session_state.df.at[idx, "PrecioAccionCierre"] = n_stock_close
                         st.session_state.df.at[idx, "PnL_USD_Realizado"] = n_pnl_usd
                         st.session_state.df.at[idx, "BreakEven"] = n_be
+                        st.session_state.df.at[idx, "BreakEven_Upper"] = n_be_upper
                         st.session_state.df.at[idx, "POP"] = n_pop
                         st.session_state.df.at[idx, "Notas"] = n_notas
                         st.session_state.df.at[idx, "Estado"] = n_estado
@@ -1075,9 +1455,31 @@ def main():
                         st.success("¡Actualizado con éxito!")
                         st.rerun()
 
+                # Botón eliminar con confirmación doble
+                st.divider()
+                st.markdown("#### 🗑️ Zona de Peligro")
+                if f"confirm_delete_{trade_id}" not in st.session_state:
+                    if st.button(f"🗑️ Eliminar operación {row['Ticker']} (ID: {trade_id})", type="secondary"):
+                        st.session_state[f"confirm_delete_{trade_id}"] = True
+                        st.rerun()
+                else:
+                    st.error(f"⚠️ ¿Estás SEGURO de eliminar **{row['Ticker']} {row['Estrategia']}** (ID: {trade_id})? Esta acción no se puede deshacer.")
+                    c_del1, c_del2 = st.columns(2)
+                    if c_del1.button("✅ Sí, eliminar definitivamente", type="primary"):
+                        st.session_state.df = st.session_state.df[st.session_state.df["ID"] != trade_id].reset_index(drop=True)
+                        st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+                        del st.session_state[f"confirm_delete_{trade_id}"]
+                        if "edit_selector" in st.session_state:
+                            del st.session_state["edit_selector"]
+                        st.success("Operación eliminada.")
+                        st.rerun()
+                    if c_del2.button("❌ Cancelar"):
+                        del st.session_state[f"confirm_delete_{trade_id}"]
+                        st.rerun()
+
                 if st.button("⬅️ Volver a la Lista / Cancelar"):
-                    # Al borrar la key del selectbox y hacer rerun, se resetea a la posición original
-                    del st.session_state["edit_selector"]
+                    if "edit_selector" in st.session_state:
+                        del st.session_state["edit_selector"]
                     st.rerun()
 
 if __name__ == "__main__":

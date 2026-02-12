@@ -383,6 +383,21 @@ def suggest_pop(delta, side):
     else:
         return round(abs_delta * 100, 1)
 
+def leg_color_label(side, option_type):
+    """Genera una etiqueta HTML coloreada para identificar visualmente cada pata."""
+    if side == "Sell":
+        bg = "#e74c3c"
+        border = "#c0392b"
+    else:
+        bg = "#27ae60"
+        border = "#1e8449"
+    return (
+        f"<span style='background:{bg}; color:white; padding:4px 12px; "
+        f"border-radius:6px; font-size:13px; font-weight:700; "
+        f"border:1px solid {border}; letter-spacing:0.5px;'"
+        f">{side} {option_type}</span>"
+    )
+
 def get_roll_history(df, current_id):
     """Rastrea hacia atrás todos los padres de un trade para obtener la secuencia de roles."""
     history = []
@@ -804,14 +819,16 @@ def render_active_portfolio(df):
                     be_msg = f"📈 +{diff_be:.2f}" if diff_be > 0 else (f"📉 {diff_be:.2f}" if diff_be < 0 else "➡️ S/C")
                     st.caption(f"**Evolución del BE (último rol):** `{last_be:.2f}` → `{curr_be:.2f}` ({be_msg})")
             
-            # Tabla detallada de las patas
-            st.dataframe(
-                group[["Side", "OptionType", "Strike", "Delta", "PrimaRecibida", "Contratos"]].rename(columns={
-                    "OptionType": "Tipo", "PrimaRecibida": "Prima"
-                }),
-                width="stretch",
-                hide_index=True
-            )
+            # Detalle de patas con badges de color
+            for _, leg_row in group.iterrows():
+                st.markdown(
+                    f"{leg_color_label(leg_row['Side'], leg_row['OptionType'])} "
+                    f"&nbsp; **Strike {leg_row['Strike']}** · "
+                    f"Δ {leg_row['Delta']:.2f} · "
+                    f"Prima ${leg_row['PrimaRecibida']:.2f} · "
+                    f"x{leg_row['Contratos']}",
+                    unsafe_allow_html=True
+                )
             
             # --- NOTAS RÁPIDAS ---
             current_notes = first_row["Notas"] if pd.notna(first_row["Notas"]) else ""
@@ -1075,7 +1092,7 @@ def render_active_portfolio(df):
                 for idx, leg in target_group.iterrows():
                     c_sel, c_info = st.columns([1, 4])
                     should_roll = c_sel.checkbox("Rolar", value=True, key=f"check_roll_{leg['ID']}")
-                    c_info.write(f"**Pata:** {leg['Side']} {leg['OptionType']} @ {leg['Strike']}")
+                    c_info.markdown(f"{leg_color_label(leg['Side'], leg['OptionType'])} &nbsp; **@ {leg['Strike']}**", unsafe_allow_html=True)
                     if should_roll:
                         legs_to_roll.append(leg)
                 
@@ -1136,7 +1153,7 @@ def render_active_portfolio(df):
                     
                     new_legs_data = []
                     for leg in legs_to_roll:
-                        st.markdown(f"**Ajuste para: {leg['Side']} {leg['OptionType']}**")
+                        st.markdown(f"**Ajuste para:** {leg_color_label(leg['Side'], leg['OptionType'])}", unsafe_allow_html=True)
                         c_l1, c_l2 = st.columns(2)
                         n_strike = c_l1.number_input(f"Nuevo Strike", value=float(leg['Strike']), key=f"roll_strike_{leg['ID']}")
                         n_delta = c_l2.number_input(f"Nuevo Delta", value=float(leg['Delta']), key=f"roll_delta_{leg['ID']}")
@@ -1291,14 +1308,13 @@ def render_new_trade():
         legs_data = []
         
         if has_defaults and estrategia != "Custom / Other":
-            # --- MODO SIMPLIFICADO: Side/Type son read-only, solo se piden Strikes ---
-            # Construir labels descriptivos para cada pata
+            # --- MODO SIMPLIFICADO: Side/Type con badge de color ---
             strike_cols = st.columns(legs_count)
             for i in range(legs_count):
                 def_side, def_type = leg_defaults[i]
-                label = f"{def_side} {def_type}"
+                strike_cols[i].markdown(leg_color_label(def_side, def_type), unsafe_allow_html=True)
                 l_strike = strike_cols[i].number_input(
-                    f"Strike {label}", 
+                    "Strike", 
                     key=f"strike_{estrategia}_{i}",
                     help=f"Pata {i+1}: {def_side} {def_type}"
                 )

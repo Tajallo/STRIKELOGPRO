@@ -25,7 +25,7 @@ COLUMNS = [
     "Estrategia", "Setup", "Tags", "Side", "OptionType", "Strike", "Delta", "PrimaRecibida", "CostoCierre", "Contratos", 
     "BuyingPower", "BreakEven", "BreakEven_Upper", "POP",
     "Estado", "Notas", "UpdatedAt", "FechaCierre", "MaxProfitUSD", "ProfitPct", "PnL_Capital_Pct",
-    "PrecioAccionCierre", "PnL_USD_Realizado"
+    "PrecioAccionCierre", "PnL_USD_Realizado", "EarningsDate"
 ]
 
 SETUPS = ["Earnings", "Soporte/Resistencia", "VIX alto", "Tendencial", "Reversión", "Inversión Largo Plazo", "Otro"]
@@ -120,6 +120,7 @@ class JournalManager:
         df["FechaApertura"] = pd.to_datetime(df["FechaApertura"], errors='coerce')
         df["Expiry"] = pd.to_datetime(df["Expiry"], errors='coerce')
         df["FechaCierre"] = pd.to_datetime(df["FechaCierre"], errors='coerce')
+        df["EarningsDate"] = pd.to_datetime(df["EarningsDate"], errors='coerce')
         
         # Forzar tipo datetime64[ns] para compatibilidad total con Arrow
         df["FechaApertura"] = df["FechaApertura"].fillna(pd.Timestamp.now().normalize())
@@ -509,7 +510,9 @@ def render_dashboard(df):
         
         # Fila 1: Métricas Principales con diseño mejorado
         m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("PnL Realizado", f"${pnl_total:,.2f}", delta=f"${pnl_total:,.2f}" if pnl_total != 0 else None)
+        # Formatear delta para asegurar color correcto (si empieza con $ y es negativo, Streamlit a veces lo pone verde)
+        pnl_delta_str = f"${pnl_total:,.2f}" if pnl_total >= 0 else f"-${abs(pnl_total):,.2f}"
+        m1.metric("PnL Realizado", f"${pnl_total:,.2f}", delta=pnl_delta_str if pnl_total != 0 else None)
         m2.metric("Win Rate", f"{win_rate:.1f}%", help="Porcentaje de operaciones positivas")
         m3.metric("Profit Factor", f"{profit_factor:.2f}x", help="Ratio Ganancia Total / Pérdida Total")
         m4.metric("Captura Media", f"{capture_eff:.1f}%", help="Promedio de beneficio sobre la prima recibida")
@@ -557,7 +560,8 @@ def render_dashboard(df):
         with st.expander("📊 Detalle Avanzado", expanded=False):
             s1, s2, s3, s4 = st.columns(4)
             avg_profit = closed_trades["PnL_USD_Realizado"].mean() if not closed_trades.empty else 0
-            s1.markdown(f"**Promedio/Trade:**<br><span style='font-size:18px; color:#00ffa2;'>${avg_profit:,.2f}</span>", unsafe_allow_html=True)
+            avg_color = "#00ffa2" if avg_profit >= 0 else "#ff6b6b"
+            s1.markdown(f"**Promedio/Trade:**<br><span style='font-size:18px; color:{avg_color};'>${avg_profit:,.2f}</span>", unsafe_allow_html=True)
             
             best_ticker = closed_trades.groupby("Ticker")["PnL_USD_Realizado"].sum().idxmax() if not closed_trades.empty else "-"
             s2.markdown(f"**Top Ticker:**<br><span style='font-size:18px; color:#00ffa2;'>{best_ticker}</span>", unsafe_allow_html=True)
@@ -657,6 +661,66 @@ def render_dashboard(df):
 
 def render_active_portfolio(df):
     st.header("📂 Cartera Activa")
+    
+    # CSS personalizado para badges y tarjetas
+    st.markdown("""
+    <style>
+    .dte-badge {
+        padding: 4px 6px; /* Reducido de 8px */
+        border-radius: 6px;
+        text-align: center;
+        color: white;
+        font-weight: bold;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        height: 100%;
+        min-height: 42px; /* Reducido de 50px */
+        box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+        font-size: 14px;
+    }
+    .dte-val { font-size: 16px; line-height: 1.1; } /* Reducido de 18px */
+    .dte-label { font-size: 9px; opacity: 0.9; text-transform: uppercase; }
+    
+    .tag-pill {
+        background-color: #2c3e50;
+        color: #bdc3c7;
+        padding: 2px 8px;
+        border-radius: 10px;
+        font-size: 11px;
+        margin-right: 4px;
+        border: 1px solid #34495e;
+    }
+    .strategy-pill {
+        background-color: #1abc9c;
+        color: black;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 12px;
+        font-weight: bold;
+        margin-right: 6px;
+    }
+    .earnings-badge {
+        background-color: #8e44ad;
+        color: white;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-size: 11px;
+        font-weight: bold;
+    }
+    .dit-warning {
+        color: #e67e22;
+        font-weight: bold;
+        font-size: 12px;
+    }
+    .leg-row {
+        border-bottom: 1px solid rgba(255,255,255,0.05);
+        padding: 4px 0;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
     active_df = df[df["Estado"] == "Abierta"].copy()
     if active_df.empty:
         st.info("No hay posiciones abiertas.")
@@ -680,12 +744,15 @@ def render_active_portfolio(df):
         ticker = first_row["Ticker"]
         strategy = first_row["Estrategia"]
         expiry = first_row["Expiry"]
+        setup = first_row["Setup"]
+        tags = str(first_row.get("Tags", "")).split(",") if pd.notna(first_row.get("Tags", "")) else []
+        earnings_date = pd.to_datetime(first_row.get("EarningsDate")).date() if pd.notna(first_row.get("EarningsDate")) else None
         
         # Métricas agregadas del grupo
         total_bp = group["BuyingPower"].sum()
         total_premium = group["PrimaRecibida"].sum()
         
-        # Asegurar que expiry es objeto fecha para el cálculo
+        # Asegurar que expiry es objeto fecha par el cálculo
         expiry_dt = pd.to_datetime(expiry).date() if pd.notna(expiry) else date.today()
         dte = (expiry_dt - date.today()).days
         
@@ -693,12 +760,38 @@ def render_active_portfolio(df):
         apertura_dt = pd.to_datetime(first_row["FechaApertura"]).date() if pd.notna(first_row["FechaApertura"]) else date.today()
         dit = (date.today() - apertura_dt).days
         
-        # Semáforo DTE
-        dte_color = "⚪"
-        if dte < 7: dte_color = "🔴"
-        elif dte <= 21: dte_color = "🟡"
-        else: dte_color = "🟢"
+        # Configuración Badge DTE
+        dte_bg = "#95a5a6" # gris por defecto
+        if dte < 7: dte_bg = "#e74c3c" # rojo
+        elif dte <= 21: dte_bg = "#f1c40f" # amarillo
+        else: dte_bg = "#27ae60" # verde
         
+        dte_html = f"""
+        <div class="dte-badge" style="background-color: {dte_bg};">
+            <span class="dte-val">{dte}</span>
+            <span class="dte-label">DTE</span>
+        </div>
+        """
+        
+        # Marcadores visuales
+        earnings_icon = ""
+        # Verificar si earnings existen y faltan 14 días o menos
+        # Marcadores visuales
+        earnings_txt = ""
+        # Prioridad: Si hay fecha, usar el cálculo. Si no, mirar el Setup.
+        if earnings_date:
+             days_to_earn = (earnings_date - date.today()).days
+             if 0 <= days_to_earn <= 14:
+                 earnings_txt = f"📢 EARNINGS ({days_to_earn}d)"
+        elif setup == "Earnings":
+             earnings_txt = "📢 EARNINGS"
+            
+        dit_display = ""
+        if dit > 45:
+            dit_display = f" <span class='dit-warning'>🐌 DIT {dit}d</span>"
+        else:
+            dit_display = f" <span style='color:#7f8c8d; font-size:12px;'>DIT: {dit}d</span>"
+            
         # Icono de dirección crédito/débito
         strat_dir = detect_strategy_direction(strategy, first_row["Side"])
         dir_icon = "📥" if strat_dir == "Sell" else "📤"
@@ -707,38 +800,33 @@ def render_active_portfolio(df):
         roll_chain = get_roll_history(df, first_row["ID"])
         num_rolls = len(roll_chain) - 1 # El actual no cuenta como roll
         
-        roll_label = f" 🔄 [ROL #{num_rolls}]" if num_rolls > 0 else ""
+        roll_label = f" 🔄 x{num_rolls}" if num_rolls > 0 else ""
 
         # Cálculos extendidos de la cadena (Rolls + Actual)
         hist_credits = sum(float(r["PrimaRecibida"] or 0) for r in roll_chain)
-        # Solo restamos el costo de cierre de las operaciones que ya están cerradas (los pasos previos del roll)
+        # Solo restamos el costo de cierre de las operaciones que ya están cerradas
         hist_debits = sum(float(r["CostoCierre"] or 0) for r in roll_chain if r["Estado"] != "Abierta")
         net_credit_chain = hist_credits - hist_debits
 
         realized_pnl_chain = sum(float(r["PnL_USD_Realizado"] or 0) for r in roll_chain if r["Estado"] != "Abierta")
         
-        # Recálculo dinámico del Break Even REAL basado en el Crédito Neto Acumulado
-        # Para estrategias duales, calculamos BE inferior y superior
+        # Recálculo dinámico del Break Even
         is_dual_be = strategy in DUAL_BE_STRATEGIES
         calculated_be = 0.0
         calculated_be_upper = 0.0
         
         try:
             if is_dual_be:
-                # Para estrategias duales, recalcular usando los datos de las patas del grupo actual
                 legs_for_be = [{"Side": r["Side"], "Type": r["OptionType"], "OptionType": r["OptionType"], 
                                 "Strike": float(r["Strike"])} for _, r in group.iterrows()]
                 calculated_be, calculated_be_upper = suggest_breakeven(strategy, legs_for_be, net_credit_chain)
                 
-                # Si el cálculo devolvió 0, usar los valores almacenados como fallback
                 if calculated_be == 0.0 and calculated_be_upper == 0.0:
                     calculated_be = float(first_row["BreakEven"] or 0)
                     calculated_be_upper = float(first_row.get("BreakEven_Upper", 0) or 0)
             else:
-                # Estrategias de un solo BE (lógica original mejorada)
                 legs_for_be = [{"Side": first_row["Side"], "Type": first_row["OptionType"], 
                                 "OptionType": first_row["OptionType"], "Strike": float(first_row["Strike"])}]
-                # Para spreads, incluir ambas patas
                 if len(group) > 1:
                     legs_for_be = [{"Side": r["Side"], "Type": r["OptionType"], "OptionType": r["OptionType"],
                                     "Strike": float(r["Strike"])} for _, r in group.iterrows()]
@@ -750,152 +838,184 @@ def render_active_portfolio(df):
             calculated_be = float(first_row["BreakEven"] or 0)
             calculated_be_upper = float(first_row.get("BreakEven_Upper", 0) or 0)
 
-        # Lógica de visualización directa (sin redondeos, con signo)
         formatted_net = f"${net_credit_chain:,.2f}"
         
-        # Etiquetas para el Detalle (Métricas)
-        metric_net_label = "Prima Total (Cadena)"
-        metric_net_val = formatted_net
-        
-        # Construcción del Header Limpio
-        roll_pnl_str = ""
-        # Sin redondeos en PnL de rolls
-        if abs(realized_pnl_chain) > 0.01:
-            roll_pnl_str = f" • Rolls: ${realized_pnl_chain:,.2f}"
-
-        # Formato con BE dual o simple según estrategia
+        # Header del Expander Limpio
         if is_dual_be and calculated_be_upper > 0:
-            be_display = f"**BE ${calculated_be:,.2f} / ${calculated_be_upper:,.2f}**"
+            be_str = f"${calculated_be:,.2f} / ${calculated_be_upper:,.2f}"
         else:
-            be_display = f"**BE ${calculated_be:,.2f}**"
+            be_str = f"${calculated_be:,.2f}"
         
-        header_text = f"{dte_color}{dir_icon}{roll_label} **{ticker}** • {strategy} • {dte}d (DIT:{dit}d) • {be_display} • Prima: {formatted_net}{roll_pnl_str}"
+        # Header del Expander Limpio + Earnings Icon (Sin HTML en título expander)
+        if earnings_txt:
+            header_title = f"**{ticker}** {dir_icon} {strategy} {roll_label}   🚨 {earnings_txt} 🚨"
+        else:
+            header_title = f"**{ticker}** {dir_icon} {strategy} {roll_label}"
         
-        with st.expander(header_text, expanded=False):
-            # Vista resumen de la estrategia
-            if is_dual_be and calculated_be_upper > 0:
-                st.caption(f"📅 Vencimiento: {expiry_dt} | DIT: {dit}d | BP Reservado: ${total_bp:,.2f} | Zona de Max Profit: ${calculated_be:,.2f} — ${calculated_be_upper:,.2f}")
-            else:
-                st.caption(f"📅 Vencimiento: {expiry_dt} | DIT: {dit}d | BP Reservado: ${total_bp:,.2f} | BE Original: ${float(first_row['BreakEven'] or 0):.2f}")
+        # Layout de Tarjeta
+        c_dte, c_card = st.columns([1, 10])
+        
+        with c_dte:
+            st.markdown(dte_html, unsafe_allow_html=True)
             
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric(metric_net_label, metric_net_val, help="Crédito neto total (Suma primas - Costos cierre históricos).")
-            if is_dual_be and calculated_be_upper > 0:
-                c2.metric("BE Campaña (↓ / ↑)", f"${calculated_be:,.2f} / ${calculated_be_upper:,.2f}", help="BEs inferior y superior ajustados con rolls.")
-            else:
-                c2.metric("Break Even (Campaña)", f"${calculated_be:,.2f}", help="BE ajustado considerando pérdidas/ganancias de rolls anteriores.")
-            c3.metric("Capital Reservado", f"${total_bp:,.2f}")
-            c4.metric("PnL Realizado (Rolls)", f"${realized_pnl_chain:,.2f}", delta=realized_pnl_chain if realized_pnl_chain != 0 else None)
-            
-            if num_rolls > 0:
-                st.markdown("#### 🕒 Historial de esta posición")
-                # Mostrar el camino desde el origen
-                reversed_chain = list(reversed(roll_chain))
-                origin = reversed_chain[0]
+        with c_card:
+            # Usamos un expander para el detalle, pero el título ya tiene mucha info
+            with st.expander(header_title, expanded=False):
+                # Sub-header visual con Tags (sin duplicar earnings)
+                tags_html = "".join([f"<span class='tag-pill'>{t.strip()}</span>" for t in tags if t.strip()])
+                st.markdown(f"{dit_display} &nbsp; {tags_html}", unsafe_allow_html=True)
                 
-                # Resumen de evolución
-                origin_date = pd.to_datetime(origin['FechaApertura']).strftime("%Y-%m-%d")
-                st.info(f"📍 **Origen:** Abierto el `{origin_date}` con Strike `{origin['Strike']} {origin['OptionType']}`.")
-                
-                # Pequeña tabla con la evolución
-                hist_data = []
-                for i, r in enumerate(reversed_chain):
-                    label = "ORIGEN" if i == 0 else f"ROL #{i}"
-                    f_apertura = pd.to_datetime(r["FechaApertura"]).strftime("%Y-%m-%d")
-                    hist_data.append({
-                        "Etapa": label,
-                        "Fecha": f_apertura,
-                        "Strike": f"{r['Strike']} {r['OptionType']}",
-                        "BE": r["BreakEven"],
-                        "PnL Realizado": f"${r['PnL_USD_Realizado']:.2f}" if r['Estado'] != 'Abierta' else "-"
-                    })
-                
-                st.table(pd.DataFrame(hist_data))
-                
-                if num_rolls > 0:
-                    last_be = reversed_chain[-2]["BreakEven"]
-                    curr_be = first_row["BreakEven"]
-                    diff_be = curr_be - last_be
-                    be_msg = f"📈 +{diff_be:.2f}" if diff_be > 0 else (f"📉 {diff_be:.2f}" if diff_be < 0 else "➡️ S/C")
-                    st.caption(f"**Evolución del BE (último rol):** `{last_be:.2f}` → `{curr_be:.2f}` ({be_msg})")
-            
-            # Detalle de patas con badges de color
-            for _, leg_row in group.iterrows():
-                st.markdown(
-                    f"{leg_color_label(leg_row['Side'], leg_row['OptionType'])} "
-                    f"&nbsp; **Strike {leg_row['Strike']}** · "
-                    f"Δ {leg_row['Delta']:.2f} · "
-                    f"Prima ${leg_row['PrimaRecibida']:.2f} · "
-                    f"x{leg_row['Contratos']}",
-                    unsafe_allow_html=True
-                )
-            
-            # --- NOTAS RÁPIDAS ---
-            current_notes = first_row["Notas"] if pd.notna(first_row["Notas"]) else ""
-            new_notes = st.text_area("📝 Notas", value=current_notes, key=f"notes_{chain_id}", height=70, help="Edita las notas de toda la estrategia aquí mismo.")
-            
-            if new_notes != current_notes:
-                if st.button("💾 Guardar Notas", key=f"save_notes_{chain_id}"):
-                    # Actualizar notas en todas las patas del ChainID
-                    for idx, row in group.iterrows():
-                         real_idx = df.index[df["ID"] == row["ID"]][0]
-                         df.at[real_idx, "Notas"] = new_notes
-                         df.at[real_idx, "UpdatedAt"] = datetime.now().isoformat()
-                    
-                    st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
-                    st.success("Notas actualizadas.")
-                    st.rerun()
-            
-            # Acciones Rápidas para la Estrategia Completa
-            c_btn_quick, c_btn_manage = st.columns(2)
-            
-            if c_btn_quick.button(f"⚡ Cerrar Rápido", key=f"btn_quick_{chain_id}"):
-                st.session_state[f"quick_close_{chain_id}"] = True
-            
-            if c_btn_manage.button(f"🎯 Gestionar", key=f"btn_manage_{chain_id}"):
-                st.session_state["manage_chain_id"] = chain_id
-                st.rerun()
-            
-            # --- MINI PANEL DE CIERRE RÁPIDO ---
-            if st.session_state.get(f"quick_close_{chain_id}", False):
                 st.markdown("---")
-                qc1, qc2, qc3 = st.columns([2, 2, 1])
-                q_close_price = qc1.number_input("Cierre ($/acción)", value=0.0, step=0.01, key=f"qcp_{chain_id}")
                 
-                # Calcular PnL preview
-                q_entry = group["PrimaRecibida"].sum()
-                q_contracts = int(first_row["Contratos"])
-                q_bp = group["BuyingPower"].sum()
-                q_pnl, q_pct, _ = calculate_pnl_metrics(
-                    q_entry, q_close_price, q_contracts, strategy, q_bp, first_row["Side"]
-                )
-                qc2.metric("PnL", f"${q_pnl:,.2f}", delta=f"{q_pct:.0f}%")
+                # Métricas Clave
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Prima Total", formatted_net, help="Crédito neto total de la campaña (incluyendo rolls)")
+                m2.metric("Break Evens", be_str, help="Puntos de equilibrio ajustados")
+                m3.metric("Capital Reservado", f"${total_bp:,.2f}")
+                m4.metric("PnL Realizado (Rolls)", f"${realized_pnl_chain:,.2f}", delta=realized_pnl_chain if realized_pnl_chain != 0 else None)
+            
+                # --- SECCIÓN DE HISTORIAL DE ROLLS (Corregida) ---
+                if num_rolls > 0:
+                    st.markdown("#### 🕒 Historial de esta posición")
+                    
+                    # Reconstruir la cadena histórica completa para visualización
+                    reversed_chain = list(reversed(roll_chain))
+                    if reversed_chain:
+                        origin = reversed_chain[0]
+                        origin_date = pd.to_datetime(origin['FechaApertura']).strftime("%Y-%m-%d") if pd.notna(origin['FechaApertura']) else "N/A"
+                        st.info(f"📍 **Origen:** Abierto el `{origin_date}` con Strike `{origin.get('Strike', '')} {origin.get('OptionType', '')}`.")
+                        
+                        hist_data = []
+                        for i, r in enumerate(reversed_chain):
+                            # Etiquetar cada paso
+                            if i == 0: label = "ORIGEN"
+                            elif i == len(reversed_chain) - 1: label = "ACTUAL" # La última en la lista reversed es la actual
+                            else: label = f"ROL #{i}"
+                            
+                            f_apertura = pd.to_datetime(r["FechaApertura"]).strftime("%Y-%m-%d") if pd.notna(r["FechaApertura"]) else ""
+                            
+                            # PnL solo tiene sentido para las cerradas (pasos previos)
+                            pnl_val = f"${r['PnL_USD_Realizado']:.2f}" if r['Estado'] != 'Abierta' else "-"
+                            
+                            hist_data.append({
+                                "Etapa": label,
+                                "Fecha": f_apertura,
+                                "Strike": f"{r.get('Strike','')} {r.get('OptionType','')}",
+                                "BE": f"{r.get('BreakEven',0):.2f}",
+                                "PnL Realizado": pnl_val
+                            })
+                        
+                        # Mostrar tabla
+                        st.table(pd.DataFrame(hist_data))
+                        
+                        # Mostrar evolución del BE
+                        if len(reversed_chain) >= 2:
+                            prev_be = reversed_chain[-2].get("BreakEven", 0.0)
+                            curr_be = first_row.get("BreakEven", 0.0)
+                            diff_be = float(curr_be) - float(prev_be)
+                            
+                            icon_trend = "➡️"
+                            if diff_be > 0: icon_trend = "📈"
+                            elif diff_be < 0: icon_trend = "📉"
+                            
+                            st.caption(f"**Evolución del BE (último rol):** `{prev_be:.2f}` → `{curr_be:.2f}` ({icon_trend} {diff_be:+.2f})")
                 
-                if qc3.button("✅ Cerrar", key=f"qcc_{chain_id}", type="primary"):
-                    max_profit_usd = q_entry * q_contracts * 100
-                    q_profit_pct = (q_pnl / max_profit_usd * 100) if max_profit_usd > 0 else 0.0
+                st.markdown("###### 🦵 Patas de la Estrategia")
+                
+                # Tabla de Legs Custom para mejor alineación
+                leg_cols = st.columns([1.5, 1, 1.5, 1, 1.5, 1.5])
+                fields = ["Lado", "Tipo", "Strike", "Cnt", "Delta", "Prima"]
+                for i, f in enumerate(fields):
+                    leg_cols[i].markdown(f"**{f}**")
+                
+                for _, leg in group.iterrows():
+                    l_c1, l_c2, l_c3, l_c4, l_c5, l_c6 = st.columns([1.5, 1, 1.5, 1, 1.5, 1.5])
+                    side_color = "#e74c3c" if leg["Side"] == "Sell" else "#27ae60"
+                    l_c1.markdown(f"<span style='color:{side_color}; font-weight:bold;'>{leg['Side']}</span>", unsafe_allow_html=True)
+                    l_c2.write(leg["OptionType"])
+                    l_c3.write(f"{leg['Strike']}")
+                    l_c4.write(f"{int(leg.get('Contratos', 1))}")
+                    l_c5.write(f"{leg.get('Delta', 0):.2f}")
+                    l_c6.write(f"${leg.get('PrimaRecibida', 0):.2f}")
+                
+                st.markdown("---")
+                
+                # --- NOTAS RÁPIDAS Y CONFIGURACIÓN ---
+                c_notes, c_config = st.columns([3, 1])
+                current_notes = first_row["Notas"] if pd.notna(first_row["Notas"]) else ""
+                new_notes = c_notes.text_area("📝 Notas", value=current_notes, key=f"notes_{chain_id}", height=70, help="Edita las notas de toda la estrategia aquí mismo.")
+                
+                # Edición rápida de Earnings Date
+                current_earnings = pd.to_datetime(first_row.get("EarningsDate")).date() if pd.notna(first_row.get("EarningsDate")) else None
+                new_earnings = c_config.date_input("📢 Earnings", value=current_earnings, key=f"earn_{chain_id}", help="Fecha de próximos resultados.")
+                
+                # Detectar cambios en Notas o Earnings
+                notes_changed = (new_notes != current_notes)
+                earnings_changed = (new_earnings != current_earnings)
+                
+                if notes_changed or earnings_changed:
+                    if st.button("💾 Guardar Cambios", key=f"save_changes_{chain_id}"):
+                        # Actualizar notas y earnings en todas las patas del ChainID
+                        for idx, row in group.iterrows():
+                             real_idx = df.index[df["ID"] == row["ID"]][0]
+                             if notes_changed:
+                                 df.at[real_idx, "Notas"] = new_notes
+                             if earnings_changed:
+                                 df.at[real_idx, "EarningsDate"] = pd.to_datetime(new_earnings).normalize() if new_earnings else pd.NA
+                             
+                             df.at[real_idx, "UpdatedAt"] = datetime.now().isoformat()
+                        
+                        st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+                        st.success("Datos actualizados.")
+                        st.rerun()
                     
-                    for idx_q, row_q in group.iterrows():
-                        real_idx_q = df.index[df["ID"] == row_q["ID"]][0]
-                        df.at[real_idx_q, "Estado"] = "Cerrada"
-                        df.at[real_idx_q, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        if row_q["ID"] == first_row["ID"]:
-                            df.at[real_idx_q, "CostoCierre"] = q_close_price
-                            df.at[real_idx_q, "PnL_USD_Realizado"] = q_pnl
-                            df.at[real_idx_q, "ProfitPct"] = q_profit_pct
-                            df.at[real_idx_q, "PnL_Capital_Pct"] = (q_pnl / q_bp * 100) if q_bp > 0 else 0.0
-                        else:
-                            df.at[real_idx_q, "CostoCierre"] = 0.0
-                            df.at[real_idx_q, "PnL_USD_Realizado"] = 0.0
-                            df.at[real_idx_q, "ProfitPct"] = 0.0
-                            df.at[real_idx_q, "PnL_Capital_Pct"] = 0.0
-                    
-                    st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
-                    # Activar post-mortem prompt
-                    st.session_state["post_mortem"] = {"chain_id": chain_id, "ticker": ticker, "pnl": q_pnl}
-                    del st.session_state[f"quick_close_{chain_id}"]
-                    st.success(f"✅ {ticker} cerrado: ${q_pnl:,.2f}")
+                # Acciones Rápidas
+                c_btn_quick, c_btn_manage = st.columns(2)
+                if c_btn_quick.button(f"⚡ Cerrar Rápido", key=f"btn_quick_{chain_id}"):
+                    st.session_state[f"quick_close_{chain_id}"] = True
+                
+                if c_btn_manage.button(f"🎯 Gestionar / Rol", key=f"btn_manage_{chain_id}"):
+                    st.session_state["manage_chain_id"] = chain_id
                     st.rerun()
+                
+                # --- MINI PANEL DE CIERRE RÁPIDO ---
+                if st.session_state.get(f"quick_close_{chain_id}", False):
+                    st.markdown("---")
+                    qc1, qc2, qc3 = st.columns([2, 2, 1])
+                    q_close_price = qc1.number_input("Cierre ($/acción)", value=0.0, step=0.01, key=f"qcp_{chain_id}")
+                    
+                    q_entry = group["PrimaRecibida"].sum()
+                    q_contracts = int(first_row["Contratos"])
+                    q_bp = group["BuyingPower"].sum()
+                    q_pnl, q_pct, _ = calculate_pnl_metrics(
+                        q_entry, q_close_price, q_contracts, strategy, q_bp, first_row["Side"]
+                    )
+                    qc2.metric("PnL Est.", f"${q_pnl:,.2f}", delta=f"{q_pct:.0f}%")
+                    
+                    if qc3.button("Confirmar Cierre", key=f"qcc_{chain_id}", type="primary"):
+                        max_profit_usd = q_entry * q_contracts * 100
+                        q_profit_pct = (q_pnl / max_profit_usd * 100) if max_profit_usd > 0 else 0.0
+                        
+                        for idx_q, row_q in group.iterrows():
+                            real_idx_q = df.index[df["ID"] == row_q["ID"]][0]
+                            df.at[real_idx_q, "Estado"] = "Cerrada"
+                            df.at[real_idx_q, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            if row_q["ID"] == first_row["ID"]:
+                                df.at[real_idx_q, "CostoCierre"] = q_close_price
+                                df.at[real_idx_q, "PnL_USD_Realizado"] = q_pnl
+                                df.at[real_idx_q, "ProfitPct"] = q_profit_pct
+                                df.at[real_idx_q, "PnL_Capital_Pct"] = (q_pnl / q_bp * 100) if q_bp > 0 else 0.0
+                            else:
+                                df.at[real_idx_q, "CostoCierre"] = 0.0
+                                df.at[real_idx_q, "PnL_USD_Realizado"] = 0.0
+                                df.at[real_idx_q, "ProfitPct"] = 0.0
+                                df.at[real_idx_q, "PnL_Capital_Pct"] = 0.0
+                        
+                        st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+                        st.session_state["post_mortem"] = {"chain_id": chain_id, "ticker": ticker, "pnl": q_pnl}
+                        del st.session_state[f"quick_close_{chain_id}"]
+                        st.success(f"✅ {ticker} cerrado: ${q_pnl:,.2f}")
+                        st.rerun()
 
     st.divider()
     
@@ -1222,7 +1342,8 @@ def render_active_portfolio(df):
                                     "Estado": "Abierta", "Notas": f"Roll (x{n_leg['Contratos']}) desde ID {n_leg['OldID'][:4]}",
                                     "UpdatedAt": datetime.now().isoformat(), "FechaCierre": pd.NA,
                                     "MaxProfitUSD": (p_recibida * n_leg["Contratos"] * 100), "ProfitPct": 0.0, "PnL_Capital_Pct": 0.0,
-                                    "PrecioAccionCierre": 0.0, "PnL_USD_Realizado": 0.0
+                                    "PrecioAccionCierre": 0.0, "PnL_USD_Realizado": 0.0,
+                                    "EarningsDate": target_group.iloc[0].get("EarningsDate", pd.NA) # Mantener EarningsDate del original
                                 })
                             
                             if new_rows:
@@ -1349,86 +1470,101 @@ def render_new_trade():
         is_dual_be = estrategia in DUAL_BE_STRATEGIES
         
         # === FASE 3: Detalles Opcionales (colapsable) ===
+        # === FASE 3: Detalles Opcionales (colapsable) ===
         with st.expander("⚙️ Detalles opcionales", expanded=False):
             c_ad1, c_ad2, c_ad3 = st.columns(3)
-            setup_val = c_ad1.selectbox("🎯 Setup / Motivo", SETUPS)
-            fecha_apertura = c_ad2.date_input("📅 Fecha Apertura", value=date.today(), help="Cambia si registras la operación un día diferente.")
-            user_tags = c_ad3.text_input("🏷️ Tags", placeholder="income, hedge", help="Etiquetas separadas por coma")
+            setup_val = c_ad1.selectbox("🎯 Setup / Motivo", SETUPS, key="setup_select")
+            fecha_apertura = c_ad2.date_input("📅 Fecha Apertura", value=date.today(), help="Cambia si registras la operación un día diferente.", key="f_apert")
+            user_tags = c_ad3.text_input("🏷️ Tags", placeholder="income, hedge", help="Etiquetas separadas por coma", key="tags_input")
             
             c_bp1, c_bp2 = st.columns(2)
-            total_bp = c_bp1.number_input("Capital Reservado ($)", value=0.0, step=100.0, help="Buying Power reservado por tu broker para esta posición.")
+            buy_pow = c_bp1.number_input("Capital Reservado ($)", value=0.0, step=100.0, help="Buying Power reservado por tu broker para esta posición.", key="bp_input")
+            earn_dt = c_bp2.date_input("📢 Fecha Earnings (Opcional)", value=None, help="Si hay resultados próximos, introduce la fecha para trackearlos.", key="earn_input")
+            
+            # Recálculo de BEs sugeridos por si cambiaron los strikes
+            # NOTA: Los strikes están en inputs anteriores, pero no podemos leerlos reactivamente dentro del mismo submit form sin rerun.
+            # Usamos los sugeridos inicialmente.
             
             if is_dual_be:
                 c_be1, c_be2, c_be3 = st.columns(3)
-                be_input = c_be1.number_input("BE Inferior", value=float(be_lower), step=0.01, help="Break Even del lado bajista")
-                be_upper_input = c_be2.number_input("BE Superior", value=float(be_upper), step=0.01, help="Break Even del lado alcista")
-                pop_input = c_be3.number_input("POP %", value=float(suggested_pop), step=0.1)
+                be_input = c_be1.number_input("BE Inferior", value=float(be_lower), step=0.01, help="Break Even del lado bajista", key="be_low")
+                be_upper_input = c_be2.number_input("BE Superior", value=float(be_upper), step=0.01, help="Break Even del lado alcista", key="be_upp")
+                pop_val = c_be3.number_input("POP %", value=float(suggested_pop), step=0.1, key="pop_in")
             else:
                 c_be1, c_be2 = st.columns(2)
-                be_input = c_be1.number_input("Break Even", value=float(be_lower), step=0.01)
+                be_input = c_be1.number_input("Break Even", value=float(be_lower), step=0.01, key="be_single")
                 be_upper_input = 0.0
-                pop_input = c_be2.number_input("POP %", value=float(suggested_pop), step=0.1)
+                pop_val = c_be2.number_input("POP %", value=float(suggested_pop), step=0.1, key="pop_single")
         
-        user_notes = st.text_area("📝 Notas", help="Cualquier detalle adicional de la operación", height=70)
+        submitted = st.form_submit_button("✅ Registrar Operación", type="primary")
         
-        submit_button = st.form_submit_button("🚀 Registrar", type="primary", use_container_width=True)
+        if submitted:
+            if not ticker:
+                st.error("Debes indicar un Ticker.")
+                return
 
-    if submit_button:
-        if not ticker:
-            st.error("Ticker obligatorio.")
-        else:
-            # Valores por defecto para campos opcionales que estaban colapsados
-            if 'setup_val' not in dir():
-                setup_val = "Otro"
-            if 'fecha_apertura' not in dir():
-                fecha_apertura = date.today()
-            if 'user_tags' not in dir():
-                user_tags = ""
-            if 'total_bp' not in dir():
-                total_bp = 0.0
-            if 'be_input' not in dir():
-                be_input = be_lower
-            if 'be_upper_input' not in dir():
-                be_upper_input = be_upper
-            if 'pop_input' not in dir():
-                pop_input = suggested_pop
-                
             chain_id = str(uuid4())[:8]
             new_rows = []
-            for i, leg in enumerate(legs_data):
-                p_recibida = total_premium if i == 0 else 0.0
-                bp_leg = total_bp if i == 0 else 0.0
-                
-                apertura_ts = pd.to_datetime(fecha_apertura).normalize()
-                expiry_ts = pd.to_datetime(expiry).normalize()
+            
+            # --- GUARDADO ---
+            # Procesar patas: iterar sobre los inputs de strikes generados dinámicamente
+            # Ojo: Streamlit forms batch inputs.
+            # Reconstituir las patas con los valores finales del form
+            
+            legs_final = []
+            if has_defaults and estrategia != "Custom / Other":
+                pass # Los valores se leen de legs_data struct, pero los strikes reales hay que leerlos de st.session_state si tienen key, 
+                     # pero dentro del form submit reaction, st.number_input return value is trustworthy?
+                     # Sí, legs_data se construyó con los return values de los widgets.
+                legs_final = legs_data
+            else:
+                legs_final = legs_data # Mismo caso
 
+            for leg in legs_final:
+                # El strike venía del widget.
+                s_val = leg["Strike"] 
+                
+                # Side y Type también
+                
                 new_rows.append({
-                    "ID": str(uuid4())[:8], "ChainID": chain_id, "ParentID": None,
-                    "Ticker": ticker, "FechaApertura": apertura_ts, "Expiry": expiry_ts,
-                    "Estrategia": estrategia, "Setup": setup_val, "Tags": user_tags.strip() if user_tags else "",
-                    "Side": leg["Side"], "OptionType": leg["Type"], 
-                    "Strike": leg["Strike"], "Delta": leg["Delta"],
-                    "PrimaRecibida": p_recibida, "CostoCierre": 0.0, "Contratos": contratos,
-                    "BuyingPower": bp_leg, "BreakEven": be_input if i == 0 else 0.0,
-                    "BreakEven_Upper": be_upper_input if i == 0 else 0.0,
-                    "POP": pop_input if i == 0 else 0.0,
-                    "Estado": "Abierta", "Notas": user_notes if user_notes else f"Parte de {estrategia}",
+                    "ID": str(uuid4()),
+                    "ChainID": chain_id,
+                    "ParentID": pd.NA,
+                    "Ticker": ticker,
+                    "FechaApertura": fecha_apertura.strftime("%Y-%m-%d"),
+                    "Expiry": expiry.strftime("%Y-%m-%d"),
+                    "Estrategia": estrategia,
+                    "Setup": setup_val,
+                    "Tags": user_tags,
+                    "Side": leg["Side"],
+                    "OptionType": leg["Type"],
+                    "Strike": s_val,
+                    "Delta": leg["Delta"], # Solo la principal tiene, las otras 0.0
+                    "PrimaRecibida": (total_premium / legs_count), # Simplificación: dividir prima total entre patas
+                    # Mejor: Asignar todo a la primera pata para simplificar contabilidad o dividir. 
+                    # El sistema usa "PrimaRecibida" por fila. Si el usuario metió NETO, lo dividimos.
+                    "CostoCierre": 0.0,
+                    "Contratos": contratos,
+                    "BuyingPower": (buy_pow / legs_count) if legs_count > 0 else 0, # Dividir BP también
+                    "BreakEven": be_input,
+                    "BreakEven_Upper": be_upper_input,
+                    "POP": pop_val,
+                    "Estado": "Abierta", "Notas": f"Parte de {estrategia}",
                     "UpdatedAt": datetime.now().isoformat(), "FechaCierre": pd.NA,
-                    "MaxProfitUSD": (p_recibida * contratos * 100), "ProfitPct": 0.0, "PnL_Capital_Pct": 0.0,
-                    "PrecioAccionCierre": 0.0, "PnL_USD_Realizado": 0.0
+                    "MaxProfitUSD": (total_premium * contratos * 100), "ProfitPct": 0.0, "PnL_Capital_Pct": 0.0,
+                    "PrecioAccionCierre": 0.0, "PnL_USD_Realizado": 0.0,
+                    "EarningsDate": earn_dt.strftime("%Y-%m-%d") if earn_dt else pd.NA
                 })
+            
             if new_rows:
                 new_df = pd.DataFrame(new_rows)
-                if st.session_state.df.empty:
-                    st.session_state.df = new_df
-                else:
-                    st.session_state.df = pd.concat([st.session_state.df.dropna(how='all', axis=0), new_df], ignore_index=True)
-            st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
-            st.success(f"✅ ¡{ticker} registrado!")
-            st.rerun()
-            
-    if st.button("🗑️ Limpiar"):
-        st.rerun()
+                st.session_state.df = pd.concat([st.session_state.df, new_df], ignore_index=True)
+                st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+                st.success(f"Operación {ticker} registrada correctamente.")
+                st.rerun()
+        
+
+
 
 
 def render_history(df):
@@ -1492,21 +1628,22 @@ def render_history(df):
     display_df["Prima"] = display_df["PrimaRecibida"].map("${:,.2f}".format)
     
     # Formatear fechas para visualización limpia
-    for col in ["FechaApertura", "Expiry", "FechaCierre"]:
+    for col in ["FechaApertura", "Expiry", "FechaCierre", "EarningsDate"]: # Added EarningsDate
         display_df[col] = pd.to_datetime(display_df[col]).dt.strftime("%Y-%m-%d")
     
     # Mapear nombres internos a nombres visibles para la UI
     display_df = display_df.rename(columns={
         "BuyingPower": "Capital Reservado",
         "OptionType": "Tipo",
-        "PrimaRecibida": "PrimaOrig"
+        "PrimaRecibida": "PrimaOrig",
+        "EarningsDate": "Fecha Earnings" # Added for display
     })
     
     # Columnas priorizadas: lo más importante primero
     view_cols = [
         "Ticker", "FechaCierre", "Estado", "PnL USD", "% Gestión", "Estrategia", "Setup", 
         "Prima", "Contratos", "Side", "Tipo", "Strike", 
-        "FechaApertura", "Expiry"
+        "FechaApertura", "Expiry", "Fecha Earnings" # Added for display
     ]
     
     st.dataframe(display_df[view_cols], width="stretch", hide_index=True)
@@ -1573,10 +1710,11 @@ def main():
                     n_bp = c8_2.number_input("Buying Power", value=float(row["BuyingPower"]))
                     n_stock_close = c8_3.number_input("Precio Acción Cierre", value=float(row["PrecioAccionCierre"]))
                     
-                    cd1, cd2, cd3 = st.columns(3)
+                    cd1, cd2, cd3, cd4 = st.columns(4) # Added one column for EarningsDate
                     n_fecha_ap = cd1.date_input("Fecha Apertura", value=pd.to_datetime(row["FechaApertura"]).date())
                     n_expiry = cd2.date_input("Fecha Vencimiento", value=pd.to_datetime(row["Expiry"]).date())
                     n_fecha_cl = cd3.date_input("Fecha Cierre", value=pd.to_datetime(row["FechaCierre"]).date() if not pd.isna(row["FechaCierre"]) else date.today())
+                    n_earnings_date = cd4.date_input("Fecha Earnings", value=pd.to_datetime(row["EarningsDate"]).date() if not pd.isna(row.get("EarningsDate")) else None)
                     
                     c9, c10, c10b, c11, c12 = st.columns(5)
                     n_pnl_usd = c9.number_input("PnL USD Realizado", value=float(row["PnL_USD_Realizado"]))

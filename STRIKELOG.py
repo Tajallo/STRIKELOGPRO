@@ -376,10 +376,19 @@ def suggest_breakeven(strategy, legs_data, total_premium):
     except Exception:
         return (0.0, 0.0)
 
-def suggest_pop(delta, side):
-    """Calcula la probabilidad de éxito aproximada basada en el Delta."""
+def suggest_pop(delta, side, delta2=0.0):
+    """
+    Calcula la probabilidad de éxito aproximada basada en el Delta.
+    Para estrategias duales (IC, Strangle, Iron Fly), acepta un segundo delta
+    de la pata corta secundaria para un cálculo más preciso:
+      POP = (1 - |Δ_short_put| - |Δ_short_call|) × 100
+    """
     abs_delta = abs(delta)
     if side == "Sell":
+        if abs(delta2) > 0:
+            # Iron Condor / Strangle: combinar ambas patas cortas
+            pop = (1.0 - abs_delta - abs(delta2)) * 100
+            return round(max(pop, 0.0), 1)   # mínimo 0%
         return round((1.0 - abs_delta) * 100, 1)
     else:
         return round(abs_delta * 100, 1)
@@ -592,7 +601,7 @@ def render_dashboard(df):
             yaxis_title="Balance ($)",
             hovermode="x unified"
         )
-        st.plotly_chart(fig_equity, width="stretch")
+        st.plotly_chart(fig_equity, use_container_width=True)
     else:
         st.info("No hay datos para mostrar la curva.")
 
@@ -613,7 +622,7 @@ def render_dashboard(df):
             yaxis_title="PnL USD",
             coloraxis_showscale=False
         )
-        st.plotly_chart(fig_monthly, width="stretch")
+        st.plotly_chart(fig_monthly, use_container_width=True)
 
     # Gráficos de análisis por categoría (colapsados)
     with st.expander("🔍 Análisis por Categoría", expanded=False):
@@ -637,7 +646,7 @@ def render_dashboard(df):
                     yaxis_title=None,
                     coloraxis_showscale=False
                 )
-                st.plotly_chart(fig_strat, width="stretch")
+                st.plotly_chart(fig_strat, use_container_width=True)
         
         with col_cat2:
             st.markdown("#### 🎯 PnL por Setup")
@@ -657,7 +666,7 @@ def render_dashboard(df):
                     yaxis_title=None,
                     coloraxis_showscale=False
                 )
-                st.plotly_chart(fig_setup, width="stretch")
+                st.plotly_chart(fig_setup, use_container_width=True)
 
 def render_active_portfolio(df):
     st.header("📂 Cartera Activa")
@@ -803,9 +812,35 @@ def render_active_portfolio(df):
         roll_label = f" 🔄 x{num_rolls}" if num_rolls > 0 else ""
 
         # Cálculos extendidos de la cadena (Rolls + Actual)
-        hist_credits = sum(float(r["PrimaRecibida"] or 0) for r in roll_chain)
-        # Solo restamos el costo de cierre de las operaciones que ya están cerradas
-        hist_debits = sum(float(r["CostoCierre"] or 0) for r in roll_chain if r["Estado"] != "Abierta")
+        # Cálculos extendidos de la cadena (Rolls + Actual)
+        # CORRECCIÓN: get_roll_history devuelve solo la rama de UN ID (una pata).
+        # Para estrategias multi-pata (IC), la prima está dividida. Debemos sumar
+        # la prima de TODO el ChainID de cada paso en la historia.
+        
+        hist_credits = 0.0
+        hist_debits = 0.0
+        
+        # Iteramos sobre cada paso histórico (cada 'eslabón' de la cadena de esa pata)
+        # y buscamos sus "hermanos" de ChainID para sumar la prima completa de la estrategia en ese momento.
+        seen_chains = set()
+        for r in roll_chain:
+            c_id = r["ChainID"]
+            if c_id not in seen_chains:
+                seen_chains.add(c_id)
+                # Buscar todas las patas que pertenecían a ese ChainID
+                step_group = df[df["ChainID"] == c_id]
+                
+                # Sumar créditos (Prima Recibida) de todas las patas de ese paso
+                hist_credits += step_group["PrimaRecibida"].sum()
+                
+                # Sumar débitos (Costo Cierre) solo si ese paso NO es el actual abierto
+                # (si es 'Rolada' o 'Cerrada' - aunque en active portfolio el último es 'Abierta')
+                # En roll_chain, el índice 0 es el actual (Abierta).
+                # Verificar estado de CADA pata individualmente o del grupo?
+                # Generalmente todo el grupo cambia de estado junto.
+                if r["Estado"] != "Abierta":
+                    hist_debits += step_group["CostoCierre"].sum()
+
         net_credit_chain = hist_credits - hist_debits
 
         realized_pnl_chain = sum(float(r["PnL_USD_Realizado"] or 0) for r in roll_chain if r["Estado"] != "Abierta")
@@ -1392,8 +1427,8 @@ def render_new_trade():
     
     # === FASE 1: ¿Qué hiciste? (esencial) ===
     c_top1, c_top2 = st.columns([1, 2])
-    ticker = c_top1.text_input("Ticker").upper()
-    estrategia = c_top2.selectbox("Estrategia", ESTRATEGIAS)
+    ticker = c_top1.text_input("Ticker", key="nt_ticker").upper()
+    estrategia = c_top2.selectbox("Estrategia", ESTRATEGIAS, key="nt_estrategia")
     
     # Determinar patas según selección
     legs_count = 1
@@ -1417,9 +1452,9 @@ def render_new_trade():
     # Datos principales en una fila compacta
     c_p1, c_p2, c_p3, c_p4 = st.columns(4)
     premium_help = "Precio NETO por acción de todas las patas combinadas." if legs_count > 1 else "Precio por acción (ej: 1.50)."
-    total_premium = c_p1.number_input("Prima ($/acción)", value=0.0, step=0.01, help=premium_help)
-    contratos = c_p2.number_input("Contratos", value=1, min_value=1)
-    expiry = c_p3.date_input("📅 Vencimiento")
+    total_premium = c_p1.number_input("Prima ($/acción)", value=0.0, step=0.01, help=premium_help, key="nt_premium")
+    contratos = c_p2.number_input("Contratos", value=1, min_value=1, key="nt_contratos")
+    expiry = c_p3.date_input("📅 Vencimiento", key="nt_expiry")
     c_p4.markdown(f"<br><span style='font-size:16px;'>**{dir_label}**</span>", unsafe_allow_html=True)
     
     # === FASE 2: Strikes (el dato que realmente cambia por trade) ===
@@ -1464,10 +1499,23 @@ def render_new_trade():
         if legs_data:
             legs_data[0]["Delta"] = main_delta
         
+        # Delta secundaria: para IC, Iron Fly, Strangle y Straddle mejora el cálculo del POP
+        # combinando las dos patas cortas: POP = 1 - |Δput| - |Δcall|
+        is_dual_be = estrategia in DUAL_BE_STRATEGIES
+        secondary_delta = 0.0
+        if is_dual_be:
+            secondary_delta = st.number_input(
+                "Delta (pata secundaria — short call / call side)",
+                value=0.0, step=0.01,
+                help="Delta de la pata corta secundaria (ej: short call en IC). "
+                     "Permite calcular el POP correctamente: 1 − |Δ_put| − |Δ_call|. "
+                     "Déjalo en 0.00 si solo tienes un lado.",
+                key="nt_delta2"
+            )
+        
         # Cálculos sugeridos
         be_lower, be_upper = suggest_breakeven(estrategia, legs_data, total_premium)
-        suggested_pop = suggest_pop(main_delta, main_side)
-        is_dual_be = estrategia in DUAL_BE_STRATEGIES
+        suggested_pop = suggest_pop(main_delta, main_side, secondary_delta)
         
         # === FASE 3: Detalles Opcionales (colapsable) ===
         # === FASE 3: Detalles Opcionales (colapsable) ===
@@ -1520,7 +1568,7 @@ def render_new_trade():
             else:
                 legs_final = legs_data # Mismo caso
 
-            for leg in legs_final:
+            for i_leg, leg in enumerate(legs_final):
                 # El strike venía del widget.
                 s_val = leg["Strike"] 
                 
@@ -1551,7 +1599,9 @@ def render_new_trade():
                     "POP": pop_val,
                     "Estado": "Abierta", "Notas": f"Parte de {estrategia}",
                     "UpdatedAt": datetime.now().isoformat(), "FechaCierre": pd.NA,
-                    "MaxProfitUSD": (total_premium * contratos * 100), "ProfitPct": 0.0, "PnL_Capital_Pct": 0.0,
+                    # MaxProfitUSD solo en pata 0 para evitar multiplicarlo N veces en multi-pata (IC, Spreads)
+                    "MaxProfitUSD": (total_premium * contratos * 100) if i_leg == 0 else 0.0,
+                    "ProfitPct": 0.0, "PnL_Capital_Pct": 0.0,
                     "PrecioAccionCierre": 0.0, "PnL_USD_Realizado": 0.0,
                     "EarningsDate": earn_dt.strftime("%Y-%m-%d") if earn_dt else pd.NA
                 })
@@ -1560,7 +1610,12 @@ def render_new_trade():
                 new_df = pd.DataFrame(new_rows)
                 st.session_state.df = pd.concat([st.session_state.df, new_df], ignore_index=True)
                 st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
-                st.success(f"Operación {ticker} registrada correctamente.")
+                # Limpiar campos externos al st.form (no se limpian con clear_on_submit)
+                _saved_ticker = ticker  # guardar antes de borrar la key
+                for _k in ["nt_ticker", "nt_premium", "nt_contratos", "nt_expiry", "nt_estrategia", "nt_delta2"]:
+                    if _k in st.session_state:
+                        del st.session_state[_k]
+                st.toast(f"✅ {_saved_ticker} registrada correctamente.", icon="🎉")
                 st.rerun()
         
 
@@ -1622,6 +1677,13 @@ def render_history(df):
 
     # Preparar visualización amigable
     display_df = hist_df.copy()
+    # Deduplicar por ChainID: en multi-pata (IC, Spreads) solo mostrar la pata
+    # principal (la que lleva el PnL y ProfitPct reales) para no inflar el historial.
+    # Ordenamos primero por PnL_USD_Realizado desc para que el keep='first' elija la pata con datos.
+    display_df = display_df.sort_values(
+        ["ChainID", "PnL_USD_Realizado"], ascending=[True, False]
+    )
+    display_df = display_df.drop_duplicates(subset=["ChainID"], keep="first")
     display_df = display_df.sort_values("__dt_sort", ascending=False, na_position='last')
     display_df["% Gestión"] = display_df["ProfitPct"].map("{:.1f}%".format)
     display_df["PnL USD"] = display_df["PnL_USD_Realizado"].map("${:,.2f}".format)
@@ -1646,7 +1708,7 @@ def render_history(df):
         "FechaApertura", "Expiry", "Fecha Earnings" # Added for display
     ]
     
-    st.dataframe(display_df[view_cols], width="stretch", hide_index=True)
+    st.dataframe(display_df[view_cols], use_container_width=True, hide_index=True)
     
     # Exportar historial filtrado
     csv_export = display_df[view_cols].to_csv(index=False).encode('utf-8')
@@ -1671,7 +1733,7 @@ def main():
             # Ocultar columnas internas/derivadas que no aportan al usuario
             hidden_cols = ["MaxProfitUSD", "PnL_Capital_Pct", "UpdatedAt", "ChainID", "ParentID"]
             visible_cols = [c for c in st.session_state.df.columns if c not in hidden_cols]
-            st.dataframe(st.session_state.df[visible_cols], width="stretch")
+            st.dataframe(st.session_state.df[visible_cols], use_container_width=True)
         with tab2:
             # Crear una lista de opciones descriptivas para el selectbox
             # Formato: "TICKER - ESTRATEGIA - FECHA - (ID)"

@@ -7,58 +7,59 @@
 ## 🧭 Tour por las Pantallas
 
 ### 📊 1. Dashboard (Tu Centro de Mando)
-Es la primera pantalla que verás. Está diseñada para darte una visión clara de tu salud financiera:
-- **KPIs de Rendimiento**: PnL Realizado, % de acierto (*Win Rate*) y Factor de Beneficio.
-- **Curva de Equidad**: Un gráfico interactivo que muestra cómo crece tu capital con el tiempo.
-- **Análisis por Estrategia**: Descubre visualmente qué te funciona mejor (¿vender Puts o hacer Iron Condors?).
-- **Filtros Potentes**: Busca por Ticker (ej: SPY), por motivo de entrada (*Setup*) o por fechas.
+Es la primera pantalla que verás, diseñada para darte una visión clara de tu salud financiera y rendimiento operativo:
+- **KPIs de Rendimiento**: PnL Realizado, Win Rate, Profit Factor y Captura Media.
+- **📈 Curva de Equidad**: Gráfico interactivo que muestra el crecimiento real de tu capital.
+- **📅 Filtros de Élite**:
+    - **Control 0DTE**: Filtra instantáneamente para ver solo tus operaciones intradía o excluirlas para ver tu rendimiento swing.
+    - **Exclusión de Tickers**: Quita tickers específicos (ej. SPX) para analizar el resto de tu cartera sin ruido.
+    - **Setups y Periodos**: Analiza tu eficacia por estrategia o por motivo de entrada.
 
 ### ➕ 2. Nueva Operación (Registro Inteligente)
-Aquí es donde empieza todo. La app hace el trabajo duro por ti:
-- **Formulario Adaptable**: Si seleccionas "Iron Condor", la app te pedirá las 4 patas automáticamente. Si eliges "CSP", solo una.
-- **Asistente de Delta y BE**: Al introducir tus datos, la app te sugiere el **Break Even** y la **Probabilidad de Éxito (POP)** basándose en el Delta de la operación.
-- **Setups Personalizados**: Marca si tu entrada fue por *Earnings*, *VIX alto* o *Tendencial* para analizar tu psicología después.
+- **Formulario Adaptable**: Detección automática de patas según la estrategia (Iron Condor, Butterfly, Spreads).
+- **Asistente Técnico**: Sugerencias automáticas de **Break Even** y **POP (Probabilidad de Éxito)** según el Delta.
+- **Fix Decimal Colector**: Olvida los errores de teclado; si pulsas la coma `,` el sistema la convierte automáticamente a punto `.` para que Streamlit la procese correctamente.
 
 ### 📂 3. Cartera Activa (Gestión de Riesgo)
-Esta es la "joya de la corona" para el día a día:
-- **Semáforo DTE**: Un código de colores te avisa del riesgo:
-    - 🟢 **Verde (> 21 días)**: Operación bajo control.
-    - 🟡 **Amarillo (7-21 días)**: Atención, evalúa el cierre o ajuste.
-    - 🔴 **Rojo (< 7 días)**: Peligro de asignación o aceleración de Gamma.
-- **Gestión de Roles (🔄 Roll)**: Única en su clase. Al rolar una posición, la app la vincula con la anterior, permitiéndote ver todo el árbol genealógico del trade y cuánta prima has acumulado en total.
-- **Cierre en Bloque**: Cierra estrategias multi-pata con un solo botón y deja que la app calcule el beneficio neto.
+- **🚨 Semáforo DTE**: Alertas visuales críticas según la cercanía al vencimiento (Rojo < 7 días, Amarillo 7-21, Verde > 21).
+- **🔄 Gestión de Roles (Roll)**: Rastreo completo de la "cadena de rolls". Puedes ver cuánta prima neta has acumulado desde el origen del trade y cómo ha evolucionado tu Break Even.
+- **🎯 Paneles de Gestión**: Formulario unificado para Cierre, Roll o Asignación con botones de **Cancelar** para evitar errores accidentales.
 
-### 📜 4. Historial y Datos
-- **Filtros Históricos**: Revisa cualquier operación del pasado con detalles técnicos.
-- **Editor de Errores**: En la pestaña "Datos / Edición", puedes corregir cualquier número que hayas introducido mal sin romper la base de datos.
+### 📜 4. Historial Agrupado (La Bitácora Definitiva)
+- **Vista de Estrategia**: En lugar de filas sueltas, verás cada operación agrupada (ej: tu Iron Condor aparece como un único bloque expandible).
+- **Desglose de Patas**: Al expandir, ves exactamente qué pasó con cada pata, su strike, delta y PnL individual.
+- **Filtros Avanzados**: Busca por etiquetas (Tags), rango de PnL exacto, resultado (Ganadoras/Perdedoras) o estado final (Cerrada, Rolada, Asignada).
+
+---
+
+## 🛠️ Innovaciones Técnicas Recientes
+- **Contabilidad de Precisión**: Consolidación de prima y Buying Power en la "pata principal" para cálculos exactos de % de captura en estrategias multi-pata.
+- **Migración Automática**: El sistema limpia y normaliza tu base de datos cada vez que arranca para asegurar que no hay inconsistencias.
+- **Modo Intradía**: Soporte nativo para traders de 0DTE con detección automática por fecha de vencimiento.
 
 ---
 
 ### 🚀 ¿Qué hace el archivo "Lanzar_App.bat"?
 
-Para que no tengas que usar códigos complicados, he creado el archivo **`Lanzar_App.bat`**. Al hacer doble clic, esto es lo que ocurre por dentro:
+Para que no tengas que usar códigos complicados, he creado el archivo **`Lanzar_App.bat`**. Al hacer doble clic:
 
-1.  **Verifica Python**: Revisa si tienes Python instalado. Si no lo tienes, te avisará con un mensaje claro.
-2.  **Configuración Automática (Solo la primera vez)**: 
-    - Crea una "cápsula" (entorno virtual) para que la app no interfiera con otros programas.
-    - Instala automáticamente las librerías necesarias (*Streamlit, Pandas, Plotly*).
-3.  **Inicia la App**: Abre tu navegador habitual (Chrome, Edge, etc.) y carga la interfaz de **STRIKELOG Pro**.
+1.  **Crea una "cápsula" (entorno virtual)**: Mantiene el programa aislado y estable.
+2.  **Instala librerías**: Baja automáticamente *Streamlit, Pandas, Plotly* y lo necesario.
+3.  **Inicia la App**: Lanza la interfaz profesional en tu navegador favorito.
 
-> **Nota IMPORTANTE**: Verás que se abre una "ventana negra" (consola). **No la cierres** mientras estés usando la app, ya que es el motor que la mantiene viva. Puedes minimizarla si te molesta.
+> **Nota**: Verás una ventana negra (consola). **Minimízala pero no la cierres** mientras usas la app.
 
 ---
 
-## ⚙️ Preparación (Solo para el primer uso)
-
-Si es la primera vez que lo instalas en un ordenador nuevo:
-1.  **Instala Python**: [Descárgalo aquí](https://www.python.org/downloads/). *Recuerda marcar la casilla "Add Python to PATH" durante la instalación.*
-2.  **Doble Clic**: Ejecuta `Lanzar_App.bat`. La primera vez tardará un par de minutos mientras configura todo. ¡Las siguientes veces será instantáneo!
+## ⚙️ Preparación (Solo primer uso)
+1.  **Instala Python**: [Descárgalo aquí](https://www.python.org/downloads/). *Marca la casilla "Add Python to PATH".*
+2.  **Doble Clic**: Ejecuta `Lanzar_App.bat`. La primera vez tardará un poco en configurar, luego será instantáneo.
 
 ---
 
-## � Seguridad y Privacidad
-- **Datos Locales**: Todo se guarda en `bitacora_opciones.csv`. Tus datos financieros **nunca** salen de tu ordenador.
-- **Backups Automáticos**: El sistema genera copias de seguridad en la carpeta `backups_journal/` cada vez que guardas algo, protegiendo tu trabajo contra errores accidentales.
+## 🛡️ Seguridad y Privacidad
+- **Datos 100% Locales**: Todo vive en `bitacora_opciones.csv` dentro de tu carpeta. Nada sube a la nube.
+- **Backups Blindados**: Copias de seguridad automáticas con marca de tiempo en `backups/` cada vez que guardas cambios.
 
 ---
 Desarrollado con ❤️ para la comunidad de **Opcion Sigma**. ¡Buenos trades! 📈

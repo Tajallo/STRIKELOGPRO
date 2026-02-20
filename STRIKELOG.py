@@ -457,6 +457,7 @@ def render_dashboard(df):
     
     # --- FILTROS ---
     with st.container():
+        # --- Fila 1: Filtros principales ---  
         c_f1, c_f2, c_f3, c_f4 = st.columns([1, 1, 1, 1])
         all_tickers = ["Todos Tickers"] + sorted(df["Ticker"].unique().tolist())
         ticker_filter = c_f1.selectbox("🔍 Ticker", all_tickers)
@@ -472,9 +473,33 @@ def render_dashboard(df):
         periodo_filter = c_f2.selectbox("📅 Periodo", list(meses.keys()))
         setup_filter = c_f3.selectbox("🎯 Setup", ["Todos los Setups"] + SETUPS)
         estado_filter = c_f4.selectbox("📋 Estado", ["Todos"] + ESTADOS)
+
+        # --- Fila 2: Filtros 0DTE y exclusiones ---
+        c_f5, c_f6 = st.columns([1, 2])
+        filtro_0dte = c_f5.selectbox(
+            "⏰ 0DTE",
+            ["Todos", "⚡ Solo 0DTE", "🚫 Sin 0DTE"],
+            key="dash_0dte",
+            help="0DTE = operación cuyo vencimiento coincide con la fecha de apertura"
+        )
+        all_tickers_excl = sorted(df["Ticker"].dropna().unique().tolist())
+        excluir_tickers = c_f6.multiselect(
+            "🛋️ Excluir tickers",
+            options=all_tickers_excl,
+            default=[],
+            key="dash_excl",
+            placeholder="Selecciona tickers a excluir del análisis..."
+        )
         
         # Aplicar Filtros
         df_view = df.copy()
+
+        # --- Calcular flag 0DTE ---
+        df_view["__is_0dte"] = (
+            pd.to_datetime(df_view["Expiry"], errors="coerce").dt.date ==
+            pd.to_datetime(df_view["FechaApertura"], errors="coerce").dt.date
+        )
+
         if ticker_filter != "Todos Tickers":
             df_view = df_view[df_view["Ticker"] == ticker_filter]
         
@@ -496,6 +521,16 @@ def render_dashboard(df):
         
         if estado_filter != "Todos":
             df_view = df_view[df_view["Estado"] == estado_filter]
+
+        # --- Aplicar filtro 0DTE ---
+        if filtro_0dte == "⚡ Solo 0DTE":
+            df_view = df_view[df_view["__is_0dte"] == True]
+        elif filtro_0dte == "🚫 Sin 0DTE":
+            df_view = df_view[df_view["__is_0dte"] == False]
+
+        # --- Excluir tickers seleccionados ---
+        if excluir_tickers:
+            df_view = df_view[~df_view["Ticker"].isin(excluir_tickers)]
         
         closed_trades = df_view[df_view["Estado"].isin(["Cerrada", "Rolada", "Asignada"])].copy()
         open_trades = df_view[df_view["Estado"] == "Abierta"].copy()
@@ -1016,7 +1051,7 @@ def render_active_portfolio(df):
                 # --- MINI PANEL DE CIERRE RÁPIDO ---
                 if st.session_state.get(f"quick_close_{chain_id}", False):
                     st.markdown("---")
-                    qc1, qc2, qc3 = st.columns([2, 2, 1])
+                    qc1, qc2, qc3, qc4 = st.columns([2, 2, 1, 1])
                     q_close_price = qc1.number_input("Cierre ($/acción)", value=0.0, step=0.01, key=f"qcp_{chain_id}")
                     
                     q_entry = group["PrimaRecibida"].sum()
@@ -1027,7 +1062,7 @@ def render_active_portfolio(df):
                     )
                     qc2.metric("PnL Est.", f"${q_pnl:,.2f}", delta=f"{q_pct:.0f}%")
                     
-                    if qc3.button("Confirmar Cierre", key=f"qcc_{chain_id}", type="primary"):
+                    if qc3.button("✅ Confirmar", key=f"qcc_{chain_id}", type="primary"):
                         max_profit_usd = q_entry * q_contracts * 100
                         q_profit_pct = (q_pnl / max_profit_usd * 100) if max_profit_usd > 0 else 0.0
                         
@@ -1050,6 +1085,10 @@ def render_active_portfolio(df):
                         st.session_state["post_mortem"] = {"chain_id": chain_id, "ticker": ticker, "pnl": q_pnl}
                         del st.session_state[f"quick_close_{chain_id}"]
                         st.success(f"✅ {ticker} cerrado: ${q_pnl:,.2f}")
+                        st.rerun()
+
+                    if qc4.button("🚫 Cancelar", key=f"qcc_cancel_{chain_id}"):
+                        del st.session_state[f"quick_close_{chain_id}"]
                         st.rerun()
 
     st.divider()
@@ -1183,7 +1222,8 @@ def render_active_portfolio(df):
                 max_profit_usd = total_entry * qty_to_close * 100
                 final_profit_pct = (manual_pnl / max_profit_usd * 100) if max_profit_usd > 0 else 0.0
                 
-                if st.button(btn_label, type="primary"):
+                c_close_btn, c_cancel_btn = st.columns([2, 1])
+                if c_close_btn.button(btn_label, type="primary", use_container_width=True):
                     for idx, row in target_group.iterrows():
                         real_idx = df.index[df["ID"] == row["ID"]][0]
                         
@@ -1235,6 +1275,10 @@ def render_active_portfolio(df):
                     st.session_state["post_mortem"] = {"chain_id": target_chain, "ticker": target_group.iloc[0]["Ticker"], "pnl": manual_pnl}
                     del st.session_state["manage_chain_id"]
                     st.success("Operación actualizada correctamente.")
+                    st.rerun()
+
+                if c_cancel_btn.button("🚫 Cancelar", key="cancel_close_btn", use_container_width=True):
+                    del st.session_state["manage_chain_id"]
                     st.rerun()
 
             # --- TAB 2: ROLL ---
@@ -1335,8 +1379,8 @@ def render_active_portfolio(df):
                     else:
                         st.info(f"📊 **Nuevo Break Even Estimado:** `${roll_be_lower:.2f}` (Crédito Neto Acumulado: `${total_net_credit_for_be:.2f}`)")
 
-                    c_btn1, c_btn2 = st.columns([1, 1])
-                    if c_btn1.button("🚀 Ejecutar Ajuste", type="primary"):
+                    c_btn1, c_btn2 = st.columns([2, 1])
+                    if c_btn1.button("🚀 Ejecutar Ajuste", type="primary", use_container_width=True):
                         if new_expiry < date.today():
                             st.error("No se puede rolar a una fecha pasada.")
                         else:
@@ -1388,6 +1432,10 @@ def render_active_portfolio(df):
                             del st.session_state["manage_chain_id"]
                             st.success("Roll ejecutado con éxito.")
                             st.rerun()
+
+                    if c_btn2.button("🚫 Cancelar Roll", key="cancel_roll_btn", use_container_width=True):
+                        del st.session_state["manage_chain_id"]
+                        st.rerun()
             
             # --- TAB 3: ASIGNACIÓN ---
             with tab_assign:
@@ -1400,7 +1448,8 @@ def render_active_portfolio(df):
                 
                 st.info(f"Se te asignarán {int(target_group.iloc[0]['Contratos']) * 100} acciones de {target_group.iloc[0]['Ticker']} a ${assign_price:.2f}.")
                 
-                if st.button("Confirmar Asignación", type="primary"):
+                c_assign_btn, c_assign_cancel = st.columns([2, 1])
+                if c_assign_btn.button("✅ Confirmar Asignación", type="primary", use_container_width=True):
                     for idx, row in target_group.iterrows():
                         real_idx = df.index[df["ID"] == row["ID"]][0]
                         df.at[real_idx, "Estado"] = "Asignada"
@@ -1420,6 +1469,10 @@ def render_active_portfolio(df):
                     st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
                     del st.session_state["manage_chain_id"]
                     st.success("Operación marcada como Asignada.")
+                    st.rerun()
+
+                if c_assign_cancel.button("🚫 Cancelar", key="cancel_assign_btn", use_container_width=True):
+                    del st.session_state["manage_chain_id"]
                     st.rerun()
 
 def render_new_trade():
@@ -1588,12 +1641,13 @@ def render_new_trade():
                     "OptionType": leg["Type"],
                     "Strike": s_val,
                     "Delta": leg["Delta"], # Solo la principal tiene, las otras 0.0
-                    "PrimaRecibida": (total_premium / legs_count), # Simplificación: dividir prima total entre patas
-                    # Mejor: Asignar todo a la primera pata para simplificar contabilidad o dividir. 
-                    # El sistema usa "PrimaRecibida" por fila. Si el usuario metió NETO, lo dividimos.
+                    # Prima y BP completos solo en pata 0; el resto a 0.0
+                    # (igual que MaxProfitUSD). Las sumas de la cadena
+                    # (target_group["PrimaRecibida"].sum()) siguen correctas.
+                    "PrimaRecibida": total_premium if i_leg == 0 else 0.0,
                     "CostoCierre": 0.0,
                     "Contratos": contratos,
-                    "BuyingPower": (buy_pow / legs_count) if legs_count > 0 else 0, # Dividir BP también
+                    "BuyingPower": buy_pow if i_leg == 0 else 0.0,
                     "BreakEven": be_input,
                     "BreakEven_Upper": be_upper_input,
                     "POP": pop_val,
@@ -1634,88 +1688,362 @@ def render_history(df):
     # Aseguramos que FechaCierre sea comparable de forma segura
     hist_df["__dt_sort"] = pd.to_datetime(hist_df["FechaCierre"], errors='coerce')
     
-    # Alerta de trades sin fecha (como JBLU antes del fix)
+    # Alerta de trades sin fecha
     undated = hist_df[hist_df["FechaCierre"].isna()]
     if not undated.empty:
-        st.warning(f"⚠️ Se han detectado {len(undated)} operaciones cerradas sin fecha de cierre. Aparecerán al final de la lista.")
+        st.warning(f"⚠️ Se han detectado {len(undated)} operaciones cerradas sin fecha de cierre.")
 
-    # --- Filtros de Historial ---
-    c1, c2, c3 = st.columns(3)
-    hist_tickers = ["Todos"] + sorted(hist_df["Ticker"].unique().tolist())
-    t_filt = c1.selectbox("Filtrar Ticker", hist_tickers, key="hist_t")
-    
-    hist_setup = ["Todos"] + SETUPS
-    s_filt = c2.selectbox("Filtrar Setup", hist_setup, key="hist_s")
-    
-    hist_strat = ["Todos"] + ESTRATEGIAS
-    e_filt = c3.selectbox("Filtrar Estrategia", hist_strat, key="hist_e")
+    # =========================================================
+    # --- FILTROS EXPANDIDOS ---
+    # =========================================================
+    with st.expander("🔍 Filtros", expanded=True):
+        # Fila 1: Ticker | Estrategia | Setup | Estado
+        cf1, cf2, cf3, cf4 = st.columns(4)
+        hist_tickers = ["Todos"] + sorted(hist_df["Ticker"].dropna().unique().tolist())
+        t_filt = cf1.selectbox("🏷️ Ticker", hist_tickers, key="hist_t")
+        
+        hist_strat = ["Todos"] + ESTRATEGIAS
+        e_filt = cf2.selectbox("📊 Estrategia", hist_strat, key="hist_e")
+        
+        hist_setup = ["Todos"] + SETUPS
+        s_filt = cf3.selectbox("🎯 Setup", hist_setup, key="hist_s")
+        
+        estados_hist = ["Todos"] + sorted(hist_df["Estado"].dropna().unique().tolist())
+        estado_filt = cf4.selectbox("📌 Estado", estados_hist, key="hist_estado")
 
-    # Filtro de Fecha robusto
-    st.markdown("📅 **Filtrar por Rango de Cierre**")
-    valid_dates = hist_df["__dt_sort"].dropna()
-    fecha_min_val = valid_dates.min().date() if not valid_dates.empty else (date.today() - timedelta(days=30))
-    date_range = st.date_input("Rango de fechas", [fecha_min_val, date.today()], key="hist_d")
-    
-    # Aplicar filtros
-    if t_filt != "Todos": hist_df = hist_df[hist_df["Ticker"] == t_filt]
-    if s_filt != "Todos": hist_df = hist_df[hist_df["Setup"] == s_filt]
-    if e_filt != "Todos": hist_df = hist_df[hist_df["Estrategia"] == e_filt]
-    
+        # Fila 2: Resultado | Tags | Rango Fecha
+        cf5, cf6, cf7 = st.columns([1, 1, 2])
+        resultado_filt = cf5.selectbox("💰 Resultado", ["Todos", "✅ Ganadoras", "❌ Perdedoras"], key="hist_resultado")
+        tags_filt = cf6.text_input("🔖 Buscar Tag", placeholder="ej: hedge, 0DTE...", key="hist_tags")
+        
+        valid_dates = hist_df["__dt_sort"].dropna()
+        fecha_min_val = valid_dates.min().date() if not valid_dates.empty else (date.today() - timedelta(days=365))
+        with cf7:
+            st.markdown("📅 **Rango de cierre**")
+            date_range = st.date_input(
+                "Rango", [fecha_min_val, date.today()], key="hist_d", label_visibility="collapsed"
+            )
+
+        # Fila 3: 0DTE | Excluir Tickers
+        cf8, cf9 = st.columns([1, 2])
+        filtro_0dte_h = cf8.selectbox(
+            "⏰ 0DTE",
+            ["Todos", "⚡ Solo 0DTE", "🚫 Sin 0DTE"],
+            key="hist_0dte",
+            help="0DTE = vencimiento mismo día que apertura"
+        )
+        all_tickers_excl_h = sorted(hist_df["Ticker"].dropna().unique().tolist())
+        excluir_tickers_h = cf9.multiselect(
+            "🛋️ Excluir tickers",
+            options=all_tickers_excl_h,
+            default=[],
+            key="hist_excl",
+            placeholder="Selecciona tickers a excluir..."
+        )
+        
+        # Fila 4: Slider PnL
+        chain_pnl_for_slider = hist_df.groupby("ChainID")["PnL_USD_Realizado"].sum()
+        pnl_min_sl = float(chain_pnl_for_slider.min()) if not chain_pnl_for_slider.empty else -1000.0
+        pnl_max_sl = float(chain_pnl_for_slider.max()) if not chain_pnl_for_slider.empty else 1000.0
+        if pnl_min_sl == pnl_max_sl:
+            pnl_min_sl -= 1.0
+            pnl_max_sl += 1.0
+        pnl_range = st.slider(
+            "💵 Rango PnL ($)",
+            min_value=round(pnl_min_sl, 2),
+            max_value=round(pnl_max_sl, 2),
+            value=(round(pnl_min_sl, 2), round(pnl_max_sl, 2)),
+            key="hist_pnl"
+        )
+
+    # =========================================================
+    # --- APLICAR FILTROS BÁSICOS (sobre filas individuales) ---
+    # =========================================================
+
+    # Calcular flag 0DTE
+    hist_df["__is_0dte"] = (
+        pd.to_datetime(hist_df["Expiry"], errors="coerce").dt.date ==
+        pd.to_datetime(hist_df["FechaApertura"], errors="coerce").dt.date
+    )
+
+    if t_filt != "Todos":       hist_df = hist_df[hist_df["Ticker"] == t_filt]
+    if s_filt != "Todos":       hist_df = hist_df[hist_df["Setup"] == s_filt]
+    if e_filt != "Todos":       hist_df = hist_df[hist_df["Estrategia"] == e_filt]
+    if estado_filt != "Todos":  hist_df = hist_df[hist_df["Estado"] == estado_filt]
+    if tags_filt.strip():
+        hist_df = hist_df[
+            hist_df["Tags"].fillna("").str.contains(tags_filt.strip(), case=False, na=False)
+        ]
+    # Filtro 0DTE
+    if filtro_0dte_h == "⚡ Solo 0DTE":
+        hist_df = hist_df[hist_df["__is_0dte"] == True]
+    elif filtro_0dte_h == "🚫 Sin 0DTE":
+        hist_df = hist_df[hist_df["__is_0dte"] == False]
+
+    # Excluir tickers
+    if excluir_tickers_h:
+        hist_df = hist_df[~hist_df["Ticker"].isin(excluir_tickers_h)]
     if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
-        # Comparación usando Timestamps para evitar el TypeError
         start_ts = pd.Timestamp(date_range[0])
         end_ts = pd.Timestamp(date_range[1]) + pd.Timedelta(hours=23, minutes=59, seconds=59)
-        # Incluimos los que están en rango O los que no tienen fecha si el usuario está buscando un ticker específico
         if t_filt != "Todos":
-            hist_df = hist_df[(hist_df["__dt_sort"].isna()) | ((hist_df["__dt_sort"] >= start_ts) & (hist_df["__dt_sort"] <= end_ts))]
+            hist_df = hist_df[
+                (hist_df["__dt_sort"].isna()) |
+                ((hist_df["__dt_sort"] >= start_ts) & (hist_df["__dt_sort"] <= end_ts))
+            ]
         else:
-            hist_df = hist_df[(hist_df["__dt_sort"] >= start_ts) & (hist_df["__dt_sort"] <= end_ts)]
-    
+            hist_df = hist_df[
+                (hist_df["__dt_sort"] >= start_ts) & (hist_df["__dt_sort"] <= end_ts)
+            ]
+
     if hist_df.empty:
         st.info("No hay operaciones que coincidan con los filtros seleccionados.")
         return
 
-    # Preparar visualización amigable
-    display_df = hist_df.copy()
-    # Deduplicar por ChainID: en multi-pata (IC, Spreads) solo mostrar la pata
-    # principal (la que lleva el PnL y ProfitPct reales) para no inflar el historial.
-    # Ordenamos primero por PnL_USD_Realizado desc para que el keep='first' elija la pata con datos.
-    display_df = display_df.sort_values(
-        ["ChainID", "PnL_USD_Realizado"], ascending=[True, False]
+    # =========================================================
+    # --- AGRUPAR POR CHAIN (una operación = un ChainID) ---
+    # =========================================================
+    chain_summaries = []
+    for chain_id, group in hist_df.groupby("ChainID"):
+        group_sorted = group.sort_values("PnL_USD_Realizado", ascending=False)
+        main_leg = group_sorted.iloc[0]
+
+        # PnL total de la operación (suma de todas las patas)
+        total_pnl = group["PnL_USD_Realizado"].sum()
+
+        # Prima neta total (suma de todas las patas)
+        prima_total = group["PrimaRecibida"].sum()
+
+        # MaxProfitUSD guardado (solo en pata 0 para evitar duplicados)
+        max_profit_usd = group["MaxProfitUSD"].max()
+
+        # % de captura sobre la prima máxima
+        if max_profit_usd > 0:
+            profit_pct = (total_pnl / max_profit_usd) * 100
+        elif prima_total > 0:
+            mp_calc = prima_total * int(main_leg["Contratos"]) * 100
+            profit_pct = (total_pnl / mp_calc * 100) if mp_calc > 0 else 0.0
+        else:
+            profit_pct = 0.0
+
+        # Días en trade
+        try:
+            apertura = pd.to_datetime(main_leg["FechaApertura"]).date()
+            cierre_d = pd.to_datetime(main_leg["FechaCierre"]).date() if not pd.isna(main_leg["FechaCierre"]) else date.today()
+            dit = (cierre_d - apertura).days
+        except:
+            dit = 0
+
+        # Strikes resumidos para el label
+        strikes_str = " / ".join(
+            f"{r['Side'][0]}{r['OptionType'][0]}@{r['Strike']:.0f}"
+            for _, r in group.iterrows()
+        )
+
+        chain_summaries.append({
+            "ChainID":    chain_id,
+            "Ticker":     main_leg["Ticker"],
+            "Estrategia": main_leg["Estrategia"],
+            "Estado":     main_leg["Estado"],
+            "FechaCierre":main_leg["FechaCierre"],
+            "__dt_sort":  main_leg["__dt_sort"],
+            "PnL_Total":  total_pnl,
+            "ProfitPct":  profit_pct,
+            "Prima_Neta": prima_total,
+            "Contratos":  int(main_leg["Contratos"]),
+            "DIT":        dit,
+            "Setup":      main_leg.get("Setup", "") or "",
+            "Tags":       main_leg.get("Tags", "") or "",
+            "StrikesStr": strikes_str,
+            "_group":     group,
+            "_legs":      len(group),
+        })
+
+    # --- Filtros sobre los resúmenes de cadena ---
+    chain_summaries = [c for c in chain_summaries if pnl_range[0] <= c["PnL_Total"] <= pnl_range[1]]
+    if resultado_filt == "✅ Ganadoras":
+        chain_summaries = [c for c in chain_summaries if c["PnL_Total"] >= 0]
+    elif resultado_filt == "❌ Perdedoras":
+        chain_summaries = [c for c in chain_summaries if c["PnL_Total"] < 0]
+
+    # Ordenar por fecha de cierre descendente
+    chain_summaries.sort(
+        key=lambda x: x["__dt_sort"] if pd.notna(x["__dt_sort"]) else pd.Timestamp.min,
+        reverse=True
     )
-    display_df = display_df.drop_duplicates(subset=["ChainID"], keep="first")
-    display_df = display_df.sort_values("__dt_sort", ascending=False, na_position='last')
-    display_df["% Gestión"] = display_df["ProfitPct"].map("{:.1f}%".format)
-    display_df["PnL USD"] = display_df["PnL_USD_Realizado"].map("${:,.2f}".format)
-    display_df["Prima"] = display_df["PrimaRecibida"].map("${:,.2f}".format)
-    
-    # Formatear fechas para visualización limpia
-    for col in ["FechaApertura", "Expiry", "FechaCierre", "EarningsDate"]: # Added EarningsDate
-        display_df[col] = pd.to_datetime(display_df[col]).dt.strftime("%Y-%m-%d")
-    
-    # Mapear nombres internos a nombres visibles para la UI
-    display_df = display_df.rename(columns={
-        "BuyingPower": "Capital Reservado",
-        "OptionType": "Tipo",
-        "PrimaRecibida": "PrimaOrig",
-        "EarningsDate": "Fecha Earnings" # Added for display
-    })
-    
-    # Columnas priorizadas: lo más importante primero
-    view_cols = [
-        "Ticker", "FechaCierre", "Estado", "PnL USD", "% Gestión", "Estrategia", "Setup", 
-        "Prima", "Contratos", "Side", "Tipo", "Strike", 
-        "FechaApertura", "Expiry", "Fecha Earnings" # Added for display
-    ]
-    
-    st.dataframe(display_df[view_cols], use_container_width=True, hide_index=True)
-    
-    # Exportar historial filtrado
-    csv_export = display_df[view_cols].to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Exportar historial filtrado (CSV)", data=csv_export, file_name=f"strikelog_historial_{date.today()}.csv", mime="text/csv")
+
+    if not chain_summaries:
+        st.info("No hay operaciones que coincidan con los filtros seleccionados.")
+        return
+
+    # =========================================================
+    # --- KPIs DE RESUMEN ---
+    # =========================================================
+    total_ops   = len(chain_summaries)
+    total_pnl_all = sum(c["PnL_Total"] for c in chain_summaries)
+    ganadoras   = sum(1 for c in chain_summaries if c["PnL_Total"] >= 0)
+    win_rate    = (ganadoras / total_ops * 100) if total_ops > 0 else 0.0
+    avg_pnl     = total_pnl_all / total_ops if total_ops > 0 else 0.0
+
+    st.divider()
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("📋 Total Ops",       f"{total_ops}")
+    k2.metric("💵 PnL Total",        f"${total_pnl_all:,.2f}")
+    k3.metric("🏆 Win Rate",         f"{win_rate:.1f}%")
+    k4.metric("✅ / ❌",             f"{ganadoras} / {total_ops - ganadoras}")
+    k5.metric("📊 PnL Medio",        f"${avg_pnl:,.2f}")
+    st.divider()
+
+    # =========================================================
+    # --- LISTA DE OPERACIONES (acordeón agrupado) ---
+    # =========================================================
+    st.markdown(f"### 📋 Operaciones ({total_ops})")
+
+    ESTADO_ICON = {"Cerrada": "🔒", "Rolada": "🔄", "Asignada": "📜"}
+
+    for c_data in chain_summaries:
+        pnl   = c_data["PnL_Total"]
+        pct   = c_data["ProfitPct"]
+        pnl_icon = "🟢" if pnl >= 0 else "🔴"
+        legs_label = f"{c_data['_legs']} patas" if c_data["_legs"] > 1 else "1 pata"
+        estado_icon = ESTADO_ICON.get(c_data["Estado"], "❓")
+
+        try:
+            fecha_str = pd.to_datetime(c_data["FechaCierre"]).strftime("%Y-%m-%d")
+        except:
+            fecha_str = "Sin fecha"
+
+        label = (
+            f"{pnl_icon} **{c_data['Ticker']}** — {c_data['Estrategia']} "
+            f"| {estado_icon} {c_data['Estado']} "
+            f"| 📅 {fecha_str} "
+            f"| 💵 **${pnl:,.2f}** ({pct:.1f}%) "
+            f"| {legs_label}"
+        )
+
+        with st.expander(label, expanded=False):
+            # Métricas de la operación
+            cm1, cm2, cm3, cm4, cm5 = st.columns(5)
+            cm1.metric("PnL Realizado", f"${pnl:,.2f}")
+            cm2.metric("% Captura",     f"{pct:.1f}%")
+            cm3.metric("Prima Neta",    f"${c_data['Prima_Neta']:,.2f}")
+            cm4.metric("Contratos",     str(c_data["Contratos"]))
+            cm5.metric("DIT",           f"{c_data['DIT']} días")
+
+            # Tags y Setup
+            meta_parts = []
+            if c_data.get("Setup"): meta_parts.append(f"🎯 Setup: **{c_data['Setup']}**")
+            if c_data.get("Tags"):  meta_parts.append(f"🔖 Tags: `{c_data['Tags']}`")
+            if meta_parts:
+                st.caption(" · ".join(meta_parts))
+
+            # Resumen de strikes
+            if c_data["_legs"] > 1:
+                st.caption(f"🦵 Strikes: `{c_data['StrikesStr']}`")
+
+            # Desglose de patas
+            st.markdown("**📋 Desglose de patas:**")
+            group = c_data["_group"]
+            leg_rows = []
+            for _, leg in group.iterrows():
+                try:
+                    exp_str = pd.to_datetime(leg["Expiry"]).strftime("%Y-%m-%d")
+                except:
+                    exp_str = str(leg.get("Expiry", "-"))
+                leg_rows.append({
+                    "Side":        leg["Side"],
+                    "Tipo":        leg["OptionType"],
+                    "Strike ($)":  f"{float(leg['Strike']):,.2f}" if leg["Strike"] else "-",
+                    "Prima":       f"${float(leg['PrimaRecibida']):,.2f}",
+                    "Cierre":      f"${float(leg['CostoCierre']):,.2f}",
+                    "PnL Pata":    f"${float(leg['PnL_USD_Realizado']):,.2f}",
+                    "Vencimiento": exp_str,
+                    "Notas":       str(leg.get("Notas", "") or "")[:60],
+                })
+            st.dataframe(
+                pd.DataFrame(leg_rows),
+                hide_index=True,
+                use_container_width=True
+            )
+
+    st.divider()
+
+    # =========================================================
+    # --- EXPORTAR ---
+    # =========================================================
+    export_rows = []
+    for c_data in chain_summaries:
+        try:
+            fecha_str = pd.to_datetime(c_data["FechaCierre"]).strftime("%Y-%m-%d")
+        except:
+            fecha_str = ""
+        export_rows.append({
+            "Ticker":      c_data["Ticker"],
+            "Estrategia":  c_data["Estrategia"],
+            "Estado":      c_data["Estado"],
+            "FechaCierre": fecha_str,
+            "PnL_USD":     round(c_data["PnL_Total"], 2),
+            "Captura_%":   round(c_data["ProfitPct"], 2),
+            "Prima_Neta":  round(c_data["Prima_Neta"], 2),
+            "Contratos":   c_data["Contratos"],
+            "DIT":         c_data["DIT"],
+            "Setup":       c_data.get("Setup", ""),
+            "Tags":        c_data.get("Tags", ""),
+            "Strikes":     c_data["StrikesStr"],
+        })
+    csv_export = pd.DataFrame(export_rows).to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "📥 Exportar historial filtrado (CSV)",
+        data=csv_export,
+        file_name=f"strikelog_historial_{date.today()}.csv",
+        mime="text/csv"
+    )
 
 def main():
     st.set_page_config(page_title="STRIKELOG Pro", layout="wide")
+
+    # -------------------------------------------------------
+    # Fix: Permite usar la coma del teclado como punto decimal
+    # en todos los st.number_input de la aplicación.
+    # -------------------------------------------------------
+    components.html(
+        """
+        <script>
+        (function() {
+            function applyCommaFix(doc) {
+                doc.addEventListener('keydown', function(e) {
+                    if (e.key !== ',') return;
+                    var el = doc.activeElement;
+                    if (!el) return;
+                    var tag = el.tagName ? el.tagName.toUpperCase() : '';
+                    if (tag !== 'INPUT') return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    // Usamos nativeInputValueSetter para que React detecte el cambio
+                    var nativeSetter = Object.getOwnPropertyDescriptor(
+                        window.parent.HTMLInputElement.prototype, 'value'
+                    ).set;
+                    var start = el.selectionStart;
+                    var end   = el.selectionEnd;
+                    var val   = el.value;
+                    var newVal = val.slice(0, start) + '.' + val.slice(end);
+                    nativeSetter.call(el, newVal);
+                    el.setSelectionRange(start + 1, start + 1);
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                }, true);
+            }
+            try {
+                applyCommaFix(window.parent.document);
+            } catch(err) {
+                applyCommaFix(document);
+            }
+        })();
+        </script>
+        """,
+        height=0,
+        scrolling=False
+    )
+
     if "df" not in st.session_state:
         st.session_state.df = JournalManager.load_data()
         

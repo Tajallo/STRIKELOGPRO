@@ -704,6 +704,11 @@ def render_dashboard(df):
                 st.plotly_chart(fig_setup, use_container_width=True)
 
 def render_active_portfolio(df):
+    if "edit_trade_id" in st.session_state:
+        render_inline_edit(st.session_state["edit_trade_id"])
+        st.divider()
+        st.stop()
+        
     st.header("📂 Cartera Activa")
     
     # CSS personalizado para badges y tarjetas
@@ -993,13 +998,13 @@ def render_active_portfolio(df):
                 st.markdown("###### 🦵 Patas de la Estrategia")
                 
                 # Tabla de Legs Custom para mejor alineación
-                leg_cols = st.columns([1.5, 1, 1.5, 1, 1.5, 1.5])
-                fields = ["Lado", "Tipo", "Strike", "Cnt", "Delta", "Prima"]
+                leg_cols = st.columns([1.5, 1, 1.5, 1, 1.5, 1.5, 1])
+                fields = ["Lado", "Tipo", "Strike", "Cnt", "Delta", "Prima", "Edit"]
                 for i, f in enumerate(fields):
                     leg_cols[i].markdown(f"**{f}**")
                 
                 for _, leg in group.iterrows():
-                    l_c1, l_c2, l_c3, l_c4, l_c5, l_c6 = st.columns([1.5, 1, 1.5, 1, 1.5, 1.5])
+                    l_c1, l_c2, l_c3, l_c4, l_c5, l_c6, l_c7 = st.columns([1.5, 1, 1.5, 1, 1.5, 1.5, 1])
                     side_color = "#e74c3c" if leg["Side"] == "Sell" else "#27ae60"
                     l_c1.markdown(f"<span style='color:{side_color}; font-weight:bold;'>{leg['Side']}</span>", unsafe_allow_html=True)
                     l_c2.write(leg["OptionType"])
@@ -1007,6 +1012,9 @@ def render_active_portfolio(df):
                     l_c4.write(f"{int(leg.get('Contratos', 1))}")
                     l_c5.write(f"{leg.get('Delta', 0):.2f}")
                     l_c6.write(f"${leg.get('PrimaRecibida', 0):.2f}")
+                    if l_c7.button("✏️", key=f"edit_leg_{leg['ID']}"):
+                        st.session_state["edit_trade_id"] = leg["ID"]
+                        st.rerun()
                 
                 st.markdown("---")
                 
@@ -1597,8 +1605,14 @@ def render_new_trade():
                 be_upper_input = 0.0
                 pop_val = c_be2.number_input("POP %", value=float(suggested_pop), step=0.1, key="pop_single")
         
-        submitted = st.form_submit_button("✅ Registrar Operación", type="primary")
+        # Reemplazado form_submit_button único por columnas para admitir Cancelar
+        c_sub, c_canc = st.columns(2)
+        submitted = c_sub.form_submit_button("✅ Registrar Operación", type="primary", use_container_width=True)
+        canceled = c_canc.form_submit_button("🚫 Limpiar / Cancelar", use_container_width=True)
         
+        if canceled:
+            st.rerun()
+            
         if submitted:
             if not ticker:
                 st.error("Debes indicar un Ticker.")
@@ -1677,6 +1691,11 @@ def render_new_trade():
 
 
 def render_history(df):
+    if "edit_trade_id" in st.session_state:
+        render_inline_edit(st.session_state["edit_trade_id"])
+        st.divider()
+        st.stop()
+
     st.header("📜 Historial de Operaciones")
     
     # --- Datos de base ---
@@ -1944,27 +1963,31 @@ def render_history(df):
             # Desglose de patas
             st.markdown("**📋 Desglose de patas:**")
             group = c_data["_group"]
-            leg_rows = []
+            
+            leg_cols = st.columns([1, 1, 1.5, 1.5, 1.5, 1.5, 2, 1])
+            fields = ["Side", "Tipo", "Strike", "Prima", "Cierre", "PnL", "Venc.", "Edit"]
+            for i, f in enumerate(fields):
+                leg_cols[i].markdown(f"**{f}**")
+                
             for _, leg in group.iterrows():
+                l_c1, l_c2, l_c3, l_c4, l_c5, l_c6, l_c7, l_c8 = st.columns([1, 1, 1.5, 1.5, 1.5, 1.5, 2, 1])
+                side_color = "#e74c3c" if leg["Side"] == "Sell" else "#27ae60"
+                l_c1.markdown(f"<span style='color:{side_color}; font-weight:bold;'>{leg['Side']}</span>", unsafe_allow_html=True)
+                l_c2.write(leg["OptionType"])
+                l_c3.write(f"{float(leg['Strike']):,.2f}" if leg["Strike"] else "-")
+                l_c4.write(f"${float(leg['PrimaRecibida']):,.2f}")
+                l_c5.write(f"${float(leg['CostoCierre']):,.2f}")
+                l_c6.write(f"${float(leg['PnL_USD_Realizado']):,.2f}")
+                
                 try:
                     exp_str = pd.to_datetime(leg["Expiry"]).strftime("%Y-%m-%d")
                 except:
                     exp_str = str(leg.get("Expiry", "-"))
-                leg_rows.append({
-                    "Side":        leg["Side"],
-                    "Tipo":        leg["OptionType"],
-                    "Strike ($)":  f"{float(leg['Strike']):,.2f}" if leg["Strike"] else "-",
-                    "Prima":       f"${float(leg['PrimaRecibida']):,.2f}",
-                    "Cierre":      f"${float(leg['CostoCierre']):,.2f}",
-                    "PnL Pata":    f"${float(leg['PnL_USD_Realizado']):,.2f}",
-                    "Vencimiento": exp_str,
-                    "Notas":       str(leg.get("Notas", "") or "")[:60],
-                })
-            st.dataframe(
-                pd.DataFrame(leg_rows),
-                hide_index=True,
-                use_container_width=True
-            )
+                l_c7.write(exp_str)
+                
+                if l_c8.button("✏️", key=f"hist_edit_{leg['ID']}"):
+                    st.session_state["edit_trade_id"] = leg['ID']
+                    st.rerun()
 
     st.divider()
 
@@ -1998,6 +2021,131 @@ def render_history(df):
         file_name=f"strikelog_historial_{date.today()}.csv",
         mime="text/csv"
     )
+
+
+def render_inline_edit(trade_id):
+    st.header("✏️ Editar Operación")
+    
+    idx_list = st.session_state.df.index[st.session_state.df["ID"] == trade_id]
+    if len(idx_list) == 0:
+        st.error("Operación no encontrada.")
+        if st.button("⬅️ Volver a la Lista", key=f"back_err_{trade_id}"):
+            st.session_state.pop("edit_trade_id", None)
+            st.rerun()
+        return
+        
+    idx = idx_list[0]
+    row = st.session_state.df.iloc[idx]
+    
+    st.markdown(f"**Editando: {row['Ticker']} - {row['Estrategia']} ({row['ID']})**")
+    
+    with st.form(f"edit_form_inline"):
+        c1, c2, c3, c4, c5 = st.columns(5)
+        n_ticker = c1.text_input("Ticker", row["Ticker"])
+        n_side = c2.selectbox("Side", SIDES, index=SIDES.index(row["Side"]) if row["Side"] in SIDES else 0)
+        n_type = c3.selectbox("Type", OPTION_TYPES, index=OPTION_TYPES.index(row["OptionType"]) if row["OptionType"] in OPTION_TYPES else 0)
+        n_strike = c4.number_input("Strike", value=float(row["Strike"]))
+        n_delta = c5.number_input("Delta", value=float(row["Delta"]), step=0.01)
+        
+        ce1, ce2, ce3 = st.columns(3)
+        n_setup = ce1.selectbox("Setup", SETUPS, index=SETUPS.index(row["Setup"]) if "Setup" in row and row["Setup"] in SETUPS else 0)
+        n_estrategia = ce2.selectbox("Estrategia", ESTRATEGIAS, index=ESTRATEGIAS.index(row["Estrategia"]) if row["Estrategia"] in ESTRATEGIAS else 0)
+        n_tags = ce3.text_input("Tags", value=str(row.get("Tags", "") or ""), help="Etiquetas separadas por coma")
+        
+        c6, c7, c8, c8_2, c8_3 = st.columns(5)
+        n_prima = c6.number_input("Prima Neta (por acción)", value=float(row["PrimaRecibida"]))
+        n_costo = c7.number_input("Cierre Neto (por acción)", value=float(row["CostoCierre"]))
+        n_contracts = c8.number_input("Contratos", value=int(row["Contratos"]), min_value=1)
+        n_bp = c8_2.number_input("Buying Power", value=float(row["BuyingPower"]))
+        n_stock_close = c8_3.number_input("Precio Acción Cierre", value=float(row["PrecioAccionCierre"]))
+        
+        cd1, cd2, cd3, cd4 = st.columns(4)
+        n_fecha_ap = cd1.date_input("Fecha Apertura", value=pd.to_datetime(row["FechaApertura"]).date())
+        n_expiry = cd2.date_input("Fecha Vencimiento", value=pd.to_datetime(row["Expiry"]).date())
+        n_fecha_cl = cd3.date_input("Fecha Cierre", value=pd.to_datetime(row["FechaCierre"]).date() if not pd.isna(row["FechaCierre"]) else date.today())
+        n_earnings_date = cd4.date_input("Fecha Earnings", value=pd.to_datetime(row["EarningsDate"]).date() if not pd.isna(row.get("EarningsDate")) else None)
+        
+        c9, c10, c10b, c11, c12 = st.columns(5)
+        n_pnl_usd = c9.number_input("PnL USD Realizado", value=float(row.get("PnL_USD_Realizado", 0) or 0))
+        n_be = c10.number_input("Break Even (Inf)", value=float(row.get("BreakEven", 0) or 0))
+        n_be_upper = c10b.number_input("BE Superior", value=float(row.get("BreakEven_Upper", 0) or 0), help="Solo para IC, Strangle...")
+        n_pop = c11.number_input("Prob. Éxito %", value=float(row.get("POP", 0) or 0))
+        n_estado = c12.selectbox("Estado", ESTADOS, index=ESTADOS.index(row["Estado"]) if row["Estado"] in ESTADOS else 0)
+
+        if str(row["Estado"]) != "Abierta":
+            pct = float(row.get("ProfitPct", 0) or 0)
+            st.info(f"💡 Este trade tiene un beneficio del **{pct:.1f}%** sobre la prima original.")
+        
+        n_notas = st.text_area("Notas", str(row.get("Notas", "") or ""))
+        
+        st.warning("⚠️ Revisa los cambios antes de guardar. Se creará un backup automático del CSV actual.")
+        
+        c_sub, c_canc = st.columns(2)
+        submit_btn = c_sub.form_submit_button("💾 Guardar Cambios", type="primary", use_container_width=True)
+        cancel_btn = c_canc.form_submit_button("🚫 Cancelar", use_container_width=True)
+
+        if submit_btn:
+            st.session_state.df.at[idx, "Ticker"] = n_ticker
+            st.session_state.df.at[idx, "Side"] = n_side
+            st.session_state.df.at[idx, "OptionType"] = n_type
+            st.session_state.df.at[idx, "Strike"] = n_strike
+            st.session_state.df.at[idx, "Delta"] = n_delta
+            st.session_state.df.at[idx, "Setup"] = n_setup
+            st.session_state.df.at[idx, "Estrategia"] = n_estrategia
+            st.session_state.df.at[idx, "Tags"] = n_tags.strip()
+            st.session_state.df.at[idx, "FechaApertura"] = pd.to_datetime(n_fecha_ap)
+            st.session_state.df.at[idx, "Expiry"] = pd.to_datetime(n_expiry)
+            st.session_state.df.at[idx, "FechaCierre"] = pd.to_datetime(n_fecha_cl) if n_estado != "Abierta" else pd.NA
+            st.session_state.df.at[idx, "PrimaRecibida"] = n_prima
+            st.session_state.df.at[idx, "CostoCierre"] = n_costo
+            st.session_state.df.at[idx, "Contratos"] = n_contracts
+            st.session_state.df.at[idx, "BuyingPower"] = n_bp
+            st.session_state.df.at[idx, "PrecioAccionCierre"] = n_stock_close
+            st.session_state.df.at[idx, "PnL_USD_Realizado"] = n_pnl_usd
+            st.session_state.df.at[idx, "BreakEven"] = n_be
+            st.session_state.df.at[idx, "BreakEven_Upper"] = n_be_upper
+            st.session_state.df.at[idx, "POP"] = n_pop
+            st.session_state.df.at[idx, "Notas"] = n_notas
+            st.session_state.df.at[idx, "Estado"] = n_estado
+            
+            st.session_state.df.at[idx, "MaxProfitUSD"] = n_prima * n_contracts * 100
+            if n_estado != "Abierta":
+                total_gross_premium = n_prima * n_contracts * 100
+                if total_gross_premium != 0:
+                    st.session_state.df.at[idx, "ProfitPct"] = (n_pnl_usd / total_gross_premium) * 100
+                else:
+                    st.session_state.df.at[idx, "ProfitPct"] = 0.0
+            else:
+                st.session_state.df.at[idx, "ProfitPct"] = 0.0
+
+            st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+            st.success("¡Actualizado con éxito!")
+            st.session_state.pop("edit_trade_id", None)
+            st.rerun()
+
+        elif cancel_btn:
+            st.session_state.pop("edit_trade_id", None)
+            st.rerun()
+
+    st.divider()
+    st.markdown("#### 🗑️ Zona de Peligro")
+    if f"confirm_delete_{trade_id}" not in st.session_state:
+        if st.button(f"🗑️ Eliminar operación {row['Ticker']} (ID: {trade_id[:8]})", type="secondary"):
+            st.session_state[f"confirm_delete_{trade_id}"] = True
+            st.rerun()
+    else:
+        st.error(f"⚠️ ¿Estás SEGURO de eliminar {row['Ticker']} (ID: {trade_id[:8]})? Esta acción no se puede deshacer.")
+        c_del1, c_del2 = st.columns(2)
+        if c_del1.button("✅ Sí, eliminar", type="primary", key=f"conf_del_{trade_id}"):
+            st.session_state.df = st.session_state.df[st.session_state.df["ID"] != trade_id].reset_index(drop=True)
+            st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+            del st.session_state[f"confirm_delete_{trade_id}"]
+            st.session_state.pop("edit_trade_id", None)
+            st.success("Operación eliminada.")
+            st.rerun()
+        if c_del2.button("❌ Cancelar", key=f"canc_del_{trade_id}"):
+            del st.session_state[f"confirm_delete_{trade_id}"]
+            st.rerun()
 
 def main():
     st.set_page_config(page_title="STRIKELOG Pro", layout="wide")
@@ -2047,144 +2195,13 @@ def main():
     if "df" not in st.session_state:
         st.session_state.df = JournalManager.load_data()
         
-    page = st.sidebar.radio("Navegación", ["Dashboard", "Nueva Operación", "Cartera Activa", "Historial", "Datos / Edición"])
+    page = st.sidebar.radio("Navegación", ["Dashboard", "Nueva Operación", "Cartera Activa", "Historial"])
     
     if page == "Dashboard": render_dashboard(st.session_state.df)
     elif page == "Nueva Operación": render_new_trade()
     elif page == "Cartera Activa": render_active_portfolio(st.session_state.df)
     elif page == "Historial": render_history(st.session_state.df)
         
-    elif page == "Datos / Edición":
-        st.header("🛠️ Gestión de Datos")
-        tab1, tab2 = st.tabs(["📄 Ver Todo", "✏️ Editar"])
-        with tab1:
-            # Ocultar columnas internas/derivadas que no aportan al usuario
-            hidden_cols = ["MaxProfitUSD", "PnL_Capital_Pct", "UpdatedAt", "ChainID", "ParentID"]
-            visible_cols = [c for c in st.session_state.df.columns if c not in hidden_cols]
-            st.dataframe(st.session_state.df[visible_cols], use_container_width=True)
-        with tab2:
-            # Crear una lista de opciones descriptivas para el selectbox
-            # Formato: "TICKER - ESTRATEGIA - FECHA - (ID)"
-            opciones_dict = {
-                f"{row['Ticker']} - {row['Estrategia']} ({row['FechaApertura']}) [ID: {row['ID']}]": row['ID'] 
-                for int_idx, row in st.session_state.df.iterrows()
-            }
-            
-            # Ordenar las opciones alfabéticamente para facilitar la búsqueda
-            opciones_desc = ["--- Seleccione una operación ---"] + sorted(list(opciones_dict.keys()))
-            
-            sel_desc = st.selectbox("Busque y seleccione la operación a editar:", opciones_desc, key="edit_selector")
-            
-            if sel_desc != "--- Seleccione una operación ---":
-                trade_id = opciones_dict[sel_desc]
-                idx = st.session_state.df.index[st.session_state.df["ID"] == trade_id][0]
-                row = st.session_state.df.iloc[idx]
-            
-                with st.form("edit_form"):
-                    c1, c2, c3, c4, c5 = st.columns(5)
-                    n_ticker = c1.text_input("Ticker", row["Ticker"])
-                    n_side = c2.selectbox("Side", SIDES, index=SIDES.index(row["Side"]) if row["Side"] in SIDES else 0)
-                    n_type = c3.selectbox("Type", OPTION_TYPES, index=OPTION_TYPES.index(row["OptionType"]) if row["OptionType"] in OPTION_TYPES else 0)
-                    n_strike = c4.number_input("Strike", value=float(row["Strike"]))
-                    n_delta = c5.number_input("Delta", value=float(row["Delta"]), step=0.01)
-                    
-                    ce1, ce2, ce3 = st.columns(3)
-                    n_setup = ce1.selectbox("Setup", SETUPS, index=SETUPS.index(row["Setup"]) if "Setup" in row and row["Setup"] in SETUPS else 0)
-                    n_estrategia = ce2.selectbox("Estrategia", ESTRATEGIAS, index=ESTRATEGIAS.index(row["Estrategia"]) if row["Estrategia"] in ESTRATEGIAS else 0)
-                    n_tags = ce3.text_input("Tags", value=str(row.get("Tags", "") or ""), help="Etiquetas separadas por coma")
-                    
-                    c6, c7, c8, c8_2, c8_3 = st.columns(5)
-                    n_prima = c6.number_input("Prima Neta (por acción)", value=float(row["PrimaRecibida"]))
-                    n_costo = c7.number_input("Cierre Neto (por acción)", value=float(row["CostoCierre"]))
-                    n_contracts = c8.number_input("Contratos", value=int(row["Contratos"]), min_value=1)
-                    n_bp = c8_2.number_input("Buying Power", value=float(row["BuyingPower"]))
-                    n_stock_close = c8_3.number_input("Precio Acción Cierre", value=float(row["PrecioAccionCierre"]))
-                    
-                    cd1, cd2, cd3, cd4 = st.columns(4) # Added one column for EarningsDate
-                    n_fecha_ap = cd1.date_input("Fecha Apertura", value=pd.to_datetime(row["FechaApertura"]).date())
-                    n_expiry = cd2.date_input("Fecha Vencimiento", value=pd.to_datetime(row["Expiry"]).date())
-                    n_fecha_cl = cd3.date_input("Fecha Cierre", value=pd.to_datetime(row["FechaCierre"]).date() if not pd.isna(row["FechaCierre"]) else date.today())
-                    n_earnings_date = cd4.date_input("Fecha Earnings", value=pd.to_datetime(row["EarningsDate"]).date() if not pd.isna(row.get("EarningsDate")) else None)
-                    
-                    c9, c10, c10b, c11, c12 = st.columns(5)
-                    n_pnl_usd = c9.number_input("PnL USD Realizado", value=float(row["PnL_USD_Realizado"]))
-                    n_be = c10.number_input("Break Even (Inf)", value=float(row["BreakEven"]))
-                    n_be_upper = c10b.number_input("BE Superior", value=float(row.get("BreakEven_Upper", 0) or 0), help="Solo para Iron Condor, Butterfly, Strangle, Straddle")
-                    n_pop = c11.number_input("Prob. Éxito %", value=float(row["POP"]))
-                    n_estado = c12.selectbox("Estado", ESTADOS, index=ESTADOS.index(row["Estado"]))
-
-                    if row["Estado"] != "Abierta":
-                        st.info(f"💡 Este trade tiene un beneficio del **{row['ProfitPct']:.1f}%** sobre la prima original.")
-                    
-                    n_notas = st.text_area("Notas", row["Notas"])
-                    
-                    # Resumen de cambios antes de guardar
-                    st.warning("⚠️ Revisa los cambios antes de guardar. Se creará un backup automático del CSV actual.")
-                    
-                    if st.form_submit_button("💾 Guardar Cambios"):
-                        st.session_state.df.at[idx, "Ticker"] = n_ticker
-                        st.session_state.df.at[idx, "Side"] = n_side
-                        st.session_state.df.at[idx, "OptionType"] = n_type
-                        st.session_state.df.at[idx, "Strike"] = n_strike
-                        st.session_state.df.at[idx, "Delta"] = n_delta
-                        st.session_state.df.at[idx, "Setup"] = n_setup
-                        st.session_state.df.at[idx, "Estrategia"] = n_estrategia
-                        st.session_state.df.at[idx, "Tags"] = n_tags.strip()
-                        st.session_state.df.at[idx, "FechaApertura"] = pd.to_datetime(n_fecha_ap)
-                        st.session_state.df.at[idx, "Expiry"] = pd.to_datetime(n_expiry)
-                        st.session_state.df.at[idx, "FechaCierre"] = pd.to_datetime(n_fecha_cl) if n_estado != "Abierta" else pd.NA
-                        st.session_state.df.at[idx, "PrimaRecibida"] = n_prima
-                        st.session_state.df.at[idx, "CostoCierre"] = n_costo
-                        st.session_state.df.at[idx, "Contratos"] = n_contracts
-                        st.session_state.df.at[idx, "BuyingPower"] = n_bp
-                        st.session_state.df.at[idx, "PrecioAccionCierre"] = n_stock_close
-                        st.session_state.df.at[idx, "PnL_USD_Realizado"] = n_pnl_usd
-                        st.session_state.df.at[idx, "BreakEven"] = n_be
-                        st.session_state.df.at[idx, "BreakEven_Upper"] = n_be_upper
-                        st.session_state.df.at[idx, "POP"] = n_pop
-                        st.session_state.df.at[idx, "Notas"] = n_notas
-                        st.session_state.df.at[idx, "Estado"] = n_estado
-                        
-                        st.session_state.df.at[idx, "MaxProfitUSD"] = n_prima * n_contracts * 100
-                        if n_estado != "Abierta":
-                            total_gross_premium = n_prima * n_contracts * 100
-                            if total_gross_premium != 0:
-                                st.session_state.df.at[idx, "ProfitPct"] = (n_pnl_usd / total_gross_premium) * 100
-                            else:
-                                st.session_state.df.at[idx, "ProfitPct"] = 0.0
-                        else:
-                            st.session_state.df.at[idx, "ProfitPct"] = 0.0
-
-                        st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
-                        st.success("¡Actualizado con éxito!")
-                        st.rerun()
-
-                # Botón eliminar con confirmación doble
-                st.divider()
-                st.markdown("#### 🗑️ Zona de Peligro")
-                if f"confirm_delete_{trade_id}" not in st.session_state:
-                    if st.button(f"🗑️ Eliminar operación {row['Ticker']} (ID: {trade_id})", type="secondary"):
-                        st.session_state[f"confirm_delete_{trade_id}"] = True
-                        st.rerun()
-                else:
-                    st.error(f"⚠️ ¿Estás SEGURO de eliminar **{row['Ticker']} {row['Estrategia']}** (ID: {trade_id})? Esta acción no se puede deshacer.")
-                    c_del1, c_del2 = st.columns(2)
-                    if c_del1.button("✅ Sí, eliminar definitivamente", type="primary"):
-                        st.session_state.df = st.session_state.df[st.session_state.df["ID"] != trade_id].reset_index(drop=True)
-                        st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
-                        del st.session_state[f"confirm_delete_{trade_id}"]
-                        if "edit_selector" in st.session_state:
-                            del st.session_state["edit_selector"]
-                        st.success("Operación eliminada.")
-                        st.rerun()
-                    if c_del2.button("❌ Cancelar"):
-                        del st.session_state[f"confirm_delete_{trade_id}"]
-                        st.rerun()
-
-                if st.button("⬅️ Volver a la Lista / Cancelar"):
-                    if "edit_selector" in st.session_state:
-                        del st.session_state["edit_selector"]
-                    st.rerun()
 
 if __name__ == "__main__":
     main()

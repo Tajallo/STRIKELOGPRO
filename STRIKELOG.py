@@ -25,7 +25,7 @@ COLUMNS = [
     "Estrategia", "Setup", "Tags", "Side", "OptionType", "Strike", "Delta", "PrimaRecibida", "CostoCierre", "Contratos", 
     "BuyingPower", "BreakEven", "BreakEven_Upper", "POP",
     "Estado", "Notas", "UpdatedAt", "FechaCierre", "MaxProfitUSD", "ProfitPct", "PnL_Capital_Pct",
-    "PrecioAccionCierre", "PnL_USD_Realizado", "EarningsDate"
+    "PrecioAccionCierre", "PnL_USD_Realizado", "Comisiones", "EarningsDate"
 ]
 
 SETUPS = ["Earnings", "Soporte/Resistencia", "VIX alto", "Tendencial", "Reversión", "Inversión Largo Plazo", "Otro"]
@@ -113,7 +113,7 @@ class JournalManager:
                 if c == "Side": df[c] = "Sell"
                 elif c == "OptionType": df[c] = "Put"
                 elif c == "Tags": df[c] = ""
-                elif c in ["BuyingPower", "BreakEven", "BreakEven_Upper", "POP", "Delta", "PnL_Capital_Pct", "PrecioAccionCierre", "PnL_USD_Realizado"]: df[c] = 0.0
+                elif c in ["BuyingPower", "BreakEven", "BreakEven_Upper", "POP", "Delta", "PnL_Capital_Pct", "PrecioAccionCierre", "PnL_USD_Realizado", "Comisiones"]: df[c] = 0.0
                 else: df[c] = pd.NA
         
         df = df[COLUMNS].copy()
@@ -126,7 +126,7 @@ class JournalManager:
         df["FechaApertura"] = df["FechaApertura"].fillna(pd.Timestamp.now().normalize())
         df["Expiry"] = df["Expiry"].fillna(pd.Timestamp.now().normalize())
         
-        numeric_cols = ["PrimaRecibida", "CostoCierre", "BuyingPower", "BreakEven", "BreakEven_Upper", "POP", "Delta", "MaxProfitUSD", "ProfitPct", "PnL_Capital_Pct", "PrecioAccionCierre", "PnL_USD_Realizado"]
+        numeric_cols = ["PrimaRecibida", "CostoCierre", "BuyingPower", "BreakEven", "BreakEven_Upper", "POP", "Delta", "MaxProfitUSD", "ProfitPct", "PnL_Capital_Pct", "PrecioAccionCierre", "PnL_USD_Realizado", "Comisiones"]
         for col in numeric_cols:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
             
@@ -171,7 +171,7 @@ def detect_strategy_direction(strategy, side_first_leg="Sell"):
         return side_first_leg
     return "Buy"
 
-def calculate_pnl_metrics(prima_neta, costo_cierre_neto, contracts, strategy, bp=0.0, side_first_leg="Sell"):
+def calculate_pnl_metrics(prima_neta, costo_cierre_neto, contracts, strategy, bp=0.0, side_first_leg="Sell", comisiones_totales=0.0):
     """
     Calcula métricas de PnL de forma estandarizada.
     
@@ -186,6 +186,7 @@ def calculate_pnl_metrics(prima_neta, costo_cierre_neto, contracts, strategy, bp
         strategy: Nombre de la estrategia (para detectar crédito/débito)
         bp: Buying Power reservado (para calcular RoC)
         side_first_leg: Side de la primera pata (fallback para estrategias ambiguas)
+        comisiones_totales: Total de comisiones a restar del PnL
     
     Returns:
         (pnl_usd, profit_pct, pnl_capital_pct)
@@ -194,11 +195,11 @@ def calculate_pnl_metrics(prima_neta, costo_cierre_neto, contracts, strategy, bp
     
     if direction == "Sell":
         # Crédito: ganas si el costo de cierre es menor que la prima cobrada
-        pnl_usd = (prima_neta - costo_cierre_neto) * contracts * 100
+        pnl_usd = (prima_neta - costo_cierre_neto) * contracts * 100 - comisiones_totales
         profit_pct = ((prima_neta - costo_cierre_neto) / prima_neta * 100) if prima_neta > 0 else 0.0
     else:
         # Débito: ganas si el precio de cierre es mayor que lo que pagaste
-        pnl_usd = (costo_cierre_neto - prima_neta) * contracts * 100
+        pnl_usd = (costo_cierre_neto - prima_neta) * contracts * 100 - comisiones_totales
         profit_pct = ((costo_cierre_neto - prima_neta) / prima_neta * 100) if prima_neta > 0 else 0.0
         
     pnl_capital_pct = (pnl_usd / bp * 100) if bp > 0 else 0.0
@@ -553,13 +554,17 @@ def render_dashboard(df):
         st.divider()
         
         # Fila 1: Métricas Principales con diseño mejorado
-        m1, m2, m3, m4, m5 = st.columns(5)
+        m1, m2, m3, m4, m5, m6 = st.columns(6)
         # Formatear delta para asegurar color correcto (si empieza con $ y es negativo, Streamlit a veces lo pone verde)
         pnl_delta_str = f"${pnl_total:,.2f}" if pnl_total >= 0 else f"-${abs(pnl_total):,.2f}"
         m1.metric("PnL Realizado", f"${pnl_total:,.2f}", delta=pnl_delta_str if pnl_total != 0 else None)
-        m2.metric("Win Rate", f"{win_rate:.1f}%", help="Porcentaje de operaciones positivas")
-        m3.metric("Profit Factor", f"{profit_factor:.2f}x", help="Ratio Ganancia Total / Pérdida Total")
-        m4.metric("Captura Media", f"{capture_eff:.1f}%", help="Promedio de beneficio sobre la prima recibida")
+        
+        total_comisiones = df_view["Comisiones"].sum() if "Comisiones" in df_view.columns else 0.0
+        m2.metric("Comisiones", f"${total_comisiones:,.2f}", help="Total de comisiones pagadas")
+        
+        m3.metric("Win Rate", f"{win_rate:.1f}%", help="Porcentaje de operaciones positivas")
+        m4.metric("Profit Factor", f"{profit_factor:.2f}x", help="Ratio Ganancia Total / Pérdida Total")
+        m5.metric("Captura Media", f"{capture_eff:.1f}%", help="Promedio de beneficio sobre la prima recibida")
         
         # Drawdown máximo
         if not closed_trades.empty:
@@ -570,7 +575,7 @@ def render_dashboard(df):
             max_dd = drawdown.max()
         else:
             max_dd = 0.0
-        m5.metric("Max Drawdown", f"-${max_dd:,.2f}", help="Mayor caída desde un pico de equidad")
+        m6.metric("Max Drawdown", f"-${max_dd:,.2f}", help="Mayor caída desde un pico de equidad")
         
         # Racha actual (Streak)
         if not closed_trades.empty:
@@ -921,11 +926,21 @@ def render_active_portfolio(df):
         else:
             be_str = f"${calculated_be:,.2f}"
         
+        # Componentes del título expandido
+        # Formato: 13 Mar
+        try:
+            exp_date_obj = pd.to_datetime(first_row["Expiry"])
+            exp_str_title = exp_date_obj.strftime("%d %b")
+        except:
+            exp_str_title = ""
+            
+        strikes_short = " / ".join(f"{float(r['Strike']):g}" for _, r in group.iterrows())
+        
         # Header del Expander Limpio + Earnings Icon (Sin HTML en título expander)
         if earnings_txt:
-            header_title = f"**{ticker}** {dir_icon} {strategy} {roll_label}   🚨 {earnings_txt} 🚨"
+            header_title = f"{ticker} {exp_str_title} {strikes_short} {strategy} {roll_label}   🚨 {earnings_txt} 🚨"
         else:
-            header_title = f"**{ticker}** {dir_icon} {strategy} {roll_label}"
+            header_title = f"{ticker} {exp_str_title} {strikes_short} {strategy} {roll_label}"
         
         # Layout de Tarjeta
         c_dte, c_card = st.columns([1, 10])
@@ -1065,8 +1080,18 @@ def render_active_portfolio(df):
                     q_entry = group["PrimaRecibida"].sum()
                     q_contracts = int(first_row["Contratos"])
                     q_bp = group["BuyingPower"].sum()
+                    # Estimación de comisiones de cierre
+                    q_comisiones = sum(float(r.get("Comisiones", 0.0)) for _, r in group.iterrows())
+                    cierre_comisiones = 0.0
+                    for _, r in group.iterrows():
+                        if r.get("Side", "Sell") == "Sell" and q_close_price <= 0.05:
+                            pass
+                        else:
+                            cierre_comisiones += int(r.get("Contratos", 1)) * 0.65
+                    q_comisiones += cierre_comisiones
+
                     q_pnl, q_pct, _ = calculate_pnl_metrics(
-                        q_entry, q_close_price, q_contracts, strategy, q_bp, first_row["Side"]
+                        q_entry, q_close_price, q_contracts, strategy, q_bp, first_row["Side"], q_comisiones
                     )
                     qc2.metric("PnL Est.", f"${q_pnl:,.2f}", delta=f"{q_pct:.0f}%")
                     
@@ -1083,6 +1108,7 @@ def render_active_portfolio(df):
                                 df.at[real_idx_q, "PnL_USD_Realizado"] = q_pnl
                                 df.at[real_idx_q, "ProfitPct"] = q_profit_pct
                                 df.at[real_idx_q, "PnL_Capital_Pct"] = (q_pnl / q_bp * 100) if q_bp > 0 else 0.0
+                                df.at[real_idx_q, "Comisiones"] = float(row_q.get("Comisiones", 0.0)) + cierre_comisiones
                             else:
                                 df.at[real_idx_q, "CostoCierre"] = 0.0
                                 df.at[real_idx_q, "PnL_USD_Realizado"] = 0.0
@@ -1202,6 +1228,16 @@ def render_active_portfolio(df):
                 qty_total = int(target_group.iloc[0]["Contratos"])
                 total_bp = target_group["BuyingPower"].sum()
                 
+                # Comisiones estimadas de cierre
+                comisiones_apertura = sum(float(r.get("Comisiones", 0.0)) for _, r in target_group.iterrows()) / qty_total * qty_to_close
+                comisiones_cierre = 0.0
+                for _, r in target_group.iterrows():
+                    if r.get("Side", "Sell") == "Sell" and total_close_cost <= 0.05:
+                        pass
+                    else:
+                        comisiones_cierre += qty_to_close * 0.65
+                comisiones_totales = comisiones_apertura + comisiones_cierre
+
                 # Cálculo de PnL usando la función centralizada
                 pnl_preview, profit_pct_preview, roc_preview = calculate_pnl_metrics(
                     prima_neta=total_entry,
@@ -1209,7 +1245,8 @@ def render_active_portfolio(df):
                     contracts=qty_to_close,
                     strategy=current_strategy,
                     bp=total_bp,
-                    side_first_leg=target_group.iloc[0]["Side"]
+                    side_first_leg=target_group.iloc[0]["Side"],
+                    comisiones_totales=comisiones_totales
                 )
                     
                 st.markdown("#### 📊 Resultado")
@@ -1238,6 +1275,7 @@ def render_active_portfolio(df):
                         if is_partial:
                             # 1. Reducir contratos en la posición original
                             df.at[real_idx, "Contratos"] = qty_total - qty_to_close
+                            df.at[real_idx, "Comisiones"] = float(row.get("Comisiones", 0.0)) / qty_total * (qty_total - qty_to_close)
                             
                             # 2. Crear nueva entrada CERRADA con la cantidad cerrada
                             new_closed_row = row.copy()
@@ -1248,6 +1286,7 @@ def render_active_portfolio(df):
                             new_closed_row["PrecioAccionCierre"] = stock_price
                             
                             # Asignar COSTO, PNL y ProfitPct solo a la primera pata para no duplicar
+                            new_closed_row["Comisiones"] = (float(row.get("Comisiones", 0.0)) / qty_total * qty_to_close) + (qty_to_close * 0.65 if not (row.get("Side", "Sell") == "Sell" and total_close_cost <= 0.05) else 0.0)
                             if row["ID"] == target_group.iloc[0]["ID"]:
                                 new_closed_row["CostoCierre"] = total_close_cost
                                 new_closed_row["PnL_USD_Realizado"] = manual_pnl
@@ -1267,6 +1306,7 @@ def render_active_portfolio(df):
                             df.at[real_idx, "Estado"] = "Cerrada"
                             df.at[real_idx, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             df.at[real_idx, "PrecioAccionCierre"] = stock_price
+                            df.at[real_idx, "Comisiones"] = float(row.get("Comisiones", 0.0)) + (qty_to_close * 0.65 if not (row.get("Side", "Sell") == "Sell" and total_close_cost <= 0.05) else 0.0)
                             if row["ID"] == target_group.iloc[0]["ID"]:
                                 df.at[real_idx, "CostoCierre"] = total_close_cost
                                 df.at[real_idx, "PnL_USD_Realizado"] = manual_pnl
@@ -1327,6 +1367,16 @@ def render_active_portfolio(df):
                     dir_label = "Crédito" if is_roll_credit else "Débito"
                     st.caption(f"ℹ️ Dirección detectada: **{dir_label}** (Basado en estrategia: {roll_strategy})")
 
+                    # Comisiones de cierre para el roll
+                    roll_comisiones_apertura = sum(float(l.get("Comisiones", 0.0)) for l in legs_to_roll)
+                    roll_comisiones_cierre = 0.0
+                    for l in legs_to_roll:
+                        if l.get("Side", "Sell") == "Sell" and roll_close_cost <= 0.05:
+                            pass
+                        else:
+                            roll_comisiones_cierre += qty_roll * 0.65
+                    roll_comisiones_totales = roll_comisiones_apertura + roll_comisiones_cierre
+
                     # Cálculo de PnL del cierre usando función centralizada
                     est_pnl_val, est_profit_pct, _ = calculate_pnl_metrics(
                         prima_neta=total_entry_to_roll,
@@ -1334,7 +1384,8 @@ def render_active_portfolio(df):
                         contracts=qty_roll,
                         strategy=roll_strategy,
                         bp=roll_bp,
-                        side_first_leg=legs_to_roll[0]["Side"]
+                        side_first_leg=legs_to_roll[0]["Side"],
+                        comisiones_totales=roll_comisiones_totales
                     )
                     
                     roll_pnl_manual = c_r2.number_input("PnL del Cierre ($)", value=float(est_pnl_val), step=1.0, help="Ajusta si tu broker reporta un valor diferente.")
@@ -1397,6 +1448,7 @@ def render_active_portfolio(df):
                                 real_idx = df.index[df["ID"] == leg["ID"]][0]
                                 df.at[real_idx, "Estado"] = "Rolada"
                                 df.at[real_idx, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                df.at[real_idx, "Comisiones"] = float(leg.get("Comisiones", 0.0)) + (qty_roll * 0.65 if not (leg.get("Side", "Sell") == "Sell" and roll_close_cost <= 0.05) else 0.0)
                                 if leg["ID"] == legs_to_roll[0]["ID"]:
                                     df.at[real_idx, "CostoCierre"] = roll_close_cost
                                     df.at[real_idx, "PnL_USD_Realizado"] = roll_pnl_manual
@@ -1430,6 +1482,7 @@ def render_active_portfolio(df):
                                     "UpdatedAt": datetime.now().isoformat(), "FechaCierre": pd.NA,
                                     "MaxProfitUSD": (p_recibida * n_leg["Contratos"] * 100), "ProfitPct": 0.0, "PnL_Capital_Pct": 0.0,
                                     "PrecioAccionCierre": 0.0, "PnL_USD_Realizado": 0.0,
+                                    "Comisiones": n_leg["Contratos"] * 0.65,
                                     "EarningsDate": target_group.iloc[0].get("EarningsDate", pd.NA) # Mantener EarningsDate del original
                                 })
                             
@@ -1450,14 +1503,14 @@ def render_active_portfolio(df):
                 st.markdown("#### 📜 Asignación")
                 st.warning("Marca la estrategia como 'Asignada'.")
                 
-                c_a1, c_a2 = st.columns(2)
+                c_a1 = st.columns(1)[0]
                 assign_price = c_a1.number_input("Strike (Precio Asignación)", value=float(target_group.iloc[0]["Strike"]), disabled=True)
-                assign_fee = c_a2.number_input("Comisiones ($)", value=0.0)
                 
                 st.info(f"Se te asignarán {int(target_group.iloc[0]['Contratos']) * 100} acciones de {target_group.iloc[0]['Ticker']} a ${assign_price:.2f}.")
                 
                 c_assign_btn, c_assign_cancel = st.columns([2, 1])
                 if c_assign_btn.button("✅ Confirmar Asignación", type="primary", use_container_width=True):
+                    total_comisiones_apertura = sum(float(r.get("Comisiones", 0.0)) for _, r in target_group.iterrows())
                     for idx, row in target_group.iterrows():
                         real_idx = df.index[df["ID"] == row["ID"]][0]
                         df.at[real_idx, "Estado"] = "Asignada"
@@ -1468,7 +1521,7 @@ def render_active_portfolio(df):
                         # Pero el "Costo" real es la compra de acciones. 
                         # Simplificación: PnL Realizado = Prima Recibida (ya que la opción expiró/se ejerció) - Comisiones
                         if row["ID"] == target_group.iloc[0]["ID"]:
-                            pnl_assign = (row["PrimaRecibida"] * row["Contratos"] * 100) - assign_fee
+                            pnl_assign = (row["PrimaRecibida"] * row["Contratos"] * 100) - total_comisiones_apertura
                             df.at[real_idx, "PnL_USD_Realizado"] = pnl_assign
                             df.at[real_idx, "Notas"] = str(row["Notas"]) + f" [ASIGNADA a {assign_price}]"
                         else:
@@ -1671,6 +1724,7 @@ def render_new_trade():
                     "MaxProfitUSD": (total_premium * contratos * 100) if i_leg == 0 else 0.0,
                     "ProfitPct": 0.0, "PnL_Capital_Pct": 0.0,
                     "PrecioAccionCierre": 0.0, "PnL_USD_Realizado": 0.0,
+                    "Comisiones": contratos * 0.65,
                     "EarningsDate": earn_dt.strftime("%Y-%m-%d") if earn_dt else pd.NA
                 })
             
@@ -1715,7 +1769,7 @@ def render_history(df):
     # =========================================================
     # --- FILTROS EXPANDIDOS ---
     # =========================================================
-    with st.expander("🔍 Filtros", expanded=True):
+    with st.expander("🔍 Filtros", expanded=False):
         # Fila 1: Ticker | Estrategia | Setup | Estado
         cf1, cf2, cf3, cf4 = st.columns(4)
         hist_tickers = ["Todos"] + sorted(hist_df["Ticker"].dropna().unique().tolist())
@@ -1931,9 +1985,17 @@ def render_history(df):
             fecha_str = pd.to_datetime(c_data["FechaCierre"]).strftime("%Y-%m-%d")
         except:
             fecha_str = "Sin fecha"
+            
+        try:
+            exp_date_obj = pd.to_datetime(c_data["_group"].iloc[0]["Expiry"])
+            exp_str_title = exp_date_obj.strftime("%d %b")
+        except:
+            exp_str_title = ""
+
+        strikes_short = " / ".join(f"{float(r['Strike']):g}" for _, r in c_data["_group"].iterrows())
 
         label = (
-            f"{pnl_icon} **{c_data['Ticker']}** — {c_data['Estrategia']} "
+            f"{pnl_icon} {c_data['Ticker']} {exp_str_title} {strikes_short} {c_data['Estrategia']} "
             f"| {estado_icon} {c_data['Estado']} "
             f"| 📅 {fecha_str} "
             f"| 💵 **${pnl:,.2f}** ({pct:.1f}%) "
@@ -2065,12 +2127,13 @@ def render_inline_edit(trade_id):
         n_fecha_cl = cd3.date_input("Fecha Cierre", value=pd.to_datetime(row["FechaCierre"]).date() if not pd.isna(row["FechaCierre"]) else date.today())
         n_earnings_date = cd4.date_input("Fecha Earnings", value=pd.to_datetime(row["EarningsDate"]).date() if not pd.isna(row.get("EarningsDate")) else None)
         
-        c9, c10, c10b, c11, c12 = st.columns(5)
-        n_pnl_usd = c9.number_input("PnL USD Realizado", value=float(row.get("PnL_USD_Realizado", 0) or 0))
-        n_be = c10.number_input("Break Even (Inf)", value=float(row.get("BreakEven", 0) or 0))
-        n_be_upper = c10b.number_input("BE Superior", value=float(row.get("BreakEven_Upper", 0) or 0), help="Solo para IC, Strangle...")
-        n_pop = c11.number_input("Prob. Éxito %", value=float(row.get("POP", 0) or 0))
-        n_estado = c12.selectbox("Estado", ESTADOS, index=ESTADOS.index(row["Estado"]) if row["Estado"] in ESTADOS else 0)
+        c9, c10, c10b, c11, c12, c13 = st.columns(6)
+        n_pnl_usd = c9.number_input("PnL USD", value=float(row.get("PnL_USD_Realizado", 0) or 0))
+        n_be = c10.number_input("BE (Inf)", value=float(row.get("BreakEven", 0) or 0))
+        n_be_upper = c10b.number_input("BE Sup", value=float(row.get("BreakEven_Upper", 0) or 0))
+        n_pop = c11.number_input("POP %", value=float(row.get("POP", 0) or 0))
+        n_comisiones = c12.number_input("Comisiones ($)", value=float(row.get("Comisiones", 0) or 0))
+        n_estado = c13.selectbox("Estado", ESTADOS, index=ESTADOS.index(row["Estado"]) if row["Estado"] in ESTADOS else 0)
 
         if str(row["Estado"]) != "Abierta":
             pct = float(row.get("ProfitPct", 0) or 0)
@@ -2105,6 +2168,7 @@ def render_inline_edit(trade_id):
             st.session_state.df.at[idx, "BreakEven"] = n_be
             st.session_state.df.at[idx, "BreakEven_Upper"] = n_be_upper
             st.session_state.df.at[idx, "POP"] = n_pop
+            st.session_state.df.at[idx, "Comisiones"] = n_comisiones
             st.session_state.df.at[idx, "Notas"] = n_notas
             st.session_state.df.at[idx, "Estado"] = n_estado
             

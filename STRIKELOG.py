@@ -25,7 +25,7 @@ COLUMNS = [
     "Estrategia", "Setup", "Tags", "Side", "OptionType", "Strike", "Delta", "PrimaRecibida", "CostoCierre", "Contratos", 
     "BuyingPower", "BreakEven", "BreakEven_Upper", "POP",
     "Estado", "Notas", "UpdatedAt", "FechaCierre", "MaxProfitUSD", "ProfitPct", "PnL_Capital_Pct",
-    "PrecioAccionCierre", "PnL_USD_Realizado", "Comisiones", "EarningsDate"
+    "PrecioAccionCierre", "PnL_USD_Realizado", "Comisiones", "EarningsDate", "DividendosDate"
 ]
 
 SETUPS = ["Earnings", "Soporte/Resistencia", "VIX alto", "Tendencial", "Reversión", "Inversión Largo Plazo", "Otro"]
@@ -121,6 +121,7 @@ class JournalManager:
         df["Expiry"] = pd.to_datetime(df["Expiry"], errors='coerce')
         df["FechaCierre"] = pd.to_datetime(df["FechaCierre"], errors='coerce')
         df["EarningsDate"] = pd.to_datetime(df["EarningsDate"], errors='coerce')
+        df["DividendosDate"] = pd.to_datetime(df["DividendosDate"], errors='coerce')
         
         # Forzar tipo datetime64[ns] para compatibilidad total con Arrow
         df["FechaApertura"] = df["FechaApertura"].fillna(pd.Timestamp.now().normalize())
@@ -131,6 +132,10 @@ class JournalManager:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
             
         df["Contratos"] = pd.to_numeric(df["Contratos"], errors='coerce').fillna(1).astype(int)
+        
+        # Asegurar que DividendosDate existe y es NA si es nulo
+        if "DividendosDate" not in df.columns:
+            df["DividendosDate"] = pd.NA
             
         df["UpdatedAt"] = datetime.now().isoformat(timespec="seconds")
         return df
@@ -577,6 +582,10 @@ def render_dashboard(df):
             max_dd = 0.0
         m6.metric("Max Drawdown", f"-${max_dd:,.2f}", help="Mayor caída desde un pico de equidad")
         
+        # --- NUEVA MÉTRICA: Comisiones 0DTE ---
+        comisiones_0dte = df_view[df_view["__is_0dte"] == True]["Comisiones"].sum()
+        st.info(f"⚡ **Comisiones acumuladas en 0DTE:** ${comisiones_0dte:,.2f}")
+        
         # Racha actual (Streak)
         if not closed_trades.empty:
             sorted_for_streak = closed_trades.sort_values("FechaCierre", ascending=False)
@@ -801,6 +810,7 @@ def render_active_portfolio(df):
         setup = first_row["Setup"]
         tags = str(first_row.get("Tags", "")).split(",") if pd.notna(first_row.get("Tags", "")) else []
         earnings_date = pd.to_datetime(first_row.get("EarningsDate")).date() if pd.notna(first_row.get("EarningsDate")) else None
+        dividendos_date = pd.to_datetime(first_row.get("DividendosDate")).date() if pd.notna(first_row.get("DividendosDate")) else None
         
         # Métricas agregadas del grupo
         total_bp = group["BuyingPower"].sum()
@@ -828,9 +838,6 @@ def render_active_portfolio(df):
         """
         
         # Marcadores visuales
-        earnings_icon = ""
-        # Verificar si earnings existen y faltan 14 días o menos
-        # Marcadores visuales
         earnings_txt = ""
         # Prioridad: Si hay fecha, usar el cálculo. Si no, mirar el Setup.
         if earnings_date:
@@ -839,6 +846,12 @@ def render_active_portfolio(df):
                  earnings_txt = f"📢 EARNINGS ({days_to_earn}d)"
         elif setup == "Earnings":
              earnings_txt = "📢 EARNINGS"
+             
+        div_txt = ""
+        if dividendos_date:
+            days_to_div = (dividendos_date - date.today()).days
+            if 0 <= days_to_div <= 14:
+                div_txt = f"💰 DIVIDENDOS ({days_to_div}d)"
             
         dit_display = ""
         if dit > 45:
@@ -936,9 +949,14 @@ def render_active_portfolio(df):
             
         strikes_short = " / ".join(f"{float(r['Strike']):g}" for _, r in group.iterrows())
         
-        # Header del Expander Limpio + Earnings Icon (Sin HTML en título expander)
-        if earnings_txt:
-            header_title = f"{ticker} {exp_str_title} {strikes_short} {strategy} {roll_label}   🚨 {earnings_txt} 🚨"
+        # Header del Expander Limpio + Earnings/Div Icon (Sin HTML en título expander)
+        alerts_list = []
+        if earnings_txt: alerts_list.append(f"🚨 {earnings_txt} 🚨")
+        if div_txt: alerts_list.append(f"🚨 {div_txt} 🚨")
+        
+        alerts_str = "   ".join(alerts_list)
+        if alerts_str:
+            header_title = f"{ticker} {exp_str_title} {strikes_short} {strategy} {roll_label}   {alerts_str}"
         else:
             header_title = f"{ticker} {exp_str_title} {strikes_short} {strategy} {roll_label}"
         
@@ -1038,15 +1056,19 @@ def render_active_portfolio(df):
                 current_notes = first_row["Notas"] if pd.notna(first_row["Notas"]) else ""
                 new_notes = c_notes.text_area("📝 Notas", value=current_notes, key=f"notes_{chain_id}", height=70, help="Edita las notas de toda la estrategia aquí mismo.")
                 
-                # Edición rápida de Earnings Date
+                # Edición rápida de Earnings y Dividendos Date
                 current_earnings = pd.to_datetime(first_row.get("EarningsDate")).date() if pd.notna(first_row.get("EarningsDate")) else None
-                new_earnings = c_config.date_input("📢 Earnings", value=current_earnings, key=f"earn_{chain_id}", help="Fecha de próximos resultados.")
+                current_dividendos = pd.to_datetime(first_row.get("DividendosDate")).date() if pd.notna(first_row.get("DividendosDate")) else None
                 
-                # Detectar cambios en Notas o Earnings
+                new_earnings = c_config.date_input("📢 Earnings", value=current_earnings, key=f"earn_{chain_id}", help="Fecha de próximos resultados.")
+                new_dividendos = c_config.date_input("💰 Dividendos", value=current_dividendos, key=f"div_{chain_id}")
+                
+                # Detectar cambios
                 notes_changed = (new_notes != current_notes)
                 earnings_changed = (new_earnings != current_earnings)
+                dividendos_changed = (new_dividendos != current_dividendos)
                 
-                if notes_changed or earnings_changed:
+                if notes_changed or earnings_changed or dividendos_changed:
                     if st.button("💾 Guardar Cambios", key=f"save_changes_{chain_id}"):
                         # Actualizar notas y earnings en todas las patas del ChainID
                         for idx, row in group.iterrows():
@@ -1055,6 +1077,8 @@ def render_active_portfolio(df):
                                  df.at[real_idx, "Notas"] = new_notes
                              if earnings_changed:
                                  df.at[real_idx, "EarningsDate"] = pd.to_datetime(new_earnings).normalize() if new_earnings else pd.NA
+                             if dividendos_changed:
+                                 df.at[real_idx, "DividendosDate"] = pd.to_datetime(new_dividendos).normalize() if new_dividendos else pd.NA
                              
                              df.at[real_idx, "UpdatedAt"] = datetime.now().isoformat()
                         
@@ -1483,7 +1507,8 @@ def render_active_portfolio(df):
                                     "MaxProfitUSD": (p_recibida * n_leg["Contratos"] * 100), "ProfitPct": 0.0, "PnL_Capital_Pct": 0.0,
                                     "PrecioAccionCierre": 0.0, "PnL_USD_Realizado": 0.0,
                                     "Comisiones": n_leg["Contratos"] * 0.65,
-                                    "EarningsDate": target_group.iloc[0].get("EarningsDate", pd.NA) # Mantener EarningsDate del original
+                                    "EarningsDate": target_group.iloc[0].get("EarningsDate", pd.NA), # Mantener EarningsDate del original
+                                    "DividendosDate": target_group.iloc[0].get("DividendosDate", pd.NA) # Mantener DividendosDate
                                 })
                             
                             if new_rows:
@@ -1639,9 +1664,10 @@ def render_new_trade():
             fecha_apertura = c_ad2.date_input("📅 Fecha Apertura", value=date.today(), help="Cambia si registras la operación un día diferente.", key="f_apert")
             user_tags = c_ad3.text_input("🏷️ Tags", placeholder="income, hedge", help="Etiquetas separadas por coma", key="tags_input")
             
-            c_bp1, c_bp2 = st.columns(2)
+            c_bp1, c_bp2, c_bp3 = st.columns(3)
             buy_pow = c_bp1.number_input("Capital Reservado ($)", value=0.0, step=100.0, help="Buying Power reservado por tu broker para esta posición.", key="bp_input")
             earn_dt = c_bp2.date_input("📢 Fecha Earnings (Opcional)", value=None, help="Si hay resultados próximos, introduce la fecha para trackearlos.", key="earn_input")
+            div_dt = c_bp3.date_input("💰 Fecha Dividendos (Opcional)", value=None, help="Si hay dividendos próximos, introduce la fecha.", key="div_input")
             
             # Recálculo de BEs sugeridos por si cambiaron los strikes
             # NOTA: Los strikes están en inputs anteriores, pero no podemos leerlos reactivamente dentro del mismo submit form sin rerun.
@@ -1725,7 +1751,8 @@ def render_new_trade():
                     "ProfitPct": 0.0, "PnL_Capital_Pct": 0.0,
                     "PrecioAccionCierre": 0.0, "PnL_USD_Realizado": 0.0,
                     "Comisiones": contratos * 0.65,
-                    "EarningsDate": earn_dt.strftime("%Y-%m-%d") if earn_dt else pd.NA
+                    "EarningsDate": earn_dt.strftime("%Y-%m-%d") if earn_dt else pd.NA,
+                    "DividendosDate": div_dt.strftime("%Y-%m-%d") if div_dt else pd.NA
                 })
             
             if new_rows:
@@ -1965,6 +1992,10 @@ def render_history(df):
     k3.metric("🏆 Win Rate",         f"{win_rate:.1f}%")
     k4.metric("✅ / ❌",             f"{ganadoras} / {total_ops - ganadoras}")
     k5.metric("📊 PnL Medio",        f"${avg_pnl:,.2f}")
+    
+    # Comisiones 0DTE en historial
+    comisiones_0dte_h = hist_df[hist_df["__is_0dte"] == True]["Comisiones"].sum()
+    st.info(f"⚡ **Comisiones acumuladas en 0DTE (en este filtro):** ${comisiones_0dte_h:,.2f}")
     st.divider()
 
     # =========================================================
@@ -2121,11 +2152,12 @@ def render_inline_edit(trade_id):
         n_bp = c8_2.number_input("Buying Power", value=float(row["BuyingPower"]))
         n_stock_close = c8_3.number_input("Precio Acción Cierre", value=float(row["PrecioAccionCierre"]))
         
-        cd1, cd2, cd3, cd4 = st.columns(4)
+        cd1, cd2, cd3, cd4, cd5 = st.columns(5)
         n_fecha_ap = cd1.date_input("Fecha Apertura", value=pd.to_datetime(row["FechaApertura"]).date())
         n_expiry = cd2.date_input("Fecha Vencimiento", value=pd.to_datetime(row["Expiry"]).date())
         n_fecha_cl = cd3.date_input("Fecha Cierre", value=pd.to_datetime(row["FechaCierre"]).date() if not pd.isna(row["FechaCierre"]) else date.today())
         n_earnings_date = cd4.date_input("Fecha Earnings", value=pd.to_datetime(row["EarningsDate"]).date() if not pd.isna(row.get("EarningsDate")) else None)
+        n_dividendos_date = cd5.date_input("Fecha Dividendos", value=pd.to_datetime(row["DividendosDate"]).date() if not pd.isna(row.get("DividendosDate")) else None)
         
         c9, c10, c10b, c11, c12, c13 = st.columns(6)
         n_pnl_usd = c9.number_input("PnL USD", value=float(row.get("PnL_USD_Realizado", 0) or 0))
@@ -2171,6 +2203,8 @@ def render_inline_edit(trade_id):
             st.session_state.df.at[idx, "Comisiones"] = n_comisiones
             st.session_state.df.at[idx, "Notas"] = n_notas
             st.session_state.df.at[idx, "Estado"] = n_estado
+            st.session_state.df.at[idx, "EarningsDate"] = pd.to_datetime(n_earnings_date) if n_earnings_date else pd.NA
+            st.session_state.df.at[idx, "DividendosDate"] = pd.to_datetime(n_dividendos_date) if n_dividendos_date else pd.NA
             
             st.session_state.df.at[idx, "MaxProfitUSD"] = n_prima * n_contracts * 100
             if n_estado != "Abierta":

@@ -1087,12 +1087,23 @@ def render_active_portfolio(df):
                         st.rerun()
                     
                 # Acciones Rápidas
-                c_btn_quick, c_btn_manage = st.columns(2)
+                c_btn_quick, c_btn_manage, c_btn_dup = st.columns(3)
                 if c_btn_quick.button(f"⚡ Cerrar Rápido", key=f"btn_quick_{chain_id}"):
                     st.session_state[f"quick_close_{chain_id}"] = True
                 
                 if c_btn_manage.button(f"🎯 Gestionar / Rol", key=f"btn_manage_{chain_id}"):
                     st.session_state["manage_chain_id"] = chain_id
+                    st.rerun()
+                
+                if c_btn_dup.button(f"📋 Duplicar Express", key=f"btn_dup_{chain_id}", help="Abre el formulario Express con los datos de esta operación pre-rellenados"):
+                    st.session_state["express_dup_defaults"] = {
+                        "ticker": ticker,
+                        "estrategia": strategy,
+                        "contratos": int(first_row.get("Contratos", 1)),
+                        "prima": float(total_premium),
+                        "buying_power": float(total_bp),
+                    }
+                    st.session_state["nav_override"] = "Nueva Operación"
                     st.rerun()
                 
                 # --- MINI PANEL DE CIERRE RÁPIDO ---
@@ -1561,211 +1572,311 @@ def render_active_portfolio(df):
                     del st.session_state["manage_chain_id"]
                     st.rerun()
 
+def render_express_0dte():
+    """Formulario simplificado para operaciones 0DTE (especialmente SPX)."""
+    st.markdown("### ⚡ Registro Express 0DTE")
+    st.caption("Diseñado para registrar operaciones 0DTE de SPX rápidamente. Solo los campos esenciales.")
+    
+    # Verificar si viene de un 'Duplicar'
+    dup_defaults = st.session_state.pop("express_dup_defaults", None)
+
+    # --- Estrategias más comunes en 0DTE ---
+    express_strategies = [
+        "Iron Condor", "Put Credit Spread", "Call Credit Spread",
+        "Iron Fly", "Strangle", "Put Debit Spread", "Call Debit Spread",
+        "CSP (Cash Secured Put)", "Long Call", "Long Put"
+    ]
+    
+    col_t, col_e, col_c = st.columns([1, 2, 1])
+    
+    default_ticker = dup_defaults.get("ticker", "SPX") if dup_defaults else "SPX"
+    default_strat_idx = express_strategies.index(dup_defaults.get("estrategia")) if dup_defaults and dup_defaults.get("estrategia") in express_strategies else 0
+    default_contratos = int(dup_defaults.get("contratos", 1)) if dup_defaults else 1
+    
+    ticker_exp = col_t.text_input("Ticker", value=default_ticker, key="exp_ticker").upper()
+    estrategia_exp = col_e.selectbox("Estrategia", express_strategies, index=default_strat_idx, key="exp_estrategia")
+    contratos_exp = col_c.number_input("Contratos", min_value=1, value=default_contratos, key="exp_contratos")
+    
+    # La fecha de apertura y vencimiento son HOY (0DTE)
+    hoy = date.today()
+    col_p, col_bp = st.columns(2)
+    default_prima = float(dup_defaults.get("prima", 0.0)) if dup_defaults else 0.0
+    default_bp = float(dup_defaults.get("buying_power", 0.0)) if dup_defaults else 0.0
+    prima_exp = col_p.number_input("💰 Prima recibida ($/acción)", value=default_prima, step=0.01, key="exp_prima")
+    bp_exp = col_bp.number_input("🏦 Capital Reservado ($)", value=default_bp, step=100.0, key="exp_bp", help="Buying Power que reserva tu broker")
+    
+    # --- Cierre (opcional, si ya cerró la operación) ---
+    st.markdown("---")
+    col_cierre, col_estado = st.columns(2)
+    ya_cerro = col_cierre.checkbox("✅ La operación ya está cerrada", value=False, key="exp_cerrada")
+    
+    cierre_exp = 0.0
+    fecha_cierre_exp = hoy
+    if ya_cerro:
+        cierre_exp = col_cierre.number_input("Precio Cierre ($/acción)", value=0.0, step=0.01, key="exp_cierre")
+        fecha_cierre_exp = col_estado.date_input("Fecha Cierre", value=hoy, key="exp_fecha_cierre")
+    
+    notas_exp = st.text_input("📝 Notas (opcional)", placeholder="Ej: Apertura en mínimo de sesión, VIX alto...", key="exp_notas")
+    
+    # --- Botón ---
+    if st.button("⚡ Registrar Express", type="primary", use_container_width=True, key="exp_submit"):
+        if not ticker_exp:
+            st.error("Debes indicar un Ticker.")
+            return
+        
+        # Calcular patas automáticamente según estrategia
+        leg_defs = LEG_DEFAULTS.get(estrategia_exp, [("Sell", "Put")])
+        chain_id = str(uuid4())[:8]
+        new_rows_exp = []
+        
+        direction = detect_strategy_direction(estrategia_exp)
+        
+        # PnL si ya cerró
+        pnl_usd = 0.0
+        profit_pct = 0.0
+        estado_final = "Abierta"
+        fecha_cierre_str = pd.NA
+        
+        if ya_cerro:
+            pnl_usd, profit_pct, _ = calculate_pnl_metrics(
+                prima_exp, cierre_exp, contratos_exp, estrategia_exp, bp_exp
+            )
+            estado_final = "Cerrada"
+            fecha_cierre_str = fecha_cierre_exp.strftime("%Y-%m-%d")
+        
+        for i_leg, (l_side, l_type) in enumerate(leg_defs):
+            new_rows_exp.append({
+                "ID": str(uuid4()),
+                "ChainID": chain_id,
+                "ParentID": pd.NA,
+                "Ticker": ticker_exp,
+                "FechaApertura": hoy.strftime("%Y-%m-%d"),
+                "Expiry": hoy.strftime("%Y-%m-%d"),  # 0DTE = vence hoy
+                "Estrategia": estrategia_exp,
+                "Setup": "Otro",
+                "Tags": "0dte,express",
+                "Side": l_side,
+                "OptionType": l_type,
+                "Strike": 0.0,
+                "Delta": 0.0,
+                "PrimaRecibida": prima_exp if i_leg == 0 else 0.0,
+                "CostoCierre": cierre_exp if (i_leg == 0 and ya_cerro) else 0.0,
+                "Contratos": contratos_exp,
+                "BuyingPower": bp_exp if i_leg == 0 else 0.0,
+                "BreakEven": 0.0,
+                "BreakEven_Upper": 0.0,
+                "POP": 0.0,
+                "Estado": estado_final,
+                "Notas": notas_exp or f"Express 0DTE – {estrategia_exp}",
+                "UpdatedAt": datetime.now().isoformat(),
+                "FechaCierre": fecha_cierre_str,
+                "MaxProfitUSD": (prima_exp * contratos_exp * 100) if i_leg == 0 else 0.0,
+                "ProfitPct": profit_pct if (i_leg == 0 and ya_cerro) else 0.0,
+                "PnL_Capital_Pct": (pnl_usd / bp_exp * 100) if (bp_exp > 0 and i_leg == 0 and ya_cerro) else 0.0,
+                "PrecioAccionCierre": 0.0,
+                "PnL_USD_Realizado": pnl_usd if (i_leg == 0 and ya_cerro) else 0.0,
+                "Comisiones": contratos_exp * 0.65,
+                "EarningsDate": pd.NA,
+                "DividendosDate": pd.NA,
+            })
+        
+        new_df_exp = pd.DataFrame(new_rows_exp)
+        st.session_state.df = pd.concat([st.session_state.df, new_df_exp], ignore_index=True)
+        st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+        estado_txt = "cerrada" if ya_cerro else "abierta"
+        pnl_txt = f" | PnL: ${pnl_usd:,.2f}" if ya_cerro else ""
+        st.toast(f"⚡ {ticker_exp} {estrategia_exp} registrada ({estado_txt}){pnl_txt}", icon="🚀")
+        # Limpiar claves del formulario express
+        for _k in ["exp_ticker", "exp_prima", "exp_cierre", "exp_notas", "exp_bp", "exp_contratos", "exp_estrategia", "exp_cerrada", "exp_fecha_cierre"]:
+            if _k in st.session_state:
+                del st.session_state[_k]
+        st.rerun()
+
+
 def render_new_trade():
     st.header("➕ Nueva Operación")
     
-    # === FASE 1: ¿Qué hiciste? (esencial) ===
-    c_top1, c_top2 = st.columns([1, 2])
-    ticker = c_top1.text_input("Ticker", key="nt_ticker").upper()
-    estrategia = c_top2.selectbox("Estrategia", ESTRATEGIAS, key="nt_estrategia")
+    tab_completo, tab_express = st.tabs(["📋 Formulario Completo", "⚡ 0DTE Express"])
     
-    # Determinar patas según selección
-    legs_count = 1
-    if "Spread" in estrategia: legs_count = 2
-    elif "Iron" in estrategia: legs_count = 4
-    elif "Butterfly" in estrategia: legs_count = 3
-    elif estrategia in ["Strangle", "Straddle"]: legs_count = 2
-    elif "Ratio" in estrategia: legs_count = 2
+    with tab_express:
+        render_express_0dte()
     
-    if estrategia == "Custom / Other":
-        legs_count = st.number_input("Número de patas", min_value=1, max_value=10, value=1)
+    with tab_completo:
     
-    # Obtener defaults de patas para auto-populate
-    leg_defaults = LEG_DEFAULTS.get(estrategia, [])
-    has_defaults = len(leg_defaults) >= legs_count
-    
-    # Dirección automática
-    strat_dir = detect_strategy_direction(estrategia)
-    dir_label = "📥 Crédito" if strat_dir == "Sell" else "📤 Débito"
-    
-    # Datos principales en una fila compacta
-    c_p1, c_p2, c_p3, c_p4 = st.columns(4)
-    premium_help = "Precio NETO por acción de todas las patas combinadas." if legs_count > 1 else "Precio por acción (ej: 1.50)."
-    total_premium = c_p1.number_input("Prima ($/acción)", value=0.0, step=0.01, help=premium_help, key="nt_premium")
-    contratos = c_p2.number_input("Contratos", value=1, min_value=1, key="nt_contratos")
-    expiry = c_p3.date_input("📅 Vencimiento", key="nt_expiry")
-    c_p4.markdown(f"<br><span style='font-size:16px;'>**{dir_label}**</span>", unsafe_allow_html=True)
-    
-    # === FASE 2: Strikes (el dato que realmente cambia por trade) ===
-    st.markdown(f"#### ⚡ Strikes — {estrategia}")
-    
-    with st.form("new_trade_form", clear_on_submit=True):
-        legs_data = []
+        # === FASE 1: ¿Qué hiciste? (esencial) ===
+        c_top1, c_top2 = st.columns([1, 2])
+        ticker = c_top1.text_input("Ticker", key="nt_ticker").upper()
+        estrategia = c_top2.selectbox("Estrategia", ESTRATEGIAS, key="nt_estrategia")
         
-        if has_defaults and estrategia != "Custom / Other":
-            # --- MODO SIMPLIFICADO: Side/Type con badge de color ---
-            strike_cols = st.columns(legs_count)
-            for i in range(legs_count):
-                def_side, def_type = leg_defaults[i]
-                strike_cols[i].markdown(leg_color_label(def_side, def_type), unsafe_allow_html=True)
-                l_strike = strike_cols[i].number_input(
-                    "Strike", 
-                    key=f"strike_{estrategia}_{i}",
-                    help=f"Pata {i+1}: {def_side} {def_type}"
-                )
-                legs_data.append({"Side": def_side, "Type": def_type, "Strike": l_strike, "Delta": 0.0})
-        else:
-            # --- MODO COMPLETO: para Custom / Other o estrategias sin defaults ---
-            for i in range(legs_count):
-                default_side_idx = 0
-                default_type_idx = 0
-                if i < len(leg_defaults):
-                    def_side, def_type = leg_defaults[i]
-                    default_side_idx = SIDES.index(def_side) if def_side in SIDES else 0
-                    default_type_idx = OPTION_TYPES.index(def_type) if def_type in OPTION_TYPES else 0
-                
-                with st.expander(f"Pata {i+1}", expanded=True):
-                    c1, c2, c3 = st.columns(3)
-                    l_side = c1.selectbox(f"Side {i+1}", SIDES, index=default_side_idx, key=f"side_{estrategia}_{i}")
-                    l_type = c2.selectbox(f"Type {i+1}", OPTION_TYPES, index=default_type_idx, key=f"type_{estrategia}_{i}")
-                    l_strike = c3.number_input(f"Strike {i+1}", key=f"strike_{estrategia}_{i}")
-                    legs_data.append({"Side": l_side, "Type": l_type, "Strike": l_strike, "Delta": 0.0})
+        # Determinar patas según selección
+        legs_count = 1
+        if "Spread" in estrategia: legs_count = 2
+        elif "Iron" in estrategia: legs_count = 4
+        elif "Butterfly" in estrategia: legs_count = 3
+        elif estrategia in ["Strangle", "Straddle"]: legs_count = 2
+        elif "Ratio" in estrategia: legs_count = 2
         
-        # Delta global (1 solo input para la pata principal)
-        main_side = legs_data[0]["Side"] if legs_data else "Sell"
-        main_delta = st.number_input("Delta (pata principal)", value=0.0, step=0.01, 
-                                      help="Delta de la pata vendida/comprada principal. Se usa para calcular POP.")
-        if legs_data:
-            legs_data[0]["Delta"] = main_delta
+        if estrategia == "Custom / Other":
+            legs_count = st.number_input("Número de patas", min_value=1, max_value=10, value=1)
         
-        # Delta secundaria: para IC, Iron Fly, Strangle y Straddle mejora el cálculo del POP
-        # combinando las dos patas cortas: POP = 1 - |Δput| - |Δcall|
-        is_dual_be = estrategia in DUAL_BE_STRATEGIES
-        secondary_delta = 0.0
-        if is_dual_be:
-            secondary_delta = st.number_input(
-                "Delta (pata secundaria — short call / call side)",
-                value=0.0, step=0.01,
-                help="Delta de la pata corta secundaria (ej: short call en IC). "
-                     "Permite calcular el POP correctamente: 1 − |Δ_put| − |Δ_call|. "
-                     "Déjalo en 0.00 si solo tienes un lado.",
-                key="nt_delta2"
-            )
+        # Obtener defaults de patas para auto-populate
+        leg_defaults = LEG_DEFAULTS.get(estrategia, [])
+        has_defaults = len(leg_defaults) >= legs_count
         
-        # Cálculos sugeridos
-        be_lower, be_upper = suggest_breakeven(estrategia, legs_data, total_premium)
-        suggested_pop = suggest_pop(main_delta, main_side, secondary_delta)
+        # Dirección automática
+        strat_dir = detect_strategy_direction(estrategia)
+        dir_label = "📥 Crédito" if strat_dir == "Sell" else "📤 Débito"
         
-        # === FASE 3: Detalles Opcionales (colapsable) ===
-        # === FASE 3: Detalles Opcionales (colapsable) ===
-        with st.expander("⚙️ Detalles opcionales", expanded=False):
-            c_ad1, c_ad2, c_ad3 = st.columns(3)
-            setup_val = c_ad1.selectbox("🎯 Setup / Motivo", SETUPS, key="setup_select")
-            fecha_apertura = c_ad2.date_input("📅 Fecha Apertura", value=date.today(), help="Cambia si registras la operación un día diferente.", key="f_apert")
-            user_tags = c_ad3.text_input("🏷️ Tags", placeholder="income, hedge", help="Etiquetas separadas por coma", key="tags_input")
+        # Datos principales en una fila compacta
+        c_p1, c_p2, c_p3, c_p4 = st.columns(4)
+        premium_help = "Precio NETO por acción de todas las patas combinadas." if legs_count > 1 else "Precio por acción (ej: 1.50)."
+        total_premium = c_p1.number_input("Prima ($/acción)", value=0.0, step=0.01, help=premium_help, key="nt_premium")
+        contratos = c_p2.number_input("Contratos", value=1, min_value=1, key="nt_contratos")
+        expiry = c_p3.date_input("📅 Vencimiento", key="nt_expiry")
+        c_p4.markdown(f"<br><span style='font-size:16px;'>**{dir_label}**</span>", unsafe_allow_html=True)
+        
+        # === FASE 2: Strikes (el dato que realmente cambia por trade) ===
+        st.markdown(f"#### ⚡ Strikes — {estrategia}")
+        
+        with st.form("new_trade_form", clear_on_submit=True):
+            legs_data = []
             
-            c_bp1, c_bp2, c_bp3 = st.columns(3)
-            buy_pow = c_bp1.number_input("Capital Reservado ($)", value=0.0, step=100.0, help="Buying Power reservado por tu broker para esta posición.", key="bp_input")
-            earn_dt = c_bp2.date_input("📢 Fecha Earnings (Opcional)", value=None, help="Si hay resultados próximos, introduce la fecha para trackearlos.", key="earn_input")
-            div_dt = c_bp3.date_input("💰 Fecha Dividendos (Opcional)", value=None, help="Si hay dividendos próximos, introduce la fecha.", key="div_input")
-            
-            # Recálculo de BEs sugeridos por si cambiaron los strikes
-            # NOTA: Los strikes están en inputs anteriores, pero no podemos leerlos reactivamente dentro del mismo submit form sin rerun.
-            # Usamos los sugeridos inicialmente.
-            
-            if is_dual_be:
-                c_be1, c_be2, c_be3 = st.columns(3)
-                be_input = c_be1.number_input("BE Inferior", value=float(be_lower), step=0.01, help="Break Even del lado bajista", key="be_low")
-                be_upper_input = c_be2.number_input("BE Superior", value=float(be_upper), step=0.01, help="Break Even del lado alcista", key="be_upp")
-                pop_val = c_be3.number_input("POP %", value=float(suggested_pop), step=0.1, key="pop_in")
-            else:
-                c_be1, c_be2 = st.columns(2)
-                be_input = c_be1.number_input("Break Even", value=float(be_lower), step=0.01, key="be_single")
-                be_upper_input = 0.0
-                pop_val = c_be2.number_input("POP %", value=float(suggested_pop), step=0.1, key="pop_single")
-        
-        # Reemplazado form_submit_button único por columnas para admitir Cancelar
-        c_sub, c_canc = st.columns(2)
-        submitted = c_sub.form_submit_button("✅ Registrar Operación", type="primary", use_container_width=True)
-        canceled = c_canc.form_submit_button("🚫 Limpiar / Cancelar", use_container_width=True)
-        
-        if canceled:
-            st.rerun()
-            
-        if submitted:
-            if not ticker:
-                st.error("Debes indicar un Ticker.")
-                return
-
-            chain_id = str(uuid4())[:8]
-            new_rows = []
-            
-            # --- GUARDADO ---
-            # Procesar patas: iterar sobre los inputs de strikes generados dinámicamente
-            # Ojo: Streamlit forms batch inputs.
-            # Reconstituir las patas con los valores finales del form
-            
-            legs_final = []
             if has_defaults and estrategia != "Custom / Other":
-                pass # Los valores se leen de legs_data struct, pero los strikes reales hay que leerlos de st.session_state si tienen key, 
-                     # pero dentro del form submit reaction, st.number_input return value is trustworthy?
-                     # Sí, legs_data se construyó con los return values de los widgets.
-                legs_final = legs_data
+                # --- MODO SIMPLIFICADO: Side/Type con badge de color ---
+                strike_cols = st.columns(legs_count)
+                for i in range(legs_count):
+                    def_side, def_type = leg_defaults[i]
+                    strike_cols[i].markdown(leg_color_label(def_side, def_type), unsafe_allow_html=True)
+                    l_strike = strike_cols[i].number_input(
+                        "Strike", 
+                        key=f"strike_{estrategia}_{i}",
+                        help=f"Pata {i+1}: {def_side} {def_type}"
+                    )
+                    legs_data.append({"Side": def_side, "Type": def_type, "Strike": l_strike, "Delta": 0.0})
             else:
-                legs_final = legs_data # Mismo caso
-
-            for i_leg, leg in enumerate(legs_final):
-                # El strike venía del widget.
-                s_val = leg["Strike"] 
-                
-                # Side y Type también
-                
-                new_rows.append({
-                    "ID": str(uuid4()),
-                    "ChainID": chain_id,
-                    "ParentID": pd.NA,
-                    "Ticker": ticker,
-                    "FechaApertura": fecha_apertura.strftime("%Y-%m-%d"),
-                    "Expiry": expiry.strftime("%Y-%m-%d"),
-                    "Estrategia": estrategia,
-                    "Setup": setup_val,
-                    "Tags": user_tags,
-                    "Side": leg["Side"],
-                    "OptionType": leg["Type"],
-                    "Strike": s_val,
-                    "Delta": leg["Delta"], # Solo la principal tiene, las otras 0.0
-                    # Prima y BP completos solo en pata 0; el resto a 0.0
-                    # (igual que MaxProfitUSD). Las sumas de la cadena
-                    # (target_group["PrimaRecibida"].sum()) siguen correctas.
-                    "PrimaRecibida": total_premium if i_leg == 0 else 0.0,
-                    "CostoCierre": 0.0,
-                    "Contratos": contratos,
-                    "BuyingPower": buy_pow if i_leg == 0 else 0.0,
-                    "BreakEven": be_input,
-                    "BreakEven_Upper": be_upper_input,
-                    "POP": pop_val,
-                    "Estado": "Abierta", "Notas": f"Parte de {estrategia}",
-                    "UpdatedAt": datetime.now().isoformat(), "FechaCierre": pd.NA,
-                    # MaxProfitUSD solo en pata 0 para evitar multiplicarlo N veces en multi-pata (IC, Spreads)
-                    "MaxProfitUSD": (total_premium * contratos * 100) if i_leg == 0 else 0.0,
-                    "ProfitPct": 0.0, "PnL_Capital_Pct": 0.0,
-                    "PrecioAccionCierre": 0.0, "PnL_USD_Realizado": 0.0,
-                    "Comisiones": contratos * 0.65,
-                    "EarningsDate": earn_dt.strftime("%Y-%m-%d") if earn_dt else pd.NA,
-                    "DividendosDate": div_dt.strftime("%Y-%m-%d") if div_dt else pd.NA
-                })
+                # --- MODO COMPLETO: para Custom / Other o estrategias sin defaults ---
+                for i in range(legs_count):
+                    default_side_idx = 0
+                    default_type_idx = 0
+                    if i < len(leg_defaults):
+                        def_side, def_type = leg_defaults[i]
+                        default_side_idx = SIDES.index(def_side) if def_side in SIDES else 0
+                        default_type_idx = OPTION_TYPES.index(def_type) if def_type in OPTION_TYPES else 0
+                    
+                    with st.expander(f"Pata {i+1}", expanded=True):
+                        c1, c2, c3 = st.columns(3)
+                        l_side = c1.selectbox(f"Side {i+1}", SIDES, index=default_side_idx, key=f"side_{estrategia}_{i}")
+                        l_type = c2.selectbox(f"Type {i+1}", OPTION_TYPES, index=default_type_idx, key=f"type_{estrategia}_{i}")
+                        l_strike = c3.number_input(f"Strike {i+1}", key=f"strike_{estrategia}_{i}")
+                        legs_data.append({"Side": l_side, "Type": l_type, "Strike": l_strike, "Delta": 0.0})
             
-            if new_rows:
-                new_df = pd.DataFrame(new_rows)
-                st.session_state.df = pd.concat([st.session_state.df, new_df], ignore_index=True)
-                st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
-                # Limpiar campos externos al st.form (no se limpian con clear_on_submit)
-                _saved_ticker = ticker  # guardar antes de borrar la key
-                for _k in ["nt_ticker", "nt_premium", "nt_contratos", "nt_expiry", "nt_estrategia", "nt_delta2"]:
-                    if _k in st.session_state:
-                        del st.session_state[_k]
-                st.toast(f"✅ {_saved_ticker} registrada correctamente.", icon="🎉")
+            # Delta global (1 solo input para la pata principal)
+            main_side = legs_data[0]["Side"] if legs_data else "Sell"
+            main_delta = st.number_input("Delta (pata principal)", value=0.0, step=0.01, 
+                                          help="Delta de la pata vendida/comprada principal. Se usa para calcular POP.")
+            if legs_data:
+                legs_data[0]["Delta"] = main_delta
+            
+            # Delta secundaria: para IC, Iron Fly, Strangle y Straddle mejora el cálculo del POP
+            is_dual_be = estrategia in DUAL_BE_STRATEGIES
+            secondary_delta = 0.0
+            if is_dual_be:
+                secondary_delta = st.number_input(
+                    "Delta (pata secundaria — short call / call side)",
+                    value=0.0, step=0.01,
+                    help="Delta de la pata corta secundaria (ej: short call en IC). "
+                         "Permite calcular el POP correctamente: 1 − |Δ_put| − |Δ_call|. "
+                         "Déjalo en 0.00 si solo tienes un lado.",
+                    key="nt_delta2"
+                )
+            
+            # Cálculos sugeridos
+            be_lower, be_upper = suggest_breakeven(estrategia, legs_data, total_premium)
+            suggested_pop = suggest_pop(main_delta, main_side, secondary_delta)
+            
+            # === FASE 3: Detalles Opcionales (colapsable) ===
+            with st.expander("⚙️ Detalles opcionales", expanded=False):
+                c_ad1, c_ad2, c_ad3 = st.columns(3)
+                setup_val = c_ad1.selectbox("🎯 Setup / Motivo", SETUPS, key="setup_select")
+                fecha_apertura = c_ad2.date_input("📅 Fecha Apertura", value=date.today(), help="Cambia si registras la operación un día diferente.", key="f_apert")
+                user_tags = c_ad3.text_input("🏷️ Tags", placeholder="income, hedge", help="Etiquetas separadas por coma", key="tags_input")
+                
+                c_bp1, c_bp2, c_bp3 = st.columns(3)
+                buy_pow = c_bp1.number_input("Capital Reservado ($)", value=0.0, step=100.0, help="Buying Power reservado por tu broker para esta posición.", key="bp_input")
+                earn_dt = c_bp2.date_input("📢 Fecha Earnings (Opcional)", value=None, help="Si hay resultados próximos, introduce la fecha para trackearlos.", key="earn_input")
+                div_dt = c_bp3.date_input("💰 Fecha Dividendos (Opcional)", value=None, help="Si hay dividendos próximos, introduce la fecha.", key="div_input")
+                
+                if is_dual_be:
+                    c_be1, c_be2, c_be3 = st.columns(3)
+                    be_input = c_be1.number_input("BE Inferior", value=float(be_lower), step=0.01, help="Break Even del lado bajista", key="be_low")
+                    be_upper_input = c_be2.number_input("BE Superior", value=float(be_upper), step=0.01, help="Break Even del lado alcista", key="be_upp")
+                    pop_val = c_be3.number_input("POP %", value=float(suggested_pop), step=0.1, key="pop_in")
+                else:
+                    c_be1, c_be2 = st.columns(2)
+                    be_input = c_be1.number_input("Break Even", value=float(be_lower), step=0.01, key="be_single")
+                    be_upper_input = 0.0
+                    pop_val = c_be2.number_input("POP %", value=float(suggested_pop), step=0.1, key="pop_single")
+            
+            c_sub, c_canc = st.columns(2)
+            submitted = c_sub.form_submit_button("✅ Registrar Operación", type="primary", use_container_width=True)
+            canceled = c_canc.form_submit_button("🚫 Limpiar / Cancelar", use_container_width=True)
+            
+            if canceled:
                 st.rerun()
+                
+            if submitted:
+                if not ticker:
+                    st.error("Debes indicar un Ticker.")
+                    return
+
+                chain_id = str(uuid4())[:8]
+                new_rows = []
+                
+                legs_final = legs_data
+
+                for i_leg, leg in enumerate(legs_final):
+                    s_val = leg["Strike"] 
+                    new_rows.append({
+                        "ID": str(uuid4()),
+                        "ChainID": chain_id,
+                        "ParentID": pd.NA,
+                        "Ticker": ticker,
+                        "FechaApertura": fecha_apertura.strftime("%Y-%m-%d"),
+                        "Expiry": expiry.strftime("%Y-%m-%d"),
+                        "Estrategia": estrategia,
+                        "Setup": setup_val,
+                        "Tags": user_tags,
+                        "Side": leg["Side"],
+                        "OptionType": leg["Type"],
+                        "Strike": s_val,
+                        "Delta": leg["Delta"],
+                        "PrimaRecibida": total_premium if i_leg == 0 else 0.0,
+                        "CostoCierre": 0.0,
+                        "Contratos": contratos,
+                        "BuyingPower": buy_pow if i_leg == 0 else 0.0,
+                        "BreakEven": be_input,
+                        "BreakEven_Upper": be_upper_input,
+                        "POP": pop_val,
+                        "Estado": "Abierta", "Notas": f"Parte de {estrategia}",
+                        "UpdatedAt": datetime.now().isoformat(), "FechaCierre": pd.NA,
+                        "MaxProfitUSD": (total_premium * contratos * 100) if i_leg == 0 else 0.0,
+                        "ProfitPct": 0.0, "PnL_Capital_Pct": 0.0,
+                        "PrecioAccionCierre": 0.0, "PnL_USD_Realizado": 0.0,
+                        "Comisiones": contratos * 0.65,
+                        "EarningsDate": earn_dt.strftime("%Y-%m-%d") if earn_dt else pd.NA,
+                        "DividendosDate": div_dt.strftime("%Y-%m-%d") if div_dt else pd.NA
+                    })
+                
+                if new_rows:
+                    new_df = pd.DataFrame(new_rows)
+                    st.session_state.df = pd.concat([st.session_state.df, new_df], ignore_index=True)
+                    st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+                    _saved_ticker = ticker
+                    for _k in ["nt_ticker", "nt_premium", "nt_contratos", "nt_expiry", "nt_estrategia", "nt_delta2"]:
+                        if _k in st.session_state:
+                            del st.session_state[_k]
+                    st.toast(f"✅ {_saved_ticker} registrada correctamente.", icon="🎉")
+                    st.rerun()
         
 
 
@@ -2293,7 +2404,13 @@ def main():
     if "df" not in st.session_state:
         st.session_state.df = JournalManager.load_data()
         
-    page = st.sidebar.radio("Navegación", ["Dashboard", "Nueva Operación", "Cartera Activa", "Historial"])
+    # Soporte para redirección automática (ej: botón Duplicar Express)
+    nav_override = st.session_state.pop("nav_override", None)
+    
+    nav_options = ["Dashboard", "Nueva Operación", "Cartera Activa", "Historial"]
+    default_nav_idx = nav_options.index(nav_override) if nav_override in nav_options else 0
+    
+    page = st.sidebar.radio("Navegación", nav_options, index=default_nav_idx)
     
     if page == "Dashboard": render_dashboard(st.session_state.df)
     elif page == "Nueva Operación": render_new_trade()

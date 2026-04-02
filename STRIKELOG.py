@@ -796,7 +796,202 @@ def render_active_portfolio(df):
         st.info("No hay posiciones abiertas.")
         return
 
+    # ─────────────────────────────────────────────────────────────────────
+    # 🔔 BANNER DE EXPIRACIONES PENDIENTES
+    # Regla: DTE <= 0 AND Estado == "Abierta"
+    # Incluye efecto fin de semana: si el usuario abre el sábado/domingo,
+    # el DTE puede ser -1 o -2, pero el contrato sigue sin gestionar.
+    # ─────────────────────────────────────────────────────────────────────
+    today = date.today()
+    expired_chains = {}   # chain_id → primera fila del grupo
+
+    for chain_id, grp in active_df.groupby("ChainID"):
+        first = grp.iloc[0]
+        option_type = str(first.get("OptionType", ""))
+        # Long Stock sin fecha de vencimiento real → ignorar
+        if option_type == "Stock":
+            continue
+        expiry_val = first.get("Expiry")
+        if pd.isna(expiry_val):
+            continue
+        try:
+            expiry_date = pd.to_datetime(expiry_val).date()
+            dte_val = (expiry_date - today).days
+        except:
+            continue
+        if dte_val <= 0:
+            expired_chains[chain_id] = first
+
+    if expired_chains:
+        n = len(expired_chains)
+        st.markdown(f"""
+        <div style='background: linear-gradient(135deg, #7b1a1a, #3d0000);
+                    border: 2px solid #e74c3c; border-radius:12px;
+                    padding:16px 20px; margin-bottom:20px;'>
+            <div style='font-size:18px; font-weight:bold; color:#ff6b6b; margin-bottom:4px;'>
+                🔔 {n} contrato{'s' if n > 1 else ''} vencido{'s' if n > 1 else ''} pendiente{'s' if n > 1 else ''} de gestionar
+            </div>
+            <div style='color:#f5b7b1; font-size:13px;'>
+                Estos contratos tienen DTE ≤ 0 pero siguen marcados como <b>Abierta</b>.
+                Regístralos antes de continuar para que tus métricas sean precisas.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        for exp_chain_id, exp_row in expired_chains.items():
+            exp_ticker    = exp_row.get("Ticker", "")
+            exp_strategy  = exp_row.get("Estrategia", "")
+            exp_strike    = exp_row.get("Strike", "")
+            exp_option_t  = exp_row.get("OptionType", "")
+            exp_dte_label = (pd.to_datetime(exp_row.get("Expiry")).date() - today).days
+            exp_wheel_leg = str(exp_row.get("WheelLeg", ""))
+            is_cc_wheel   = (exp_wheel_leg == "covered_call" or
+                             "covered-call" in str(exp_row.get("Tags", "")))
+
+            dte_badge = f"DTE {exp_dte_label}d" if exp_dte_label < 0 else "DTE 0"
+
+            with st.container():
+                st.markdown(f"""
+                <div style='background:#1a0000; border:1px solid #c0392b; border-radius:8px;
+                            padding:10px 14px; margin-bottom:10px; display:flex; align-items:center;'>
+                    <span style='font-size:13px; color:#e74c3c; font-weight:bold; margin-right:8px;'>
+                        ⚠️ {exp_ticker}
+                    </span>
+                    <span style='color:#e6edf3; font-size:13px; margin-right:8px;'>
+                        {exp_strategy} — Strike {exp_strike} {exp_option_t}
+                    </span>
+                    <span style='background:#7b1a1a; color:#ff6b6b; font-size:11px;
+                                 padding:2px 8px; border-radius:10px;'>
+                        {dte_badge}
+                    </span>
+                </div>
+                """, unsafe_allow_html=True)
+
+                # Botones de acción rápida según tipo de estrategia
+                if is_cc_wheel:
+                    # CC de La Rueda: dos caminos
+                    ba1, ba2 = st.columns(2)
+                    if ba1.button(f"⌛ Expiró OTM — Conservar acciones",
+                                  key=f"alert_exp_cc_{exp_chain_id}",
+                                  help="Cierra el CC a $0.00. Las acciones permanecen en cartera.",
+                                  use_container_width=True):
+                        # Cierre CC a $0.00
+                        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        cc_exp_idx = st.session_state.df.index[
+                            (st.session_state.df["ChainID"] == exp_chain_id) &
+                            (st.session_state.df["Estado"] == "Abierta")
+                        ]
+                        for idx_e in cc_exp_idx:
+                            p_e = float(st.session_state.df.at[idx_e, "PrimaRecibida"] or 0)
+                            c_e = float(st.session_state.df.at[idx_e, "Contratos"] or 1)
+                            pnl_e = p_e * c_e * 100
+                            st.session_state.df.at[idx_e, "Estado"] = "Cerrada"
+                            st.session_state.df.at[idx_e, "FechaCierre"] = now_str
+                            st.session_state.df.at[idx_e, "CostoCierre"] = 0.0
+                            st.session_state.df.at[idx_e, "PnL_USD_Realizado"] = pnl_e
+                            st.session_state.df.at[idx_e, "Notas"] = (
+                                str(st.session_state.df.at[idx_e, "Notas"] or "") +
+                                f" [OTM — expirado. Prima íntegra: ${pnl_e:.2f}]"
+                            )
+                        # Desvincular de la posición de acciones
+                        stock_unlink = st.session_state.df.index[
+                            (st.session_state.df["CoveredCallChainID"] == exp_chain_id)
+                        ]
+                        for idx_u in stock_unlink:
+                            st.session_state.df.at[idx_u, "CoveredCallChainID"] = pd.NA
+                        st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+                        st.success(f"✅ CC {exp_ticker} expirado. Acciones conservadas. Puedes vender un nuevo CC.")
+                        st.rerun()
+
+                    if ba2.button(f"📜 Asignación (ITM)",
+                                  key=f"alert_assign_cc_{exp_chain_id}",
+                                  help="El CC expiró ITM. Ve al Panel La Rueda para vender las acciones.",
+                                  use_container_width=True):
+                        # Redirigir al panel de gestión
+                        st.session_state["manage_chain_id"] = exp_chain_id
+                        st.rerun()
+
+                elif exp_strategy in ["PCS (Put Credit Spread)", "ICS (Iron Condor)", "CCS (Call Credit Spread)"]:
+                    # Spread: expiró o se asigna
+                    bs1, bs2 = st.columns(2)
+                    if bs1.button(f"✅ Expiró sin valor ($0.00)",
+                                  key=f"alert_exp_spread_{exp_chain_id}",
+                                  help="Cierra todo el spread a $0.00. Prima cobrada íntegra.",
+                                  use_container_width=True):
+                        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        sp_idx = st.session_state.df.index[
+                            (st.session_state.df["ChainID"] == exp_chain_id) &
+                            (st.session_state.df["Estado"] == "Abierta")
+                        ]
+                        total_prima_sp = 0.0
+                        for idx_s in sp_idx:
+                            p_s = float(st.session_state.df.at[idx_s, "PrimaRecibida"] or 0)
+                            c_s = float(st.session_state.df.at[idx_s, "Contratos"] or 1)
+                            total_prima_sp += p_s * c_s * 100
+                        for idx_s in sp_idx:
+                            st.session_state.df.at[idx_s, "Estado"] = "Cerrada"
+                            st.session_state.df.at[idx_s, "FechaCierre"] = now_str
+                            st.session_state.df.at[idx_s, "CostoCierre"] = 0.0
+                            st.session_state.df.at[idx_s, "Notas"] = (
+                                str(st.session_state.df.at[idx_s, "Notas"] or "") +
+                                f" [OTM — expirado sin valor]"
+                            )
+                        # PnL solo en primera pata
+                        first_sp_idx = st.session_state.df.index[
+                            (st.session_state.df["ChainID"] == exp_chain_id) &
+                            (st.session_state.df["Estado"] == "Cerrada")
+                        ]
+                        if len(first_sp_idx) > 0:
+                            st.session_state.df.at[first_sp_idx[0], "PnL_USD_Realizado"] = total_prima_sp
+                        st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+                        st.success(f"✅ {exp_ticker} {exp_strategy} cerrado a $0.00. Prima íntegra: ${total_prima_sp:.2f}")
+                        st.rerun()
+
+                    if bs2.button(f"📜 Gestionar (Asignación / Parcial)",
+                                  key=f"alert_assign_spread_{exp_chain_id}",
+                                  help="Abre el panel de gestión completo para este spread.",
+                                  use_container_width=True):
+                        st.session_state["manage_chain_id"] = exp_chain_id
+                        st.rerun()
+
+                else:
+                    # Put simple (CSP), Call, etc.
+                    bp1, bp2 = st.columns(2)
+                    if bp1.button(f"✅ Expiró sin valor ($0.00)",
+                                  key=f"alert_exp_put_{exp_chain_id}",
+                                  use_container_width=True):
+                        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        put_idx = st.session_state.df.index[
+                            (st.session_state.df["ChainID"] == exp_chain_id) &
+                            (st.session_state.df["Estado"] == "Abierta")
+                        ]
+                        total_prima_put = 0.0
+                        for idx_p in put_idx:
+                            p_p = float(st.session_state.df.at[idx_p, "PrimaRecibida"] or 0)
+                            c_p = float(st.session_state.df.at[idx_p, "Contratos"] or 1)
+                            total_prima_put += p_p * c_p * 100
+                            st.session_state.df.at[idx_p, "Estado"] = "Cerrada"
+                            st.session_state.df.at[idx_p, "FechaCierre"] = now_str
+                            st.session_state.df.at[idx_p, "CostoCierre"] = 0.0
+                            st.session_state.df.at[idx_p, "PnL_USD_Realizado"] = p_p * c_p * 100
+                            st.session_state.df.at[idx_p, "Notas"] = (
+                                str(st.session_state.df.at[idx_p, "Notas"] or "") +
+                                f" [OTM — expirado sin valor]"
+                            )
+                        st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+                        st.success(f"✅ {exp_ticker} expirado. Prima íntegra: ${total_prima_put:.2f}")
+                        st.rerun()
+
+                    if bp2.button(f"⚙️ Abrir Gestión Completa",
+                                  key=f"alert_manage_put_{exp_chain_id}",
+                                  use_container_width=True):
+                        st.session_state["manage_chain_id"] = exp_chain_id
+                        st.rerun()
+
+        st.markdown("---")
+
     # Agrupación por ChainID y ordenar por DTE (más urgente primero)
+
     grouped = active_df.groupby("ChainID")
     
     # Pre-calcular DTE para ordenar

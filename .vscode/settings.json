@@ -1,0 +1,11 @@
+{
+  "python.defaultInterpreterPath": "C:\\Users\\Administrador\\AppData\\Local\\Programs\\Python\\Python313\\python.exe",
+  "python.analysis.extraPaths": [
+    "C:\\Users\\Administrador\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages"
+  ],
+  "python.analysis.typeCheckingMode": "off",
+  "pyre2.pythonVersion": "3.13",
+  "pyre2.enableTypeErrors": false,
+  "python.linting.enabled": false,
+  "python.linting.pylintEnabled": false
+}

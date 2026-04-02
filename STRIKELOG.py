@@ -25,7 +25,13 @@ COLUMNS = [
     "Estrategia", "Setup", "Tags", "Side", "OptionType", "Strike", "Delta", "PrimaRecibida", "CostoCierre", "Contratos", 
     "BuyingPower", "BreakEven", "BreakEven_Upper", "POP",
     "Estado", "Notas", "UpdatedAt", "FechaCierre", "MaxProfitUSD", "ProfitPct", "PnL_Capital_Pct",
-    "PrecioAccionCierre", "PnL_USD_Realizado", "Comisiones", "EarningsDate", "DividendosDate"
+    "PrecioAccionCierre", "PnL_USD_Realizado", "Comisiones", "EarningsDate", "DividendosDate",
+    # --- Ciclo de La Rueda ---
+    "WheelParentChainID",  # ChainID del PCS original que generó esta posición de acciones
+    "CostBaseReal",        # Costo base real de las acciones (strike - primas netas)
+    "CoveredCallChainID",  # ChainID del Covered Call vinculado a estas acciones
+    "CoveredCallPrima",    # Prima total cobrada por Covered Calls sobre estas acciones
+    "WheelLeg",            # 'sell_put' | 'buy_put_open' | 'long_stock' | 'covered_call'
 ]
 
 SETUPS = ["Earnings", "Soporte/Resistencia", "VIX alto", "Tendencial", "Reversión", "Inversión Largo Plazo", "Otro"]
@@ -113,7 +119,8 @@ class JournalManager:
                 if c == "Side": df[c] = "Sell"
                 elif c == "OptionType": df[c] = "Put"
                 elif c == "Tags": df[c] = ""
-                elif c in ["BuyingPower", "BreakEven", "BreakEven_Upper", "POP", "Delta", "PnL_Capital_Pct", "PrecioAccionCierre", "PnL_USD_Realizado", "Comisiones"]: df[c] = 0.0
+                elif c in ["BuyingPower", "BreakEven", "BreakEven_Upper", "POP", "Delta", "PnL_Capital_Pct", "PrecioAccionCierre", "PnL_USD_Realizado", "Comisiones", "CostBaseReal", "CoveredCallPrima"]: df[c] = 0.0
+                elif c in ["WheelParentChainID", "CoveredCallChainID", "WheelLeg"]: df[c] = pd.NA
                 else: df[c] = pd.NA
         
         df = df[COLUMNS].copy()
@@ -127,7 +134,7 @@ class JournalManager:
         df["FechaApertura"] = df["FechaApertura"].fillna(pd.Timestamp.now().normalize())
         df["Expiry"] = df["Expiry"].fillna(pd.Timestamp.now().normalize())
         
-        numeric_cols = ["PrimaRecibida", "CostoCierre", "BuyingPower", "BreakEven", "BreakEven_Upper", "POP", "Delta", "MaxProfitUSD", "ProfitPct", "PnL_Capital_Pct", "PrecioAccionCierre", "PnL_USD_Realizado", "Comisiones"]
+        numeric_cols = ["PrimaRecibida", "CostoCierre", "BuyingPower", "BreakEven", "BreakEven_Upper", "POP", "Delta", "MaxProfitUSD", "ProfitPct", "PnL_Capital_Pct", "PrecioAccionCierre", "PnL_USD_Realizado", "Comisiones", "CostBaseReal", "CoveredCallPrima"]
         for col in numeric_cols:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
             
@@ -825,17 +832,28 @@ def render_active_portfolio(df):
         dit = (date.today() - apertura_dt).days
         
         # Configuración Badge DTE
-        dte_bg = "#95a5a6" # gris por defecto
-        if dte < 7: dte_bg = "#e74c3c" # rojo
-        elif dte <= 21: dte_bg = "#f1c40f" # amarillo
-        else: dte_bg = "#27ae60" # verde
-        
-        dte_html = f"""
-        <div class="dte-badge" style="background-color: {dte_bg};">
-            <span class="dte-val">{dte}</span>
-            <span class="dte-label">DTE</span>
-        </div>
-        """
+        is_stock_position = (first_row.get("OptionType", "") == "Stock")
+
+        if is_stock_position:
+            # Las acciones no tienen fecha de vencimiento — mostrar badge neutro
+            dte_html = """
+            <div class="dte-badge" style="background-color:#2c3e50; min-width:52px;">
+                <span class="dte-val" style="font-size:10px;">STOCK</span>
+                <span class="dte-label">&infin;</span>
+            </div>
+            """
+        else:
+            dte_bg = "#95a5a6"  # gris por defecto
+            if dte < 7:   dte_bg = "#e74c3c"  # rojo
+            elif dte <= 21: dte_bg = "#f1c40f"  # amarillo
+            else:          dte_bg = "#27ae60"  # verde
+
+            dte_html = f"""
+            <div class="dte-badge" style="background-color: {dte_bg};">
+                <span class="dte-val">{dte}</span>
+                <span class="dte-label">DTE</span>
+            </div>
+            """
         
         # Marcadores visuales
         earnings_txt = ""
@@ -907,29 +925,51 @@ def render_active_portfolio(df):
         is_dual_be = strategy in DUAL_BE_STRATEGIES
         calculated_be = 0.0
         calculated_be_upper = 0.0
-        
-        try:
-            if is_dual_be:
-                legs_for_be = [{"Side": r["Side"], "Type": r["OptionType"], "OptionType": r["OptionType"], 
-                                "Strike": float(r["Strike"])} for _, r in group.iterrows()]
-                calculated_be, calculated_be_upper = suggest_breakeven(strategy, legs_for_be, net_credit_chain)
-                
-                if calculated_be == 0.0 and calculated_be_upper == 0.0:
-                    calculated_be = float(first_row["BreakEven"] or 0)
-                    calculated_be_upper = float(first_row.get("BreakEven_Upper", 0) or 0)
-            else:
-                legs_for_be = [{"Side": first_row["Side"], "Type": first_row["OptionType"], 
-                                "OptionType": first_row["OptionType"], "Strike": float(first_row["Strike"])}]
-                if len(group) > 1:
+
+        # Detectar si es un Covered Call vinculado a La Rueda
+        is_cc_rueda = (
+            strategy == "CC (Covered Call)" and
+            ("la-rueda" in str(first_row.get("Tags", "")) or
+             "covered-call" in str(first_row.get("Tags", "")) or
+             pd.notna(first_row.get("ParentID")))
+        )
+
+        # Long Stock: no tiene lógica de opciones — usar el BE guardado (CostBaseReal)
+        # El detalle dinámico completo se gestiona en el Panel "La Rueda" más abajo.
+        if is_stock_position:
+            calculated_be = float(first_row.get("BreakEven", 0) or 0)
+            calculated_be_upper = 0.0
+        elif is_cc_rueda:
+            # CC vinculado a acciones: BE = Strike + prima de ESTA pata únicamente.
+            # No usar net_credit_chain (acumulado de toda la historia) ya que
+            # confunde con el BE global de las acciones subyacentes.
+            strike_cc = float(first_row.get("Strike", 0) or 0)
+            prima_actual_cc = abs(float(first_row.get("PrimaRecibida", 0) or 0))
+            calculated_be = strike_cc + prima_actual_cc   # BE pata individual
+            calculated_be_upper = 0.0
+        else:
+            try:
+                if is_dual_be:
                     legs_for_be = [{"Side": r["Side"], "Type": r["OptionType"], "OptionType": r["OptionType"],
                                     "Strike": float(r["Strike"])} for _, r in group.iterrows()]
-                
-                calculated_be, _ = suggest_breakeven(strategy, legs_for_be, net_credit_chain)
-                if calculated_be == 0.0:
-                    calculated_be = float(first_row["BreakEven"] or 0)
-        except Exception as e:
-            calculated_be = float(first_row["BreakEven"] or 0)
-            calculated_be_upper = float(first_row.get("BreakEven_Upper", 0) or 0)
+                    calculated_be, calculated_be_upper = suggest_breakeven(strategy, legs_for_be, net_credit_chain)
+
+                    if calculated_be == 0.0 and calculated_be_upper == 0.0:
+                        calculated_be = float(first_row["BreakEven"] or 0)
+                        calculated_be_upper = float(first_row.get("BreakEven_Upper", 0) or 0)
+                else:
+                    legs_for_be = [{"Side": first_row["Side"], "Type": first_row["OptionType"],
+                                    "OptionType": first_row["OptionType"], "Strike": float(first_row["Strike"])}]
+                    if len(group) > 1:
+                        legs_for_be = [{"Side": r["Side"], "Type": r["OptionType"], "OptionType": r["OptionType"],
+                                        "Strike": float(r["Strike"])} for _, r in group.iterrows()]
+
+                    calculated_be, _ = suggest_breakeven(strategy, legs_for_be, net_credit_chain)
+                    if calculated_be == 0.0:
+                        calculated_be = float(first_row["BreakEven"] or 0)
+            except Exception as e:
+                calculated_be = float(first_row["BreakEven"] or 0)
+                calculated_be_upper = float(first_row.get("BreakEven_Upper", 0) or 0)
 
         formatted_net = f"${net_credit_chain:,.2f}"
         
@@ -978,7 +1018,19 @@ def render_active_portfolio(df):
                 # Métricas Clave
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Prima Total", formatted_net, help="Crédito neto total de la campaña (incluyendo rolls)")
-                m2.metric("Break Evens", be_str, help="Puntos de equilibrio ajustados")
+                if is_cc_rueda:
+                    m2.metric(
+                        "BE pata CC",
+                        be_str,
+                        help=(
+                            "BE individual del Covered Call = Strike + Prima actual.\n"
+                            "El BE real de toda la operación está en el Panel \u2193 La Rueda "
+                            "(Strike SP \u2212 primas acumuladas)."
+                        )
+                    )
+                    st.caption("🎯 BE real de la posición completa → ver **Panel La Rueda** ↓")
+                else:
+                    m2.metric("Break Evens", be_str, help="Puntos de equilibrio ajustados")
                 m3.metric("Capital Reservado", f"${total_bp:,.2f}")
                 m4.metric("PnL Realizado (Rolls)", f"${realized_pnl_chain:,.2f}", delta=realized_pnl_chain if realized_pnl_chain != 0 else None)
             
@@ -1161,7 +1213,248 @@ def render_active_portfolio(df):
                         st.rerun()
 
     st.divider()
-    
+
+    # ============================================================
+    # --- SECCIÓN: POSICIONES LONG STOCK (CICLO DE LA RUEDA) ---
+    # ============================================================
+    wheel_stocks = df[
+        (df["Estrategia"] == "Long Stock (Asignación)") &
+        (df["Estado"] == "Abierta")
+    ].copy()
+
+    if not wheel_stocks.empty:
+        st.markdown("## 🎡 La Rueda — Posiciones de Acciones Asignadas")
+        st.markdown("""
+        <style>
+        .wheel-card {
+            background: linear-gradient(135deg, #0f1f2f, #1a2a1a);
+            border: 1px solid #00ffa2;
+            border-radius: 12px;
+            padding: 18px;
+            margin-bottom: 14px;
+        }
+        .cc-tag-yes {
+            background: #27ae60; color: white; padding: 4px 12px;
+            border-radius: 20px; font-weight: bold; font-size: 13px;
+        }
+        .cc-tag-no {
+            background: #e74c3c; color: white; padding: 4px 12px;
+            border-radius: 20px; font-weight: bold; font-size: 13px;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+
+        for _, stock_row in wheel_stocks.iterrows():
+            stock_ticker = stock_row["Ticker"]
+            stock_chain  = stock_row["ChainID"]
+            stock_id     = stock_row["ID"]
+            contratos_st = int(stock_row.get("Contratos", 1))
+            acciones_st  = contratos_st * 100
+            precio_compra = float(stock_row.get("Strike", 0))
+            prima_neta_pcs = float(stock_row.get("PrimaRecibida", 0))
+
+            # Costo Base Real guardado
+            costo_base_actual = float(stock_row.get("CostBaseReal", stock_row.get("BreakEven", precio_compra)))
+            cc_prima_acum     = float(stock_row.get("CoveredCallPrima", 0))
+            cc_chain_id       = stock_row.get("CoveredCallChainID")
+            tiene_cc          = pd.notna(cc_chain_id) and str(cc_chain_id) != "nan"
+
+            # Buscar si el Buy Put de La Rueda ya fue cerrado (para calcular prima extra)
+            wheel_parent_chain = stock_row.get("WheelParentChainID")
+            buy_put_prima_extra = 0.0
+            buy_put_closed = False
+            if pd.notna(wheel_parent_chain):
+                bp_rows = df[
+                    (df["WheelLeg"] == "buy_put_open") &
+                    (df["WheelParentChainID"] == wheel_parent_chain) &
+                    (df["Estado"] != "Abierta")
+                ]
+                if not bp_rows.empty:
+                    buy_put_prima_extra = float(bp_rows.iloc[0].get("CostoCierre", 0))
+                    buy_put_closed = True
+
+            # --- Calcular Costo Base Real dinámico ---
+            # IMPORTANTE: Aplicar abs() a cada prima para evitar dobles negativos.
+            # El CostoCierre del Buy Put puede ser negativo (entrada del usuario para PnL),
+            # pero su efecto en el BE siempre REDUCE el costo base, no lo sube.
+            # CostBase = Strike - |Prima PCS| - |CC acumulado| - |BP vendido|
+            total_primas = abs(prima_neta_pcs) + abs(cc_prima_acum) + abs(buy_put_prima_extra)
+            costo_base_dinamico = precio_compra - total_primas
+
+            # --- Card de la posición ---
+            indicator_html = (
+                "<span class='cc-tag-yes'>Covered Call: SÍ ✅</span>"
+                if tiene_cc else
+                "<span class='cc-tag-no'>Covered Call: NO ⚠️</span>"
+            )
+            with st.expander(
+                f"🎡 {stock_ticker} — {acciones_st} acciones @ ${precio_compra:.2f}  |  BE: ${costo_base_dinamico:.2f}",
+                expanded=True
+            ):
+                st.markdown(f"""
+                <div style='margin-bottom:10px;'>
+                {indicator_html}
+                &nbsp;&nbsp;
+                <span style='color:#95a5a6; font-size:12px;'>ChainID: {stock_chain}</span>
+                </div>
+                """, unsafe_allow_html=True)
+
+                wc1, wc2, wc3, wc4 = st.columns(4)
+                wc1.metric("Acciones", f"{acciones_st}")
+                wc2.metric("Precio Compra (Strike SP)", f"${precio_compra:.2f}")
+                wc3.metric("Primas Acumuladas", f"${total_primas:.2f}",
+                           help="PCS + Covered Calls + Buy Put cerrado")
+                wc4.metric("💥 Costo Base Real (BE)", f"${costo_base_dinamico:.2f}",
+                           delta=f"${costo_base_dinamico - precio_compra:+.2f} vs compra",
+                           help="Precio al que estás en breakeven contando todas las primas cobradas")
+
+                # Desglose de primas
+                st.markdown("**📊 Desglose: cómo se reduce tu costo base:**")
+                d1, d2, d3 = st.columns(3)
+                d1.metric("\u2212 Prima neta PCS", f"${prima_neta_pcs:.2f}", help="Crédito neto del spread. Reduce el costo base desde el inicio.")
+                d2.metric("\u2212 Covered Calls", f"${cc_prima_acum:.2f}", help="Suma de todas las primas de CC cobradas. Cada una baja más el costo base.")
+                if buy_put_closed:
+                    d3.metric("\u2212 Buy Put vendido ✅", f"${buy_put_prima_extra:.2f}",
+                              help="Prima recibida al vender el Buy Put de protección en mercado. También reduce el costo base.")
+                else:
+                    d3.metric("\u2212 Buy Put (pendiente)", "$0.00",
+                              help="El Buy Put de protección aún está abierto. Véndelo al mercado y registra el cierre para reducir más el costo base.")
+
+                # Fórmula visual BE completa
+                st.markdown(f"""
+                <div style='background:#0d1117; border:1px solid #30363d; border-radius:8px;
+                            padding:10px 14px; margin-top:8px; font-size:12px; color:#8b949e;'>
+                <b style='color:#e6edf3;'>📐 Fórmula BE:</b> &nbsp;
+                <code style='color:#f39c12;'>{precio_compra:.2f}</code>
+                <span style='color:#e74c3c;'> − {prima_neta_pcs:.2f} (PCS)</span>
+                <span style='color:#e74c3c;'> − {cc_prima_acum:.2f} (CC)</span>
+                <span style='color:#e74c3c;'> − {buy_put_prima_extra:.2f} (BP)</span>
+                <span style='color:#f39c12; font-weight:bold;'> = {costo_base_dinamico:.2f}</span>
+                </div>
+                """, unsafe_allow_html=True)
+
+                st.divider()
+
+                # --- Panel: Añadir / Gestionar Covered Call ---
+                if not tiene_cc:
+                    st.markdown("#### ➕ Vincular Covered Call")
+                    st.caption("Registra una venta de Call sobre estas acciones para reducir el costo base.")
+                    cc1, cc2, cc3 = st.columns(3)
+                    cc_strike_val  = cc1.number_input("Strike del Call vendido", value=precio_compra * 1.02, step=0.5,
+                                                      key=f"cc_strike_{stock_id}")
+                    cc_prima_val   = cc2.number_input("Prima cobrada ($/acción)", value=0.0, step=0.01,
+                                                      key=f"cc_prima_{stock_id}")
+                    cc_expiry_val  = cc3.date_input("Vencimiento del CC", value=date.today() + timedelta(days=30),
+                                                    key=f"cc_exp_{stock_id}")
+
+                    nuevo_be = costo_base_dinamico - cc_prima_val
+                    if cc_prima_val > 0:
+                        st.info(f"📐 Nuevo Costo Base después del CC: **${nuevo_be:.2f}**")
+
+                    if st.button("✅ Añadir Covered Call", type="primary", key=f"btn_add_cc_{stock_id}"):
+                        if cc_prima_val <= 0:
+                            st.warning("Introduce una prima mayor que 0.")
+                        else:
+                            # Crear el Covered Call en el journal
+                            cc_chain_new = str(uuid4())[:8]
+                            cc_new_row = {
+                                "ID": str(uuid4())[:8],
+                                "ChainID": cc_chain_new,
+                                "ParentID": stock_id,
+                                "Ticker": stock_ticker,
+                                "FechaApertura": date.today().strftime("%Y-%m-%d"),
+                                "Expiry": pd.to_datetime(cc_expiry_val).normalize(),
+                                "Estrategia": "CC (Covered Call)",
+                                "Setup": str(stock_row.get("Setup", "Otro")),
+                                "Tags": "la-rueda,covered-call",
+                                "Side": "Sell", "OptionType": "Call",
+                                "Strike": cc_strike_val, "Delta": -0.3,
+                                "PrimaRecibida": cc_prima_val, "CostoCierre": 0.0,
+                                "Contratos": contratos_st,
+                                "BuyingPower": 0.0,  # Las acciones ya son el colateral
+                                "BreakEven": cc_strike_val + cc_prima_val, "BreakEven_Upper": 0.0,
+                                "POP": 70.0, "Estado": "Abierta",
+                                "Notas": f"CC vinculado a {acciones_st} acciones de {stock_ticker} (WheelChain: {stock_chain})",
+                                "UpdatedAt": datetime.now().isoformat(), "FechaCierre": pd.NA,
+                                "MaxProfitUSD": cc_prima_val * contratos_st * 100,
+                                "ProfitPct": 0.0, "PnL_Capital_Pct": 0.0,
+                                "PrecioAccionCierre": 0.0, "PnL_USD_Realizado": 0.0,
+                                "Comisiones": contratos_st * 0.65,
+                                "EarningsDate": stock_row.get("EarningsDate", pd.NA),
+                                "DividendosDate": stock_row.get("DividendosDate", pd.NA),
+                                "WheelParentChainID": stock_chain,
+                                "CostBaseReal": nuevo_be,
+                                "CoveredCallChainID": pd.NA,
+                                "CoveredCallPrima": 0.0,
+                                "WheelLeg": "covered_call",
+                            }
+                            # Añadir el CC al journal
+                            st.session_state.df = pd.concat(
+                                [st.session_state.df, pd.DataFrame([cc_new_row])], ignore_index=True
+                            )
+                            # Actualizar la posición de acciones: vincular el CC y acumular prima
+                            stock_real_idx = st.session_state.df.index[st.session_state.df["ID"] == stock_id][0]
+                            st.session_state.df.at[stock_real_idx, "CoveredCallChainID"] = cc_chain_new
+                            st.session_state.df.at[stock_real_idx, "CoveredCallPrima"] = cc_prima_acum + cc_prima_val
+                            st.session_state.df.at[stock_real_idx, "CostBaseReal"] = nuevo_be
+                            st.session_state.df.at[stock_real_idx, "BreakEven"] = nuevo_be
+
+                            st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+                            st.success(f"✅ Covered Call añadido. Nuevo costo base: ${nuevo_be:.2f}")
+                            st.rerun()
+                else:
+                    # Hay CC vincualdo — mostrar resumen y botón para añadir otro
+                    st.markdown("#### 📋 Covered Call activo")
+                    cc_linked = df[df["ChainID"] == cc_chain_id]
+                    if not cc_linked.empty:
+                        cc_leg = cc_linked.iloc[0]
+                        cc_info1, cc_info2, cc_info3 = st.columns(3)
+                        cc_info1.metric("Strike CC", f"${float(cc_leg.get('Strike', 0)):.2f}")
+                        cc_info2.metric("Prima CC", f"${float(cc_leg.get('PrimaRecibida', 0)):.2f}/acción")
+                        try:
+                            exp_cc_str = pd.to_datetime(cc_leg["Expiry"]).strftime("%d %b %Y")
+                        except:
+                            exp_cc_str = "N/A"
+                        cc_info3.metric("Vencimiento", exp_cc_str)
+
+                    st.caption("💡 Para añadir otro Covered Call tras el vencimiento, primero cierra el actual desde la Cartera Activa.")
+
+                # --- Cerrar la posición de acciones ---
+                st.divider()
+                if st.button("💰 Cerrar Posición (Vender acciones)", key=f"btn_close_stock_{stock_id}"):
+                    st.session_state[f"close_stock_{stock_id}"] = True
+
+                if st.session_state.get(f"close_stock_{stock_id}", False):
+                    cs1, cs2, cs3 = st.columns(3)
+                    precio_venta = cs1.number_input("Precio Venta ($/acción)", value=precio_compra, step=0.01,
+                                                    key=f"sv_{stock_id}")
+                    pnl_acciones = (precio_venta - costo_base_dinamico) * acciones_st
+                    cs2.metric("PnL Estimado", f"${pnl_acciones:,.2f}",
+                               help="(Precio Venta - Costo Base Real) × Número de Acciones")
+
+                    if cs3.button("✅ Confirmar Venta", type="primary", key=f"confirm_sv_{stock_id}"):
+                        stock_real_idx2 = st.session_state.df.index[st.session_state.df["ID"] == stock_id][0]
+                        st.session_state.df.at[stock_real_idx2, "Estado"] = "Cerrada"
+                        st.session_state.df.at[stock_real_idx2, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        st.session_state.df.at[stock_real_idx2, "CostoCierre"] = precio_venta
+                        st.session_state.df.at[stock_real_idx2, "PnL_USD_Realizado"] = pnl_acciones
+                        st.session_state.df.at[stock_real_idx2, "PrecioAccionCierre"] = precio_venta
+                        st.session_state.df.at[stock_real_idx2, "Notas"] = (
+                            str(stock_row.get("Notas", "")) +
+                            f" [VENDIDAS a ${precio_venta:.2f} | PnL: ${pnl_acciones:.2f}]"
+                        )
+                        st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+                        if f"close_stock_{stock_id}" in st.session_state:
+                            del st.session_state[f"close_stock_{stock_id}"]
+                        st.success(f"🎡 Ciclo de La Rueda completado para {stock_ticker}. PnL: ${pnl_acciones:,.2f}")
+                        st.rerun()
+
+                    if st.button("🚫 Cancelar venta", key=f"cancel_sv_{stock_id}"):
+                        del st.session_state[f"close_stock_{stock_id}"]
+                        st.rerun()
+
+        st.divider()
+
     # --- POST-MORTEM PROMPT (aparece después de cerrar un trade) ---
     if "post_mortem" in st.session_state:
         pm = st.session_state["post_mortem"]
@@ -1534,43 +1827,333 @@ def render_active_portfolio(df):
                         del st.session_state["manage_chain_id"]
                         st.rerun()
             
-            # --- TAB 3: ASIGNACIÓN ---
+            # --- TAB 3: ASIGNACIÓN (Ciclo de La Rueda) ---
             with tab_assign:
-                st.markdown("#### 📜 Asignación")
-                st.warning("Marca la estrategia como 'Asignada'.")
-                
-                c_a1 = st.columns(1)[0]
-                assign_price = c_a1.number_input("Strike (Precio Asignación)", value=float(target_group.iloc[0]["Strike"]), disabled=True)
-                
-                st.info(f"Se te asignarán {int(target_group.iloc[0]['Contratos']) * 100} acciones de {target_group.iloc[0]['Ticker']} a ${assign_price:.2f}.")
-                
-                c_assign_btn, c_assign_cancel = st.columns([2, 1])
-                if c_assign_btn.button("✅ Confirmar Asignación", type="primary", use_container_width=True):
-                    total_comisiones_apertura = sum(float(r.get("Comisiones", 0.0)) for _, r in target_group.iterrows())
-                    for idx, row in target_group.iterrows():
-                        real_idx = df.index[df["ID"] == row["ID"]][0]
-                        df.at[real_idx, "Estado"] = "Asignada"
-                        df.at[real_idx, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        df.at[real_idx, "MaxProfitUSD"] = 0.0 # Reseteamos MaxProfit ya que cambió la naturaleza
-                        
-                        # En asignación, el PnL de la OPCIÓN suele ser la prima completa que te quedas (si es short)
-                        # Pero el "Costo" real es la compra de acciones. 
-                        # Simplificación: PnL Realizado = Prima Recibida (ya que la opción expiró/se ejerció) - Comisiones
-                        if row["ID"] == target_group.iloc[0]["ID"]:
-                            pnl_assign = (row["PrimaRecibida"] * row["Contratos"] * 100) - total_comisiones_apertura
-                            df.at[real_idx, "PnL_USD_Realizado"] = pnl_assign
-                            df.at[real_idx, "Notas"] = str(row["Notas"]) + f" [ASIGNADA a {assign_price}]"
-                        else:
-                            df.at[real_idx, "PnL_USD_Realizado"] = 0.0
-                            
-                    st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
-                    del st.session_state["manage_chain_id"]
-                    st.success("Operación marcada como Asignada.")
-                    st.rerun()
+                current_strategy_assign = target_group.iloc[0]["Estrategia"]
+                is_pcs = "Put Credit Spread" in current_strategy_assign
+                ticker_assign = target_group.iloc[0]["Ticker"]
+                contratos_assign = int(target_group.iloc[0]["Contratos"])
+                acciones_asignadas = contratos_assign * 100
 
-                if c_assign_cancel.button("🚫 Cancelar", key="cancel_assign_btn", use_container_width=True):
-                    del st.session_state["manage_chain_id"]
-                    st.rerun()
+                # Identificar las patas del PCS
+                sell_put_leg = None
+                buy_put_leg = None
+                if is_pcs:
+                    for _, leg in target_group.iterrows():
+                        if leg["Side"] == "Sell" and leg["OptionType"] == "Put":
+                            sell_put_leg = leg
+                        elif leg["Side"] == "Buy" and leg["OptionType"] == "Put":
+                            buy_put_leg = leg
+
+                if is_pcs and sell_put_leg is not None:
+                    st.markdown("#### 🎡 Asignación — Inicio del Ciclo de La Rueda")
+                    st.markdown("""
+                    <div style='background:linear-gradient(135deg,#1a2a1a,#0f1f2f); border:1px solid #00ffa2; 
+                         border-radius:10px; padding:16px; margin-bottom:16px;'>
+                    <h4 style='color:#00ffa2; margin:0 0 8px 0;'>🎡 Flujo de La Rueda (The Wheel)</h4>
+                    <p style='color:#bdc3c7; margin:0; font-size:13px;'>
+                    <b style='color:#e74c3c;'>① Sell Put → ASIGNADO</b> &nbsp;|&nbsp;
+                    <b style='color:#27ae60;'>② Buy Put → QUEDA ABIERTO</b> &nbsp;|&nbsp;
+                    <b style='color:#f39c12;'>③ Se crean 100 acciones × contrato</b>
+                    </p>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    strike_sell = float(sell_put_leg["Strike"])
+                    prima_sell = float(sell_put_leg["PrimaRecibida"])
+                    prima_buy = float(buy_put_leg["PrimaRecibida"]) if buy_put_leg is not None else 0.0
+
+                    col_a1, col_a2 = st.columns(2)
+                    with col_a1:
+                        st.markdown(f"**🔴 Sell Put a cerrar (Asignado):**")
+                        st.markdown(f"- Strike: **${strike_sell:,.2f}**")
+                        st.markdown(f"- Prima cobrada: **${prima_sell:.2f}/acción**")
+                        st.markdown(f"- Contratos: **{contratos_assign}**")
+                    with col_a2:
+                        if buy_put_leg is not None:
+                            st.markdown(f"**🟢 Buy Put de protección (Queda ABIERTO):**")
+                            st.markdown(f"- Strike: **${float(buy_put_leg['Strike']):,.2f}**")
+                            st.markdown(f"- Prima pagada (como coste): **${abs(prima_buy):.2f}/acción**")
+                            st.markdown(f"- Estado después: `Abierto` para vender al mercado")
+                        else:
+                            st.info("No se detectó pata Buy Put en este spread.")
+
+                    st.divider()
+
+                    # Cálculo del Costo Base Real
+                    # CostBase = Strike Sell Put - (Prima Sell Put - Prima Buy Put)
+                    prima_neta_pcs = prima_sell - abs(prima_buy)
+                    costo_base_inicial = strike_sell - prima_neta_pcs
+
+                    st.markdown("#### 📐 Costo Base Real de las Acciones")
+                    st.markdown(f"""
+                    <div style='background:#1e2130; border-radius:8px; padding:14px; border-left:4px solid #f39c12;'>
+                    <p style='color:#bdc3c7; margin:0; font-size:13px;'>
+                    <b>Fórmula inicial (PCS):</b><br>
+                    <code>BE = Strike SP − (Prima SP cobrada − Prima BP pagada)</code><br>
+                    <b>= ${strike_sell:.2f} − (${prima_sell:.2f} − ${abs(prima_buy):.2f})</b><br>
+                    <b>= ${strike_sell:.2f} − ${prima_neta_pcs:.2f}</b><br>
+                    <span style='color:#f39c12; font-size:16px; font-weight:bold;'>= ${costo_base_inicial:.2f} por acción</span>
+                    <br><br>
+                    <span style='color:#00ffa2; font-size:12px; font-weight:bold;'>Fórmula completa (ciclo La Rueda):</span><br>
+                    <code style='color:#00ffa2;'>BE final = Strike SP − Prima PCS − Prima CC acumulada − Prima Buy Put vendido</code><br>
+                    <span style='color:#95a5a6; font-size:11px;'>⚠️ Cada prima cobrada REDUCE el costo base (se resta). El BE se actualiza automáticamente.</span>
+                    </p>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    # Clave de sesión para el estado del desglose
+                    desglose_key = f"wheel_desglose_{target_chain}"
+                    is_desglosando = st.session_state.get(desglose_key, False)
+
+                    st.divider()
+                    st.info(f"🏦 Se crearán **{acciones_asignadas} acciones** de **{ticker_assign}** con precio de compra ${strike_sell:,.2f}")
+
+                    if not is_desglosando:
+                        # --- PASO 1: Botón inicial ---
+                        c_assign_btn, c_assign_cancel = st.columns([2, 1])
+                        if c_assign_btn.button("🎡 Ejecutar Asignación (La Rueda)", type="primary",
+                                               use_container_width=True, key="btn_assign_wheel"):
+                            st.session_state[desglose_key] = True
+                            st.rerun()
+
+                        if c_assign_cancel.button("🚫 Cancelar", key="cancel_assign_btn",
+                                                  use_container_width=True):
+                            del st.session_state["manage_chain_id"]
+                            st.rerun()
+
+                    else:
+                        # --- PASO 2: Mini-formulario de desglose ---
+                        st.markdown("""
+                        <div style='background:linear-gradient(135deg,#1f1b2e,#0f1f2f);
+                             border:1px solid #f39c12; border-radius:10px; padding:16px; margin-bottom:12px;'>
+                        <h4 style='color:#f39c12; margin:0 0 6px 0;'>📋 Desglose de primas del PCS</h4>
+                        <p style='color:#bdc3c7; margin:0; font-size:13px;'>
+                        Como registraste la <b>Prima Neta</b> del spread completo, necesitamos
+                        saber cuánto pagaste por la pata de protección (Buy Put) para calcular
+                        correctamente el costo base de las acciones y el PnL del Sell Put.
+                        </p>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                        prima_neta_guardada = prima_sell  # Lo que hay en BD = Prima Neta total del spread
+
+                        dg1, dg2 = st.columns(2)
+                        dg1.metric("Prima Neta guardada (Spread completo)", f"${prima_neta_guardada:.2f}/acción",
+                                   help="Crédito neto que registraste al abrir el PCS")
+
+                        prima_buy_input = dg2.number_input(
+                            "💸 ¿Cuánto pagaste por el Buy Put? ($/acción)",
+                            min_value=0.0,
+                            max_value=float(prima_neta_guardada),
+                            value=0.0,
+                            step=0.01,
+                            key=f"prima_buy_input_{target_chain}",
+                            help=(
+                                "Prima que pagaste por la pata larga de protección. "
+                                "Ej: Si tu neta fue $1.13 y el BP te costó $0.88, "
+                                "el SP valía $2.01."
+                            )
+                        )
+
+                        # Cálculo automático: SP = Neta + BP (back-calculation)
+                        prima_sell_real = prima_neta_guardada + prima_buy_input
+                        costo_base_calc = strike_sell - prima_neta_guardada  # BE = Strike - Prima Neta
+
+                        # Desglose visual en tiempo real
+                        st.markdown(f"""
+                        <div style='background:#0d1117; border:1px solid #30363d; border-radius:8px;
+                                    padding:12px 16px; margin:8px 0; font-size:13px;'>
+                        <b style='color:#e6edf3;'>🔢 Desglose calculado:</b><br>
+                        <span style='color:#e74c3c;'>🔴 Sell Put cobrado
+                        = Prima Neta + Prima Buy Put
+                        = ${prima_neta_guardada:.2f} + ${prima_buy_input:.2f}
+                        = <b>${prima_sell_real:.2f}/acción</b></span><br>
+                        <span style='color:#27ae60;'>🟢 Buy Put pagado = <b>${prima_buy_input:.2f}/acción</b>
+                        → quedará abierta para vender</span><br>
+                        <span style='color:#f39c12; font-weight:bold;'>
+                        💥 Costo Base Inicial = ${strike_sell:.2f} − ${prima_neta_guardada:.2f} (prima neta PCS)
+                        = <b>${costo_base_calc:.2f}/acción</b></span><br>
+                        <span style='color:#95a5a6; font-size:11px;'>
+                        ↳ Este es el BE de partida. Se irá reduciendo en el Panel La Rueda
+                        cuando vendas el Buy Put (+prima) y añadas Covered Calls (+prima).
+                        </span>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                        c_conf1, c_conf2 = st.columns([2, 1])
+                        confirmar_disabled = (prima_buy_input <= 0.0)
+                        if confirmar_disabled:
+                            st.caption("⬆️ Introduce la prima del Buy Put para desbloquear la confirmación.")
+
+                        if c_conf1.button("✅ Confirmar y Ejecutar Asignación", type="primary",
+                                          use_container_width=True, key="btn_confirm_wheel",
+                                          disabled=confirmar_disabled):
+                            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            total_comisiones_apertura = sum(
+                                float(r.get("Comisiones", 0.0)) for _, r in target_group.iterrows()
+                            )
+
+                            # === PASO 1: Marcar SELL PUT como ASIGNADO + corregir prima real ===
+                            sell_idx = st.session_state.df.index[
+                                st.session_state.df["ID"] == sell_put_leg["ID"]
+                            ][0]
+                            st.session_state.df.at[sell_idx, "Estado"] = "Asignada"
+                            st.session_state.df.at[sell_idx, "FechaCierre"] = now_str
+                            st.session_state.df.at[sell_idx, "CostoCierre"] = 0.0
+                            # Actualizamos la prima con el valor real desglosado
+                            st.session_state.df.at[sell_idx, "PrimaRecibida"] = prima_sell_real
+                            pnl_sell_put = (prima_sell_real * contratos_assign * 100) - total_comisiones_apertura
+                            st.session_state.df.at[sell_idx, "PnL_USD_Realizado"] = pnl_sell_put
+                            st.session_state.df.at[sell_idx, "Notas"] = (
+                                str(sell_put_leg.get("Notas", "")) +
+                                f" [ASIGNADO @ ${strike_sell:.2f} | SP: ${prima_sell_real:.2f} — La Rueda iniciada]"
+                            )
+                            st.session_state.df.at[sell_idx, "WheelLeg"] = "sell_put"
+
+                            # === PASO 2: BUY PUT queda ABIERTO — corregir prima real ===
+                            if buy_put_leg is not None:
+                                buy_idx = st.session_state.df.index[
+                                    st.session_state.df["ID"] == buy_put_leg["ID"]
+                                ][0]
+                                # Guardamos el coste real del BP (negativo = pagamos nosotros)
+                                st.session_state.df.at[buy_idx, "PrimaRecibida"] = -prima_buy_input
+                                st.session_state.df.at[buy_idx, "Notas"] = (
+                                    str(buy_put_leg.get("Notas", "")) +
+                                    f" [PROTECCIÓN ${prima_buy_input:.2f}/acción — vender para bajar costo base]"
+                                )
+                                st.session_state.df.at[buy_idx, "WheelLeg"] = "buy_put_open"
+                                st.session_state.df.at[buy_idx, "WheelParentChainID"] = target_chain
+
+                            # === PASO 3: Crear posición Long Stock ===
+                            stock_chain_id = str(uuid4())[:8]
+                            stock_data = {
+                                "ID": str(uuid4())[:8],
+                                "ChainID": stock_chain_id,
+                                "ParentID": sell_put_leg["ID"],
+                                "Ticker": ticker_assign,
+                                "FechaApertura": datetime.now().strftime("%Y-%m-%d"),
+                                "Expiry": pd.to_datetime("2099-12-31").normalize(),
+                                "Estrategia": "Long Stock (Asignación)",
+                                "Setup": str(target_group.iloc[0].get("Setup", "Otro")),
+                                "Tags": "la-rueda,asignacion",
+                                "Side": "Buy",
+                                "OptionType": "Stock",
+                                "Strike": strike_sell,
+                                "Delta": 1.0,
+                                "PrimaRecibida": prima_neta_guardada,  # Prima neta = crédito real del PCS
+                                "CostoCierre": 0.0,
+                                "Contratos": contratos_assign,
+                                "BuyingPower": strike_sell * acciones_asignadas,
+                                "BreakEven": costo_base_calc,
+                                "BreakEven_Upper": 0.0,
+                                "POP": 0.0,
+                                "Estado": "Abierta",
+                                "Notas": (
+                                    f"Acciones por asignación PCS | "
+                                    f"SP cobrado: ${prima_sell_real:.2f} | "
+                                    f"BP pagado: ${prima_buy_input:.2f} | "
+                                    f"Neta PCS: ${prima_neta_guardada:.2f} | "
+                                    f"Costo base: ${costo_base_calc:.2f}/acción"
+                                ),
+                                "UpdatedAt": datetime.now().isoformat(),
+                                "FechaCierre": pd.NA,
+                                "MaxProfitUSD": 0.0,
+                                "ProfitPct": 0.0,
+                                "PnL_Capital_Pct": 0.0,
+                                "PrecioAccionCierre": 0.0,
+                                "PnL_USD_Realizado": 0.0,
+                                "Comisiones": 0.0,
+                                "EarningsDate": target_group.iloc[0].get("EarningsDate", pd.NA),
+                                "DividendosDate": target_group.iloc[0].get("DividendosDate", pd.NA),
+                                "WheelParentChainID": target_chain,
+                                "CostBaseReal": costo_base_calc,
+                                "CoveredCallChainID": pd.NA,
+                                "CoveredCallPrima": 0.0,
+                                "WheelLeg": "long_stock",
+                            }
+                            st.session_state.df = pd.concat(
+                                [st.session_state.df, pd.DataFrame([stock_data])],
+                                ignore_index=True
+                            )
+
+                            st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+                            if desglose_key in st.session_state:
+                                del st.session_state[desglose_key]
+                            del st.session_state["manage_chain_id"]
+                            st.success(
+                                f"🎡 ¡La Rueda iniciada! {acciones_asignadas} acciones de {ticker_assign} "
+                                f"creadas. Costo base: ${costo_base_calc:.2f}. Buy Put queda abierto (${prima_buy_input:.2f}).",
+                                icon="🎡"
+                            )
+                            st.rerun()
+
+                        if c_conf2.button("↩️ Atrás", key="btn_back_desglose", use_container_width=True):
+                            del st.session_state[desglose_key]
+                            st.rerun()
+
+
+
+                else:
+                    # --- Asignación genérica para CSP u otras estrategias ---
+                    st.markdown("#### 📜 Asignación")
+                    if is_pcs:
+                        st.warning("⚠️ No se pudo identificar el Sell Put del spread. Usando flujo genérico.")
+                    else:
+                        st.info(f"Marcando **{current_strategy_assign}** como Asignada y creando posición de acciones.")
+
+                    assign_leg = target_group.iloc[0]
+                    assign_price_gen = float(assign_leg["Strike"])
+                    contratos_gen = int(assign_leg["Contratos"])
+
+                    st.info(f"Se te asignarán **{contratos_gen * 100} acciones** de **{ticker_assign}** a **${assign_price_gen:.2f}**.")
+
+                    c_assign_btn2, c_assign_cancel2 = st.columns([2, 1])
+                    if c_assign_btn2.button("✅ Confirmar Asignación", type="primary", use_container_width=True, key="btn_assign_generic"):
+                        total_comisiones_ap = sum(float(r.get("Comisiones", 0.0)) for _, r in target_group.iterrows())
+                        now_str2 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        for idx_g, row_g in target_group.iterrows():
+                            real_idx_g = df.index[df["ID"] == row_g["ID"]][0]
+                            df.at[real_idx_g, "Estado"] = "Asignada"
+                            df.at[real_idx_g, "FechaCierre"] = now_str2
+                            df.at[real_idx_g, "MaxProfitUSD"] = 0.0
+                            if row_g["ID"] == assign_leg["ID"]:
+                                pnl_gen = (float(row_g["PrimaRecibida"]) * contratos_gen * 100) - total_comisiones_ap
+                                df.at[real_idx_g, "PnL_USD_Realizado"] = pnl_gen
+                                df.at[real_idx_g, "Notas"] = str(row_g.get("Notas", "")) + f" [ASIGNADA a {assign_price_gen}]"
+                            else:
+                                df.at[real_idx_g, "PnL_USD_Realizado"] = 0.0
+
+                        # Crear Long Stock genérico
+                        stock_chain_id2 = str(uuid4())[:8]
+                        prima_gen = float(assign_leg.get("PrimaRecibida", 0.0))
+                        cost_base_gen = assign_price_gen - prima_gen
+                        stock_row2 = {
+                            "ID": str(uuid4())[:8], "ChainID": stock_chain_id2, "ParentID": assign_leg["ID"],
+                            "Ticker": ticker_assign, "FechaApertura": datetime.now().strftime("%Y-%m-%d"),
+                            "Expiry": pd.to_datetime("2099-12-31").normalize(), "Estrategia": "Long Stock (Asignación)",
+                            "Setup": str(assign_leg.get("Setup", "Otro")), "Tags": "la-rueda,asignacion",
+                            "Side": "Buy", "OptionType": "Stock", "Strike": assign_price_gen, "Delta": 1.0,
+                            "PrimaRecibida": prima_gen, "CostoCierre": 0.0, "Contratos": contratos_gen,
+                            "BuyingPower": assign_price_gen * contratos_gen * 100,
+                            "BreakEven": cost_base_gen, "BreakEven_Upper": 0.0, "POP": 0.0, "Estado": "Abierta",
+                            "Notas": f"Acciones por asignación de {current_strategy_assign}. Costo base: ${cost_base_gen:.2f}",
+                            "UpdatedAt": datetime.now().isoformat(), "FechaCierre": pd.NA,
+                            "MaxProfitUSD": 0.0, "ProfitPct": 0.0, "PnL_Capital_Pct": 0.0,
+                            "PrecioAccionCierre": 0.0, "PnL_USD_Realizado": 0.0, "Comisiones": 0.0,
+                            "EarningsDate": assign_leg.get("EarningsDate", pd.NA), "DividendosDate": assign_leg.get("DividendosDate", pd.NA),
+                            "WheelParentChainID": target_chain, "CostBaseReal": cost_base_gen,
+                            "CoveredCallChainID": pd.NA, "CoveredCallPrima": 0.0, "WheelLeg": "long_stock",
+                        }
+                        st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([stock_row2])], ignore_index=True)
+                        st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+                        del st.session_state["manage_chain_id"]
+                        st.success("Operación marcada como Asignada y acciones creadas.")
+                        st.rerun()
+
+                    if c_assign_cancel2.button("🚫 Cancelar", key="cancel_assign_btn2", use_container_width=True):
+                        del st.session_state["manage_chain_id"]
+                        st.rerun()
 
 def render_express_0dte():
     """Formulario simplificado para operaciones 0DTE (especialmente SPX)."""

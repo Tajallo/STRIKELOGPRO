@@ -1,0 +1,17 @@
+{
+  "pythonVersion": "3.13",
+  "pythonPlatform": "Windows",
+  "venvPath": "C:/Users/Administrador/AppData/Local/Programs/Python/Python313",
+  "extraPaths": [
+    "C:/Users/Administrador/AppData/Local/Programs/Python/Python313/Lib/site-packages"
+  ],
+  "typeCheckingMode": "off",
+  "reportMissingImports": false,
+  "reportMissingModuleSource": false,
+  "reportGeneralTypeIssues": false,
+  "reportOperatorIssue": false,
+  "reportIndexIssue": false,
+  "reportArgumentType": false,
+  "reportAttributeAccessIssue": false,
+  "reportCallIssue": false
+}

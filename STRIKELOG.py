@@ -1498,9 +1498,22 @@ def render_active_portfolio(df):
                     st.session_state[f"close_stock_{stock_id}"] = True
 
                 if st.session_state.get(f"close_stock_{stock_id}", False):
+                    # Default: Strike del CC activo (precio al que nos "compran" si se ejerce),
+                    # o precio de compra si no hay CC vinculado.
+                    precio_default_venta = precio_compra
+                    if tiene_cc and pd.notna(cc_chain_id):
+                        cc_ref = df[df["ChainID"] == cc_chain_id]
+                        if not cc_ref.empty:
+                            precio_default_venta = float(cc_ref.iloc[0].get("Strike", precio_compra))
+
                     cs1, cs2, cs3 = st.columns(3)
-                    precio_venta = cs1.number_input("Precio Venta ($/acción)", value=precio_compra, step=0.01,
-                                                    key=f"sv_{stock_id}")
+                    precio_venta = cs1.number_input(
+                        "Precio Venta ($/acción)",
+                        value=precio_default_venta,
+                        step=0.01,
+                        key=f"sv_{stock_id}",
+                        help="Por defecto: Strike del CC activo (precio de ejercicio). Ajusta si es diferente."
+                    )
                     pnl_acciones = (precio_venta - costo_base_dinamico) * acciones_st
                     cs2.metric("PnL Estimado", f"${pnl_acciones:,.2f}",
                                help="(Precio Venta - Costo Base Real) × Número de Acciones")

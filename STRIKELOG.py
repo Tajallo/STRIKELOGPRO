@@ -944,7 +944,7 @@ def render_active_portfolio(df):
                         if len(first_sp_idx) > 0:
                             st.session_state.df.at[first_sp_idx[0], "PnL_USD_Realizado"] = total_prima_sp
                         st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
-                        st.success(f"✅ {exp_ticker} {exp_strategy} cerrado a $0.00. Prima íntegra: ${total_prima_sp:.2f}")
+                        st.success(f"✅ {exp_ticker} {exp_strategy} expirado a $0.00. Crédito neto capturado: ${total_prima_sp:.2f}")
                         st.rerun()
 
                     if bs2.button(f"📜 Gestionar (Asignación / Parcial)",
@@ -979,7 +979,12 @@ def render_active_portfolio(df):
                                 f" [OTM — expirado sin valor]"
                             )
                         st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
-                        st.success(f"✅ {exp_ticker} expirado. Prima íntegra: ${total_prima_put:.2f}")
+                        # Detectar si es crédito o débito para el mensaje
+                        exp_side = str(exp_row.get("Side", "Sell"))
+                        if exp_side == "Sell":
+                            st.success(f"✅ {exp_ticker} expirado OTM. Crédito cobrado íntegro: ${total_prima_put:.2f}")
+                        else:
+                            st.error(f"🔴 {exp_ticker} expirado sin valor. Pérdida de la prima pagada: ${total_prima_put:.2f}")
                         st.rerun()
 
                     if bp2.button(f"⚙️ Abrir Gestión Completa",

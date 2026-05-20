@@ -13,6 +13,7 @@ All notable changes to this project will be documented in this file.
   - Total campaign commission aggregation factored into dynamic `Costo Base Real (BE)` calculation.
   - Side-by-side notes editors for active stock and covered calls.
 ### Fixed
+- **Always Visible Save Changes Button**: Fixed a UI issue where the "💾 Guardar Notas y Fechas" button in the Active Portfolio panel was conditionally rendered only after changes were detected. The button is now always visible at the bottom of the notes and dates section for a clearer and more intuitive experience.
 - **Strategy Leg Selection**: Fixed a bug where selecting **Flyagonal** (or other custom strategies) in the trade entry form defaulted to showing only 1 leg. The form now dynamically retrieves the number of legs from the strategy's definition in `LEG_DEFAULTS` automatically.
 - **Timeline Rendering**: Fixed an issue where unescaped dollar signs (`$`) in the HTML string caused Streamlit's markdown parser to render raw HTML tags (like `</span>`) as LaTeX math expressions. Replaced `$` with the safe HTML entity `&#36;`.
 - **Duplicate Campaign Legs**: Grouped multi-leg strategies (like Put Debit Spreads and Put Credit Spreads) by their `ChainID` in the timeline history. This consolidates them into a single, beautifully formatted card displaying all strikes, combined PnL, and total commissions, rather than showing confusing duplicate entries.

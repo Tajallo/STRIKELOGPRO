@@ -1445,28 +1445,19 @@ def render_active_portfolio(df):
                 new_earnings = c_config.date_input("📢 Earnings", value=current_earnings, key=f"earn_{chain_id}", help="Fecha de próximos resultados.")
                 new_dividendos = c_config.date_input("💰 Dividendos", value=current_dividendos, key=f"div_{chain_id}")
                 
-                # Detectar cambios
-                notes_changed = (new_notes != current_notes)
-                earnings_changed = (new_earnings != current_earnings)
-                dividendos_changed = (new_dividendos != current_dividendos)
-                
-                if notes_changed or earnings_changed or dividendos_changed:
-                    if st.button("💾 Guardar Cambios", key=f"save_changes_{chain_id}"):
-                        # Actualizar notas y earnings en todas las patas del ChainID
-                        for idx, row in group.iterrows():
-                             real_idx = df.index[df["ID"] == row["ID"]][0]
-                             if notes_changed:
-                                 df.at[real_idx, "Notas"] = new_notes
-                             if earnings_changed:
-                                 df.at[real_idx, "EarningsDate"] = pd.to_datetime(new_earnings).normalize() if new_earnings else pd.NA
-                             if dividendos_changed:
-                                 df.at[real_idx, "DividendosDate"] = pd.to_datetime(new_dividendos).normalize() if new_dividendos else pd.NA
-                             
-                             df.at[real_idx, "UpdatedAt"] = datetime.now().isoformat()
-                        
-                        st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
-                        st.success("Datos actualizados.")
-                        st.rerun()
+                # Guardar Notas y Fechas
+                if st.button("💾 Guardar Notas y Fechas", key=f"save_changes_{chain_id}", type="primary", use_container_width=True):
+                    # Actualizar notas y earnings en todas las patas del ChainID
+                    for idx, row in group.iterrows():
+                         real_idx = df.index[df["ID"] == row["ID"]][0]
+                         df.at[real_idx, "Notas"] = new_notes
+                         df.at[real_idx, "EarningsDate"] = pd.to_datetime(new_earnings).normalize() if new_earnings else pd.NA
+                         df.at[real_idx, "DividendosDate"] = pd.to_datetime(new_dividendos).normalize() if new_dividendos else pd.NA
+                         df.at[real_idx, "UpdatedAt"] = datetime.now().isoformat()
+                    
+                    st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+                    st.success("📝 Notas y fechas guardadas correctamente.")
+                    st.rerun()
                     
                 # Acciones Rápidas
                 c_btn_quick, c_btn_manage, c_btn_dup = st.columns(3)

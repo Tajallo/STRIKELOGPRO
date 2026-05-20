@@ -849,13 +849,114 @@ def render_dashboard(df):
                 )
                 st.plotly_chart(fig_setup, use_container_width=True)
 
+def sync_active_portfolio_calendars(active_df):
+    import yfinance as yf
+    
+    # Obtener tickers únicos con Estado == "Abierta"
+    tickers = active_df["Ticker"].dropna().unique().tolist()
+    if not tickers:
+        st.toast("No hay tickers activos para sincronizar.", icon="⚠️")
+        return
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    total = len(tickers)
+    success_count = 0
+    updated_tickers = []
+    failed_tickers = []
+    
+    df_copy = st.session_state.df.copy()
+    
+    for idx, ticker_symbol in enumerate(tickers):
+        pct = int((idx / total) * 100)
+        progress_bar.progress(pct)
+        status_text.write(f"🔄 Consultando Yahoo Finance para **{ticker_symbol}** ({idx+1}/{total})...")
+        
+        earn_date = None
+        div_date = None
+        
+        try:
+            ticker = yf.Ticker(ticker_symbol)
+            
+            # Intentar obtener calendario (contiene earnings y a veces ex-dividend)
+            cal = None
+            try:
+                cal = ticker.calendar
+            except Exception:
+                pass
+            
+            if isinstance(cal, dict) and cal:
+                # Extraer Earnings
+                earn_list = cal.get('Earnings Date')
+                if isinstance(earn_list, list) and len(earn_list) > 0:
+                    earn_date = earn_list[0]
+                elif earn_list:
+                    earn_date = earn_list
+                    
+                # Extraer Ex-Dividend del calendario
+                div_date = cal.get('Ex-Dividend Date')
+                
+            # Si no hay ex-dividend en calendar, intentar con ticker.info (que tiene exDividendDate en unix timestamp)
+            if not div_date:
+                try:
+                    info = ticker.info
+                    ex_div_timestamp = info.get('exDividendDate')
+                    if ex_div_timestamp:
+                        div_date = pd.to_datetime(ex_div_timestamp, unit='s').date()
+                except Exception:
+                    pass
+            
+            # Si logramos obtener alguna de las dos fechas, actualizamos la base de datos
+            if earn_date or div_date:
+                rows_to_update = df_copy[(df_copy["Ticker"] == ticker_symbol) & (df_copy["Estado"] == "Abierta")]
+                if not rows_to_update.empty:
+                    for real_idx in rows_to_update.index:
+                        if earn_date:
+                            df_copy.at[real_idx, "EarningsDate"] = pd.to_datetime(earn_date).normalize()
+                        if div_date:
+                            df_copy.at[real_idx, "DividendosDate"] = pd.to_datetime(div_date).normalize()
+                        df_copy.at[real_idx, "UpdatedAt"] = datetime.now().isoformat()
+                    
+                    success_count += 1
+                    updated_tickers.append(ticker_symbol)
+                    
+        except Exception as e:
+            failed_tickers.append(ticker_symbol)
+            
+    progress_bar.progress(100)
+    status_text.empty()
+    
+    if success_count > 0:
+        st.session_state.df = JournalManager.save_with_backup(df_copy)
+        msg = f"Sincronización completada. Se actualizaron {success_count} tickers: {', '.join(updated_tickers)}."
+        if failed_tickers:
+            msg += f" (Errores en: {', '.join(failed_tickers)})"
+        st.toast(msg, icon="✅")
+    else:
+        if failed_tickers:
+            st.toast(f"⚠️ Error al consultar tickers: {', '.join(failed_tickers)}", icon="⚠️")
+        else:
+            st.toast("ℹ️ Consulta realizada. No se encontraron nuevas fechas de Earnings/Dividendos para los tickers activos.", icon="ℹ️")
+            
+    st.rerun()
+
 def render_active_portfolio(df):
     if "edit_trade_id" in st.session_state:
         render_inline_edit(st.session_state["edit_trade_id"])
         st.divider()
         st.stop()
         
-    st.header("📂 Cartera Activa")
+    active_df = df[df["Estado"] == "Abierta"].copy()
+    
+    col_title, col_sync = st.columns([3, 1])
+    with col_title:
+        st.header("📂 Cartera Activa")
+    with col_sync:
+        st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+        if not active_df.empty:
+            if st.button("🔄 Sincronizar Calendario", key="sync_calendar_btn", type="secondary", use_container_width=True, help="Sincroniza fechas de Earnings y Dividendos con Yahoo Finance"):
+                sync_active_portfolio_calendars(active_df)
     
     # CSS personalizado para badges y tarjetas
     st.markdown("""

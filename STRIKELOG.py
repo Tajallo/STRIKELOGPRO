@@ -3330,7 +3330,9 @@ def render_new_trade():
         
         # Determinar patas según selección
         legs_count = 1
-        if "Spread" in estrategia: legs_count = 2
+        if estrategia in LEG_DEFAULTS:
+            legs_count = len(LEG_DEFAULTS[estrategia])
+        elif "Spread" in estrategia: legs_count = 2
         elif "Iron" in estrategia: legs_count = 4
         elif "Butterfly" in estrategia: legs_count = 3
         elif estrategia in ["Strangle", "Straddle"]: legs_count = 2

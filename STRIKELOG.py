@@ -26,6 +26,7 @@ COLUMNS = [
     "BuyingPower", "BreakEven", "BreakEven_Upper", "POP",
     "Estado", "Notas", "UpdatedAt", "FechaCierre", "MaxProfitUSD", "ProfitPct", "PnL_Capital_Pct",
     "PrecioAccionCierre", "PnL_USD_Realizado", "Comisiones", "EarningsDate", "DividendosDate",
+    "Broker",
     # --- Ciclo de La Rueda ---
     "WheelParentChainID",  # ChainID del PCS original que generó esta posición de acciones
     "CostBaseReal",        # Costo base real de las acciones (strike - primas netas)
@@ -47,10 +48,11 @@ ESTRATEGIAS = [
     "Calendar", "Diagonal",
     "Ratio Spread", "Backspread", 
     "Long Call", "Long Put",
+    "Long Stock (Asignación)",
     "Custom / Other"
 ]
 SIDES = ["Sell", "Buy"]
-OPTION_TYPES = ["Put", "Call"]
+OPTION_TYPES = ["Put", "Call", "Stock"]
 
 # Estrategias que tienen dos Break Even (zona de beneficio entre dos strikes)
 DUAL_BE_STRATEGIES = ["Iron Condor", "Iron Fly", "Strangle", "Straddle", "Butterfly", "Broken Wing Butterfly (BWB)"]
@@ -82,6 +84,92 @@ LEG_DEFAULTS = {
 # Gestión de Datos
 # ----------------------------
 class JournalManager:
+    @staticmethod
+    def calculate_stock_dynamic_be(df: pd.DataFrame, stock_row: pd.Series) -> float:
+        stock_id = stock_row["ID"]
+        stock_ticker = stock_row["Ticker"]
+        stock_chain = stock_row["ChainID"]
+        precio_compra = float(stock_row.get("Strike", 0.0))
+        contratos_st = int(stock_row.get("Contratos", 1))
+        acciones_st = contratos_st * 100
+        cc_prima_acum = float(stock_row.get("CoveredCallPrima", 0.0))
+        wheel_parent_chain = stock_row.get("WheelParentChainID")
+        stock_parent_id = stock_row.get("ParentID")
+
+        # Buscar comisiones y primas extras de toda la campaña de La Rueda (original PCS, Buy Put, CCs, Stock, Spreads)
+        campaign_mask = (
+            (df["ID"] == stock_id) |
+            (df["ParentID"] == stock_id) |
+            (df["ChainID"] == stock_chain) |
+            (df["WheelParentChainID"] == stock_chain)
+        )
+        if pd.notna(stock_parent_id) and str(stock_parent_id) != "nan" and stock_parent_id != "":
+            campaign_mask = campaign_mask | (df["ChainID"] == stock_parent_id) | (df["ParentID"] == stock_parent_id) | (df["WheelParentChainID"] == stock_parent_id)
+        if pd.notna(wheel_parent_chain) and str(wheel_parent_chain) != "nan" and wheel_parent_chain != "":
+            campaign_mask = campaign_mask | (df["ChainID"] == wheel_parent_chain) | (df["WheelParentChainID"] == wheel_parent_chain) | (df["ParentID"] == wheel_parent_chain)
+
+        campaign_rows = df[campaign_mask].drop_duplicates(subset=["ID"])
+        total_comisiones_campana = sum(float(r.get("Comisiones", 0.0)) for _, r in campaign_rows.iterrows() if pd.notna(r.get("Comisiones")))
+
+        # 1. prima_neta_pcs (Si es 0.0 en el stock row, la recuperamos dinámicamente de los registros del PCS original)
+        prima_neta_pcs = float(stock_row.get("PrimaRecibida", 0.0))
+        if prima_neta_pcs == 0.0:
+            sell_put_rows = campaign_rows[campaign_rows["WheelLeg"] == "sell_put"]
+            buy_put_rows = campaign_rows[campaign_rows["WheelLeg"] == "buy_put_open"]
+            sell_put_prima = float(sell_put_rows.iloc[0].get("PrimaRecibida", 0.0)) if not sell_put_rows.empty else 0.0
+            buy_put_prima = abs(float(buy_put_rows[buy_put_rows["Estado"] != "Asignada"].iloc[0].get("PrimaRecibida", 0.0))) if not buy_put_rows.empty else 0.0
+            if sell_put_prima > 0:
+                prima_neta_pcs = sell_put_prima - buy_put_prima
+
+        # 2. Buscar si el Buy Put de La Rueda ya fue cerrado (para calcular venta del Buy Put)
+        buy_put_prima_extra = 0.0
+        closed_bp_rows = campaign_rows[(campaign_rows["WheelLeg"] == "buy_put_open") & (campaign_rows["Estado"] != "Abierta") & (campaign_rows["Estado"] != "Asignada")]
+        if not closed_bp_rows.empty:
+            buy_put_prima_extra = abs(float(closed_bp_rows.iloc[0].get("CostoCierre", 0.0)))
+
+        # 3. Calcular primas extras cobradas en la campaña (CCs extras, spreads defensivos, etc.)
+        cc_pnl = 0.0
+        pds_pnl = 0.0
+        extra_campana_pnl = 0.0
+
+        for _, r in campaign_rows.iterrows():
+            if r["ID"] == stock_id or r.get("internal_type") == "long_stock":
+                continue
+            if r.get("WheelLeg") == "sell_put":
+                continue
+            if r.get("WheelLeg") == "buy_put_open":
+                continue
+            if r["Estrategia"] in ["CSP (Cash Secured Put)", "CSP", "Long Stock (Asignación)", "Long Stock"]:
+                continue
+                
+            estr_lower = str(r.get("Estrategia", "")).lower()
+            r_pnl = float(r.get("PnL_USD_Realizado", 0.0))
+            
+            # Si está abierta, sumamos su PrimaRecibida * 100 * Contratos
+            if r.get("Estado") == "Abierta":
+                r_pnl = float(r.get("PrimaRecibida", 0.0)) * 100 * float(r.get("Contratos", 1))
+            
+            if "covered call" in estr_lower or "cc" == estr_lower or "cc (" in estr_lower:
+                cc_pnl += r_pnl
+            elif "put debit spread" in estr_lower or "pds" in estr_lower:
+                pds_pnl += r_pnl
+            else:
+                extra_campana_pnl += r_pnl
+
+        # Convertir PnL a términos por acción
+        cc_pnl_per_share = cc_pnl / acciones_st
+        pds_pnl_per_share = pds_pnl / acciones_st
+        extra_campana_pnl_per_share = extra_campana_pnl / acciones_st
+        
+        # Combinar el acumulado manual con el detectado en CSV
+        cc_acumulado_final = max(abs(cc_prima_acum), cc_pnl_per_share)
+        
+        # Primas totales por acción que reducen el costo base
+        total_primas = abs(prima_neta_pcs) + cc_acumulado_final + pds_pnl_per_share + extra_campana_pnl_per_share + abs(buy_put_prima_extra)
+        
+        costo_base_dinamico = precio_compra - total_primas + (total_comisiones_campana / acciones_st)
+        return costo_base_dinamico
+
     @staticmethod
     def save_with_backup(df: pd.DataFrame) -> pd.DataFrame:
         try:
@@ -119,9 +207,13 @@ class JournalManager:
                 if c == "Side": df[c] = "Sell"
                 elif c == "OptionType": df[c] = "Put"
                 elif c == "Tags": df[c] = ""
+                elif c == "Broker": df[c] = "IB"
                 elif c in ["BuyingPower", "BreakEven", "BreakEven_Upper", "POP", "Delta", "PnL_Capital_Pct", "PrecioAccionCierre", "PnL_USD_Realizado", "Comisiones", "CostBaseReal", "CoveredCallPrima"]: df[c] = 0.0
                 elif c in ["WheelParentChainID", "CoveredCallChainID", "WheelLeg"]: df[c] = pd.NA
                 else: df[c] = pd.NA
+        
+        if "Broker" in df.columns:
+            df["Broker"] = df["Broker"].fillna("IB").replace("", "IB")
         
         df = df[COLUMNS].copy()
         df["FechaApertura"] = pd.to_datetime(df["FechaApertura"], errors='coerce')
@@ -145,6 +237,18 @@ class JournalManager:
             df["DividendosDate"] = pd.NA
             
         df["UpdatedAt"] = datetime.now().isoformat(timespec="seconds")
+
+        # Recálculo dinámico del BE para todas las posiciones de stock de La Rueda activas
+        if "Estrategia" in df.columns and "Estado" in df.columns:
+            stock_mask = (df["Estrategia"] == "Long Stock (Asignación)") & (df["Estado"] == "Abierta")
+            for idx, stock_row in df[stock_mask].iterrows():
+                try:
+                    dynamic_be = JournalManager.calculate_stock_dynamic_be(df, stock_row)
+                    df.at[idx, "BreakEven"] = dynamic_be
+                    df.at[idx, "CostBaseReal"] = dynamic_be
+                except Exception:
+                    pass
+
         return df
 
     @staticmethod
@@ -1374,7 +1478,9 @@ def render_active_portfolio(df):
                         if r.get("Side", "Sell") == "Sell" and q_close_price <= 0.05:
                             pass
                         else:
-                            cierre_comisiones += int(r.get("Contratos", 1)) * 0.65
+                            r_broker = r.get("Broker", "IB")
+                            fee_rate = 0.0 if r_broker == "Tradier" else 0.65
+                            cierre_comisiones += int(r.get("Contratos", 1)) * fee_rate
                     q_comisiones += cierre_comisiones
 
                     q_pnl, q_pct, _ = calculate_pnl_metrics(
@@ -1451,35 +1557,87 @@ def render_active_portfolio(df):
             contratos_st = int(stock_row.get("Contratos", 1))
             acciones_st  = contratos_st * 100
             precio_compra = float(stock_row.get("Strike", 0))
-            prima_neta_pcs = float(stock_row.get("PrimaRecibida", 0))
 
-            # Costo Base Real guardado
-            costo_base_actual = float(stock_row.get("CostBaseReal", stock_row.get("BreakEven", precio_compra)))
             cc_prima_acum     = float(stock_row.get("CoveredCallPrima", 0))
             cc_chain_id       = stock_row.get("CoveredCallChainID")
             tiene_cc          = pd.notna(cc_chain_id) and str(cc_chain_id) != "nan"
-
-            # Buscar si el Buy Put de La Rueda ya fue cerrado (para calcular prima extra)
             wheel_parent_chain = stock_row.get("WheelParentChainID")
+
+            # Buscar comisiones y primas extras de toda la campaña de La Rueda (original PCS, Buy Put, CCs, Stock, Spreads)
+            stock_parent_id = stock_row.get("ParentID")
+            campaign_mask = (
+                (df["ID"] == stock_id) |
+                (df["ParentID"] == stock_id) |
+                (df["ChainID"] == stock_chain) |
+                (df["WheelParentChainID"] == stock_chain)
+            )
+            if pd.notna(stock_parent_id) and str(stock_parent_id) != "nan" and stock_parent_id != "":
+                campaign_mask = campaign_mask | (df["ChainID"] == stock_parent_id) | (df["ParentID"] == stock_parent_id) | (df["WheelParentChainID"] == stock_parent_id)
+            if pd.notna(wheel_parent_chain) and str(wheel_parent_chain) != "nan" and wheel_parent_chain != "":
+                campaign_mask = campaign_mask | (df["ChainID"] == wheel_parent_chain) | (df["WheelParentChainID"] == wheel_parent_chain) | (df["ParentID"] == wheel_parent_chain)
+            
+            campaign_rows = df[campaign_mask].drop_duplicates(subset=["ID"])
+            total_comisiones_campana = sum(float(r.get("Comisiones", 0.0)) for _, r in campaign_rows.iterrows() if pd.notna(r.get("Comisiones")))
+
+            # 1. prima_neta_pcs (Si es 0.0 en el stock row, la recuperamos dinámicamente de los registros del PCS original)
+            prima_neta_pcs = float(stock_row.get("PrimaRecibida", 0))
+            if prima_neta_pcs == 0.0:
+                sell_put_rows = campaign_rows[campaign_rows["WheelLeg"] == "sell_put"]
+                buy_put_rows = campaign_rows[campaign_rows["WheelLeg"] == "buy_put_open"]
+                sell_put_prima = float(sell_put_rows.iloc[0].get("PrimaRecibida", 0)) if not sell_put_rows.empty else 0.0
+                buy_put_prima = abs(float(buy_put_rows[buy_put_rows["Estado"] != "Asignada"].iloc[0].get("PrimaRecibida", 0))) if not buy_put_rows.empty else 0.0
+                if sell_put_prima > 0:
+                    prima_neta_pcs = sell_put_prima - buy_put_prima
+
+            # 2. Buscar si el Buy Put de La Rueda ya fue cerrado (para calcular venta del Buy Put)
             buy_put_prima_extra = 0.0
             buy_put_closed = False
-            if pd.notna(wheel_parent_chain):
-                bp_rows = df[
-                    (df["WheelLeg"] == "buy_put_open") &
-                    (df["WheelParentChainID"] == wheel_parent_chain) &
-                    (df["Estado"] != "Abierta")
-                ]
-                if not bp_rows.empty:
-                    buy_put_prima_extra = float(bp_rows.iloc[0].get("CostoCierre", 0))
-                    buy_put_closed = True
+            closed_bp_rows = campaign_rows[(campaign_rows["WheelLeg"] == "buy_put_open") & (campaign_rows["Estado"] != "Abierta") & (campaign_rows["Estado"] != "Asignada")]
+            if not closed_bp_rows.empty:
+                buy_put_prima_extra = abs(float(closed_bp_rows.iloc[0].get("CostoCierre", 0)))
+                buy_put_closed = True
 
-            # --- Calcular Costo Base Real dinámico ---
-            # IMPORTANTE: Aplicar abs() a cada prima para evitar dobles negativos.
-            # El CostoCierre del Buy Put puede ser negativo (entrada del usuario para PnL),
-            # pero su efecto en el BE siempre REDUCE el costo base, no lo sube.
-            # CostBase = Strike - |Prima PCS| - |CC acumulado| - |BP vendido|
-            total_primas = abs(prima_neta_pcs) + abs(cc_prima_acum) + abs(buy_put_prima_extra)
-            costo_base_dinamico = precio_compra - total_primas
+            # 3. Calcular primas extras cobradas en la campaña (CCs extras, spreads defensivos, etc.)
+            cc_pnl = 0.0
+            pds_pnl = 0.0
+            extra_campana_pnl = 0.0
+            
+            for _, r in campaign_rows.iterrows():
+                if r["ID"] == stock_id or r.get("internal_type") == "long_stock":
+                    continue
+                if r.get("WheelLeg") == "sell_put":
+                    continue
+                if r.get("WheelLeg") == "buy_put_open":
+                    continue
+                if r["Estrategia"] in ["CSP (Cash Secured Put)", "CSP", "Long Stock (Asignación)", "Long Stock"]:
+                    continue
+                    
+                estr_lower = str(r.get("Estrategia", "")).lower()
+                r_pnl = float(r.get("PnL_USD_Realizado", 0.0))
+                
+                # Si está abierta, sumamos su PrimaRecibida * 100 * Contratos
+                if r.get("Estado") == "Abierta":
+                    r_pnl = float(r.get("PrimaRecibida", 0.0)) * 100 * float(r.get("Contratos", 1))
+                
+                if "covered call" in estr_lower or "cc" == estr_lower or "cc (" in estr_lower:
+                    cc_pnl += r_pnl
+                elif "put debit spread" in estr_lower or "pds" in estr_lower:
+                    pds_pnl += r_pnl
+                else:
+                    extra_campana_pnl += r_pnl
+
+            # Convertir PnL a términos por acción
+            cc_pnl_per_share = cc_pnl / acciones_st
+            pds_pnl_per_share = pds_pnl / acciones_st
+            extra_campana_pnl_per_share = extra_campana_pnl / acciones_st
+            
+            # Combinar el acumulado manual con el detectado en CSV
+            cc_acumulado_final = max(abs(cc_prima_acum), cc_pnl_per_share)
+            
+            # Primas totales por acción que reducen el costo base
+            total_primas = abs(prima_neta_pcs) + cc_acumulado_final + pds_pnl_per_share + extra_campana_pnl_per_share + abs(buy_put_prima_extra)
+            
+            costo_base_dinamico = precio_compra - total_primas + (total_comisiones_campana / acciones_st)
 
             # --- Card de la posición ---
             indicator_html = (
@@ -1503,35 +1661,480 @@ def render_active_portfolio(df):
                 wc1.metric("Acciones", f"{acciones_st}")
                 wc2.metric("Precio Compra (Strike SP)", f"${precio_compra:.2f}")
                 wc3.metric("Primas Acumuladas", f"${total_primas:.2f}",
-                           help="PCS + Covered Calls + Buy Put cerrado")
+                           help="PCS/CSP + Covered Calls + Spreads Defensivos + Buy Put cerrado")
                 wc4.metric("💥 Costo Base Real (BE)", f"${costo_base_dinamico:.2f}",
                            delta=f"${costo_base_dinamico - precio_compra:+.2f} vs compra",
-                           help="Precio al que estás en breakeven contando todas las primas cobradas")
+                           help="Precio al que estás en breakeven contando todas las primas cobradas y comisiones")
 
                 # Desglose de primas
                 st.markdown("**📊 Desglose: cómo se reduce tu costo base:**")
-                d1, d2, d3 = st.columns(3)
-                d1.metric("\u2212 Prima neta PCS", f"${prima_neta_pcs:.2f}", help="Crédito neto del spread. Reduce el costo base desde el inicio.")
-                d2.metric("\u2212 Covered Calls", f"${cc_prima_acum:.2f}", help="Suma de todas las primas de CC cobradas. Cada una baja más el costo base.")
+                d1, d2, d3, d4 = st.columns(4)
+                d1.metric("− Prima PCS/CSP", f"${abs(prima_neta_pcs):.2f}", help="Crédito neto recibido. Reduce el costo base desde el inicio.")
+                d2.metric("− Covered Calls", f"${cc_acumulado_final:.2f}", help="Suma de todas las primas de CC cobradas (abiertas o cerradas).")
                 if buy_put_closed:
-                    d3.metric("\u2212 Buy Put vendido ✅", f"${buy_put_prima_extra:.2f}",
-                              help="Prima recibida al vender el Buy Put de protección en mercado. También reduce el costo base.")
+                    d3.metric("− Buy Put vendido ✅", f"${buy_put_prima_extra:.2f}",
+                               help="Prima recibida al vender el Buy Put de protección en mercado.")
                 else:
-                    d3.metric("\u2212 Buy Put (pendiente)", "$0.00",
-                              help="El Buy Put de protección aún está abierto. Véndelo al mercado y registra el cierre para reducir más el costo base.")
+                    d3.metric("− Buy Put (pendiente)", "$0.00",
+                               help="El Buy Put de protección aún está abierto.")
+                d4.metric("− Spreads / Defensivos", f"${pds_pnl_per_share + extra_campana_pnl_per_share:.2f}",
+                           help="Beneficios netos por acción de Put Debit Spreads u otras estrategias de cobertura vinculadas.")
 
                 # Fórmula visual BE completa
-                st.markdown(f"""
+                formula_html = f"""
                 <div style='background:#0d1117; border:1px solid #30363d; border-radius:8px;
                             padding:10px 14px; margin-top:8px; font-size:12px; color:#8b949e;'>
                 <b style='color:#e6edf3;'>📐 Fórmula BE:</b> &nbsp;
                 <code style='color:#f39c12;'>{precio_compra:.2f}</code>
-                <span style='color:#e74c3c;'> − {prima_neta_pcs:.2f} (PCS)</span>
-                <span style='color:#e74c3c;'> − {cc_prima_acum:.2f} (CC)</span>
-                <span style='color:#e74c3c;'> − {buy_put_prima_extra:.2f} (BP)</span>
-                <span style='color:#f39c12; font-weight:bold;'> = {costo_base_dinamico:.2f}</span>
+                <span style='color:#e74c3c;'> − {abs(prima_neta_pcs):.2f} (PCS/CSP)</span>
+                <span style='color:#e74c3c;'> − {cc_acumulado_final:.2f} (CC)</span>
+                """
+                if buy_put_prima_extra > 0:
+                    formula_html += f"<span style='color:#e74c3c;'> − {buy_put_prima_extra:.2f} (BP)</span>"
+                if (pds_pnl_per_share + extra_campana_pnl_per_share) > 0:
+                    formula_html += f"<span style='color:#e74c3c;'> − {pds_pnl_per_share + extra_campana_pnl_per_share:.4f} (Defensas)</span>"
+                
+                formula_html += f"""
+                <span style='color:#2ec4b6;'> + {total_comisiones_campana / acciones_st:.4f} (Fees: &#36;{total_comisiones_campana:.2f})</span>
+                = <b style='color:#00ffa2;'>&#36;{costo_base_dinamico:.4f}</b>
                 </div>
-                """, unsafe_allow_html=True)
+                """
+                st.markdown(formula_html, unsafe_allow_html=True)
+
+                # Collapsible timeline for the campaign history
+                with st.expander("🕒 Ver Historial de la Campaña (Línea de Tiempo)", expanded=False):
+                    # Sort the campaign rows chronologically
+                    sorted_campaign = campaign_rows.sort_values(by="FechaApertura", ascending=True)
+                    
+                    timeline_html = '<div class="timeline-container">'
+                    
+                    # Group rows by ChainID if ChainID is present, otherwise keep them separate
+                    grouped_legs = []
+                    processed_chains = set()
+                    
+                    for _, r_leg in sorted_campaign.iterrows():
+                        chain_id = r_leg.get("ChainID")
+                        if pd.isna(chain_id) or str(chain_id).strip() == "" or str(chain_id) == "nan":
+                            grouped_legs.append([r_leg])
+                        else:
+                            if chain_id in processed_chains:
+                                continue
+                            # Find all legs sharing this ChainID in the campaign
+                            chain_legs = sorted_campaign[sorted_campaign["ChainID"] == chain_id]
+                            grouped_legs.append([row for _, row in chain_legs.iterrows()])
+                            processed_chains.add(chain_id)
+                    
+                    for legs in grouped_legs:
+                        # Extract details for the card
+                        # If a group has only 1 leg, render it as before
+                        if len(legs) == 1:
+                            r_leg = legs[0]
+                            leg_id = r_leg["ID"]
+                            leg_state = r_leg.get("Estado", "Cerrada")
+                            leg_strategy = r_leg.get("Estrategia", "Otro")
+                            leg_side = r_leg.get("Side", "")
+                            leg_opt_type = r_leg.get("OptionType", "")
+                            leg_strike = float(r_leg.get("Strike", 0.0)) if pd.notna(r_leg.get("Strike")) else 0.0
+                            leg_contratos = int(r_leg.get("Contratos", 1)) if pd.notna(r_leg.get("Contratos")) else 1
+                            leg_prima = float(r_leg.get("PrimaRecibida", 0.0)) if pd.notna(r_leg.get("PrimaRecibida")) else 0.0
+                            leg_pnl = float(r_leg.get("PnL_USD_Realizado", 0.0)) if pd.notna(r_leg.get("PnL_USD_Realizado")) else 0.0
+                            leg_notes = r_leg.get("Notas", "")
+                            leg_broker = r_leg.get("Broker", "IB")
+                            leg_comisiones = float(r_leg.get("Comisiones", 0.0)) if pd.notna(r_leg.get("Comisiones")) else 0.0
+                            leg_wheel = r_leg.get("WheelLeg", "")
+                            
+                            f_apertura = r_leg["FechaApertura"]
+                            f_cierre = r_leg.get("FechaCierre")
+                            f_expiry = r_leg.get("Expiry")
+                            
+                            f_apertura_clean = str(f_apertura).split(" ")[0] if pd.notna(f_apertura) else ""
+                            f_cierre_clean = str(f_cierre).split(" ")[0] if pd.notna(f_cierre) else ""
+                            f_expiry_clean = str(f_expiry).split(" ")[0] if pd.notna(f_expiry) else ""
+                            
+                            role_class = "role-generic"
+                            role_text = leg_strategy
+                            
+                            estr_lower = str(leg_strategy).lower()
+                            wheel_lower = str(leg_wheel).lower()
+                            
+                            if "long stock" in estr_lower or estr_lower == "stock":
+                                role_class = "role-stock"
+                                role_text = "Stock Asignado 📦"
+                            elif "covered call" in estr_lower or "cc" == estr_lower or "cc (" in estr_lower:
+                                role_class = "role-covered-call"
+                                role_text = "Covered Call (CC)"
+                            elif "put debit spread" in estr_lower or "pds" in estr_lower:
+                                role_class = "role-defensive"
+                                role_text = "Put Debit Spread (PDS)"
+                            elif "put credit spread" in estr_lower or "pcs" in estr_lower:
+                                if leg_side == "Sell":
+                                    role_class = "role-sell-put"
+                                    role_text = "PCS: Venta Put (Short)"
+                                else:
+                                    role_class = "role-buy-put-open"
+                                    role_text = "PCS: Compra Put (Protección)"
+                            elif "csp" in estr_lower or "cash secured put" in estr_lower:
+                                role_class = "role-sell-put"
+                                role_text = "CSP: Cash Secured Put"
+                            elif wheel_lower == "sell_put":
+                                role_class = "role-sell-put"
+                                role_text = "PCS: Venta Put (Short)"
+                            elif wheel_lower == "buy_put_open":
+                                role_class = "role-buy-put-open"
+                                role_text = "PCS: Compra Put (Protección)"
+                                
+                            badge_class = "badge-cerrada"
+                            if leg_state == "Abierta":
+                                badge_class = "badge-abierta"
+                            elif leg_state == "Asignada":
+                                badge_class = "badge-asignada"
+                                
+                            date_display = f"Apertura: {f_apertura_clean}"
+                            if leg_state == "Cerrada" and pd.notna(f_cierre) and str(f_cierre) != "nan" and f_cierre != "":
+                                date_display += f" &nbsp;|&nbsp; Cierre: {f_cierre_clean}"
+                            elif leg_state == "Asignada" and pd.notna(f_expiry) and str(f_expiry) != "nan":
+                                date_display += f" &nbsp;|&nbsp; Asignada el: {f_expiry_clean}"
+                            elif leg_state == "Abierta" and pd.notna(f_expiry) and str(f_expiry) != "nan" and f_expiry_clean != "2099-12-31" and leg_opt_type != "Stock":
+                                date_display += f" &nbsp;|&nbsp; Vence: {f_expiry_clean}"
+                                
+                            pnl_str = ""
+                            pnl_class = "pnl-neutral"
+                            
+                            if leg_state == "Cerrada" or leg_pnl != 0.0:
+                                if leg_pnl > 0:
+                                    pnl_str = f"+&#36;{leg_pnl:.2f}"
+                                    pnl_class = "pnl-positive"
+                                elif leg_pnl < 0:
+                                    pnl_str = f"-&#36;{abs(leg_pnl):.2f}"
+                                    pnl_class = "pnl-negative"
+                                else:
+                                    pnl_str = "&#36;0.00"
+                            elif leg_state == "Abierta":
+                                if leg_strategy != "Long Stock (Asignación)":
+                                    est_pnl = float(leg_prima) * 100 * float(leg_contratos)
+                                    if leg_side == "Sell":
+                                        pnl_str = f"+&#36;{est_pnl:.2f} (En juego)"
+                                        pnl_class = "pnl-neutral"
+                                    else:
+                                        pnl_str = f"-&#36;{abs(est_pnl):.2f} (Costo)"
+                                        pnl_class = "pnl-negative"
+                                else:
+                                    pnl_str = "Activa"
+                                    pnl_class = "pnl-neutral"
+                            else:
+                                pnl_str = "Ejercida"
+                                pnl_class = "pnl-neutral"
+                                
+                            fee_desc = f"Broker: {leg_broker} (&#36;{leg_comisiones:.2f} com.)" if leg_comisiones > 0 else f"Broker: {leg_broker} (Sin com.)"
+                            
+                            details_html = ""
+                            if leg_opt_type != "Stock":
+                                details_html = f"""
+                                <span class="detail-item">{leg_side} {leg_opt_type}</span>
+                                <span class="detail-item">Strike: &#36;{leg_strike:.2f}</span>
+                                <span class="detail-item">Contratos: {leg_contratos}</span>
+                                <span class="detail-item">Prima: &#36;{leg_prima:.2f}</span>
+                                """
+                            else:
+                                details_html = f"""
+                                <span class="detail-item">Compra Acciones</span>
+                                <span class="detail-item">Precio: &#36;{leg_strike:.2f}</span>
+                                <span class="detail-item">Acciones: {leg_contratos*100}</span>
+                                """
+                                
+                            notes_html = ""
+                            if pd.notna(leg_notes) and str(leg_notes).strip() != "" and str(leg_notes) != "nan":
+                                notes_html = f"""
+                                <div class="timeline-notes">
+                                    💬 {leg_notes}
+                                </div>
+                                """
+                                
+                            timeline_html += f"""
+                            <div class="timeline-item">
+                                <div class="timeline-badge {badge_class}" title="Estado: {leg_state}"></div>
+                                <div class="timeline-card">
+                                    <div class="timeline-header">
+                                        <span class="strategy-role-badge {role_class}">{role_text}</span>
+                                        <span class="timeline-date">{date_display}</span>
+                                    </div>
+                                    <div class="timeline-details">
+                                        {details_html}
+                                        <span class="detail-item" style="opacity: 0.8;">{fee_desc}</span>
+                                        <span style="flex-grow: 1;"></span>
+                                        <span class="timeline-pnl {pnl_class}">{pnl_str}</span>
+                                    </div>
+                                    {notes_html}
+                                </div>
+                            </div>
+                            """
+                        else:
+                            # Group of multiple legs (e.g. PCS, PDS)
+                            # Sort group legs by Strike descending
+                            legs_sorted = sorted(legs, key=lambda x: float(x.get("Strike", 0.0)) if pd.notna(x.get("Strike")) else 0.0, reverse=True)
+                            
+                            first_leg = legs_sorted[0]
+                            leg_strategy = first_leg.get("Estrategia", "Otro")
+                            leg_broker = first_leg.get("Broker", "IB")
+                            
+                            # Determine group state
+                            states = [r.get("Estado", "Cerrada") for r in legs_sorted]
+                            if "Abierta" in states:
+                                leg_state = "Abierta"
+                                badge_class = "badge-abierta"
+                            elif "Asignada" in states:
+                                leg_state = "Asignada"
+                                badge_class = "badge-asignada"
+                            else:
+                                leg_state = "Cerrada"
+                                badge_class = "badge-cerrada"
+                                
+                            # Dates
+                            aperturas = [r["FechaApertura"] for r in legs_sorted if pd.notna(r.get("FechaApertura"))]
+                            cierres = [r.get("FechaCierre") for r in legs_sorted if pd.notna(r.get("FechaCierre"))]
+                            expiries = [r.get("Expiry") for r in legs_sorted if pd.notna(r.get("Expiry"))]
+                            
+                            f_ap_min = min(aperturas) if aperturas else None
+                            f_cl_max = max(cierres) if cierres else None
+                            f_ex_max = max(expiries) if expiries else None
+                            
+                            f_ap_clean = str(f_ap_min).split(" ")[0] if f_ap_min else ""
+                            f_cl_clean = str(f_cl_max).split(" ")[0] if f_cl_max else ""
+                            f_ex_clean = str(f_ex_max).split(" ")[0] if f_ex_max else ""
+                            
+                            date_display = f"Apertura: {f_ap_clean}"
+                            if leg_state == "Cerrada" and f_cl_clean:
+                                date_display += f" &nbsp;|&nbsp; Cierre: {f_cl_clean}"
+                            elif leg_state == "Asignada" and f_ex_clean:
+                                date_display += f" &nbsp;|&nbsp; Asignada el: {f_ex_clean}"
+                            elif leg_state == "Abierta" and f_ex_clean and f_ex_clean != "2099-12-31":
+                                date_display += f" &nbsp;|&nbsp; Vence: {f_ex_clean}"
+                                
+                            # Role and style
+                            role_class = "role-generic"
+                            role_text = leg_strategy
+                            
+                            estr_lower = str(leg_strategy).lower()
+                            if "put debit spread" in estr_lower or "pds" in estr_lower:
+                                role_class = "role-defensive"
+                                role_text = "Put Debit Spread (PDS) 🛡️"
+                            elif "put credit spread" in estr_lower or "pcs" in estr_lower:
+                                role_class = "role-sell-put"
+                                role_text = "PCS: Put Credit Spread"
+                            elif "covered call" in estr_lower or "cc" == estr_lower:
+                                role_class = "role-covered-call"
+                                role_text = "Covered Call Spread"
+                            elif "iron condor" in estr_lower:
+                                role_class = "role-defensive"
+                                role_text = "Iron Condor"
+                                
+                            # PnL
+                            total_pnl = sum(float(r.get("PnL_USD_Realizado", 0.0)) for r in legs_sorted if pd.notna(r.get("PnL_USD_Realizado")))
+                            total_comisiones = sum(float(r.get("Comisiones", 0.0)) for r in legs_sorted if pd.notna(r.get("Comisiones")))
+                            
+                            pnl_str = ""
+                            pnl_class = "pnl-neutral"
+                            
+                            if leg_state == "Cerrada" or total_pnl != 0.0:
+                                if total_pnl > 0:
+                                    pnl_str = f"+&#36;{total_pnl:.2f}"
+                                    pnl_class = "pnl-positive"
+                                elif total_pnl < 0:
+                                    pnl_str = f"-&#36;{abs(total_pnl):.2f}"
+                                    pnl_class = "pnl-negative"
+                                else:
+                                    pnl_str = "&#36;0.00"
+                            elif leg_state == "Abierta":
+                                # Calculate net credit/debit received
+                                net_pnl = 0.0
+                                for r in legs_sorted:
+                                    contracts = int(r.get("Contratos", 1)) if pd.notna(r.get("Contratos")) else 1
+                                    prima = float(r.get("PrimaRecibida", 0.0)) if pd.notna(r.get("PrimaRecibida")) else 0.0
+                                    side = r.get("Side", "Sell")
+                                    val = prima * 100 * contracts
+                                    if side == "Sell":
+                                        net_pnl += val
+                                    else:
+                                        net_pnl -= val
+                                if net_pnl >= 0:
+                                    pnl_str = f"+&#36;{net_pnl:.2f} (Crédito)"
+                                    pnl_class = "pnl-neutral"
+                                else:
+                                    pnl_str = f"-&#36;{abs(net_pnl):.2f} (Costo)"
+                                    pnl_class = "pnl-negative"
+                            else:
+                                pnl_str = "Ejercida"
+                                pnl_class = "pnl-neutral"
+                                
+                            fee_desc = f"Broker: {leg_broker} (&#36;{total_comisiones:.2f} com.)" if total_comisiones > 0 else f"Broker: {leg_broker} (Sin com.)"
+                            
+                            # Construct details HTML for all legs in group
+                            details_html = ""
+                            for r_leg in legs_sorted:
+                                side = r_leg.get("Side", "")
+                                opt_type = r_leg.get("OptionType", "")
+                                strike = float(r_leg.get("Strike", 0.0)) if pd.notna(r_leg.get("Strike")) else 0.0
+                                l_state = r_leg.get("Estado", "Cerrada")
+                                
+                                state_icon = "✅" if l_state == "Cerrada" else "⏳" if l_state == "Abierta" else "📦"
+                                details_html += f'<span class="detail-item">{side} {opt_type} Strike: &#36;{strike:.2f} {state_icon}</span> '
+                                
+                            contratos_shared = int(legs_sorted[0].get("Contratos", 1)) if pd.notna(legs_sorted[0].get("Contratos")) else 1
+                            details_html += f'<span class="detail-item">Contratos: {contratos_shared}</span>'
+                            
+                            # Concatenate notes
+                            notes_list = [str(r.get("Notas")).strip() for r in legs_sorted if pd.notna(r.get("Notas")) and str(r.get("Notas")).strip() != "" and str(r.get("Notas")) != "nan"]
+                            unique_notes = []
+                            for n in notes_list:
+                                if n not in unique_notes:
+                                    unique_notes.append(n)
+                            
+                            notes_html = ""
+                            if unique_notes:
+                                combined_notes_str = " | ".join(unique_notes)
+                                notes_html = f"""
+                                <div class="timeline-notes">
+                                    💬 {combined_notes_str}
+                                </div>
+                                """
+                                
+                            timeline_html += f"""
+                            <div class="timeline-item">
+                                <div class="timeline-badge {badge_class}" title="Estado: {leg_state}"></div>
+                                <div class="timeline-card">
+                                    <div class="timeline-header">
+                                        <span class="strategy-role-badge {role_class}">{role_text}</span>
+                                        <span class="timeline-date">{date_display}</span>
+                                    </div>
+                                    <div class="timeline-details">
+                                        {details_html}
+                                        <span class="detail-item" style="opacity: 0.8;">{fee_desc}</span>
+                                        <span style="flex-grow: 1;"></span>
+                                        <span class="timeline-pnl {pnl_class}">{pnl_str}</span>
+                                    </div>
+                                    {notes_html}
+                                </div>
+                            </div>
+                            """
+                    
+                    timeline_html += '</div>'
+                    
+                    full_html = f"""
+                    <style>
+                    .timeline-container {{
+                        padding: 10px 0;
+                        font-family: 'Outfit', 'Inter', -apple-system, sans-serif;
+                    }}
+                    .timeline-item {{
+                        position: relative;
+                        padding-left: 30px;
+                        margin-bottom: 20px;
+                    }}
+                    .timeline-item::before {{
+                        content: '';
+                        position: absolute;
+                        left: 8px;
+                        top: 5px;
+                        width: 2px;
+                        height: calc(100% + 20px);
+                        background: #30363d;
+                    }}
+                    .timeline-item:last-child::before {{
+                        display: none;
+                    }}
+                    .timeline-badge {{
+                        position: absolute;
+                        left: 0;
+                        top: 5px;
+                        width: 18px;
+                        height: 18px;
+                        border-radius: 50%;
+                        border: 3px solid #0d1117;
+                        z-index: 2;
+                    }}
+                    .badge-abierta {{
+                        background: #00ffa2 !important;
+                        box-shadow: 0 0 10px #00ffa2;
+                    }}
+                    .badge-cerrada {{
+                        background: #00d2ff !important;
+                        box-shadow: 0 0 8px #00d2ff;
+                    }}
+                    .badge-asignada {{
+                        background: #f39c12 !important;
+                        box-shadow: 0 0 8px #f39c12;
+                    }}
+                    .timeline-card {{
+                        background: rgba(22, 27, 34, 0.6);
+                        border: 1px solid #30363d;
+                        border-radius: 8px;
+                        padding: 12px 16px;
+                        transition: all 0.2s ease-in-out;
+                    }}
+                    .timeline-card:hover {{
+                        background: rgba(30, 41, 59, 0.8);
+                        border-color: #00ffa2;
+                        transform: translateX(3px);
+                    }}
+                    .timeline-header {{
+                        display: flex;
+                        justify-content: space-between;
+                        align-items: center;
+                        margin-bottom: 6px;
+                    }}
+                    .strategy-role-badge {{
+                        font-size: 11px;
+                        font-weight: bold;
+                        padding: 2px 8px;
+                        border-radius: 12px;
+                        text-transform: uppercase;
+                    }}
+                    .role-sell-put {{ background: rgba(0, 255, 162, 0.1); color: #00ffa2; border: 1px solid rgba(0, 255, 162, 0.2); }}
+                    .role-buy-put-open {{ background: rgba(231, 76, 60, 0.1); color: #e74c3c; border: 1px solid rgba(231, 76, 60, 0.2); }}
+                    .role-covered-call {{ background: rgba(58, 134, 200, 0.1); color: #3a86c8; border: 1px solid rgba(58, 134, 200, 0.2); }}
+                    .role-defensive {{ background: rgba(155, 89, 182, 0.1); color: #9b59b6; border: 1px solid rgba(155, 89, 182, 0.2); }}
+                    .role-stock {{ background: rgba(243, 156, 18, 0.1); color: #f39c12; border: 1px solid rgba(243, 156, 18, 0.2); }}
+                    .role-generic {{ background: rgba(149, 165, 166, 0.1); color: #95a5a6; border: 1px solid rgba(149, 165, 166, 0.2); }}
+
+                    .timeline-date {{
+                        font-size: 11px;
+                        color: #8b949e;
+                    }}
+                    .timeline-details {{
+                        display: flex;
+                        align-items: center;
+                        font-size: 13px;
+                        color: #c9d1d9;
+                        margin-bottom: 6px;
+                        flex-wrap: wrap;
+                        gap: 12px;
+                    }}
+                    .detail-item {{
+                        background: rgba(255, 255, 255, 0.04);
+                        padding: 1px 6px;
+                        border-radius: 4px;
+                        font-family: monospace;
+                    }}
+                    .timeline-pnl {{
+                        font-size: 13px;
+                        font-weight: bold;
+                    }}
+                    .pnl-positive {{ color: #2ecc71; }}
+                    .pnl-negative {{ color: #e74c3c; }}
+                    .pnl-neutral {{ color: #8b949e; }}
+                    .timeline-notes {{
+                        font-size: 12px;
+                        color: #8b949e;
+                        font-style: italic;
+                        border-top: 1px solid rgba(255, 255, 255, 0.05);
+                        padding-top: 6px;
+                        margin-top: 6px;
+                    }}
+                    </style>
+                    {timeline_html}
+                    """
+                    clean_html = "\n".join(line.strip() for line in full_html.split("\n"))
+                    st.markdown(clean_html, unsafe_allow_html=True)
 
                 st.divider()
 
@@ -1579,7 +2182,8 @@ def render_active_portfolio(df):
                                 "MaxProfitUSD": cc_prima_val * contratos_st * 100,
                                 "ProfitPct": 0.0, "PnL_Capital_Pct": 0.0,
                                 "PrecioAccionCierre": 0.0, "PnL_USD_Realizado": 0.0,
-                                "Comisiones": contratos_st * 0.65,
+                                "Comisiones": 0.0 if stock_row.get("Broker", "IB") == "Tradier" else (contratos_st * 0.65),
+                                "Broker": stock_row.get("Broker", "IB"),
                                 "EarningsDate": stock_row.get("EarningsDate", pd.NA),
                                 "DividendosDate": stock_row.get("DividendosDate", pd.NA),
                                 "WheelParentChainID": stock_chain,
@@ -1691,6 +2295,54 @@ def render_active_portfolio(df):
                             st.rerun()
 
                     st.caption("💡 Para añadir otro Covered Call tras el vencimiento, usa el botón ⌛ de arriba.")
+
+                # --- Notas Independientes (Stock & Covered Call) ---
+                st.markdown("#### 📝 Notas de la Campaña (Edición Directa)")
+                
+                # Definir columnas para notas side-by-side
+                if tiene_cc:
+                    col_note_st, col_note_cc = st.columns(2)
+                else:
+                    col_note_st = st.container()
+                
+                # Editor de Notas del Stock
+                with col_note_st:
+                    st.markdown("**Stock**")
+                    current_stock_notes = str(stock_row.get("Notas", ""))
+                    n_stock_input = st.text_area(
+                        "Notas de las Acciones", 
+                        value=current_stock_notes, 
+                        key=f"notes_stock_{stock_id}",
+                        label_visibility="collapsed"
+                    )
+                    if st.button("💾 Guardar Notas Stock", key=f"btn_save_notes_stock_{stock_id}"):
+                        stock_real_idx = st.session_state.df.index[st.session_state.df["ID"] == stock_id][0]
+                        st.session_state.df.at[stock_real_idx, "Notas"] = n_stock_input
+                        st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+                        st.success("Notas de las acciones guardadas.")
+                        st.rerun()
+                
+                # Editor de Notas del Covered Call activo
+                if tiene_cc:
+                    with col_note_cc:
+                        st.markdown("**Covered Call Activo**")
+                        cc_linked = df[df["ChainID"] == cc_chain_id]
+                        if not cc_linked.empty:
+                            cc_leg = cc_linked.iloc[0]
+                            cc_id = cc_leg["ID"]
+                            current_cc_notes = str(cc_leg.get("Notas", ""))
+                            n_cc_input = st.text_area(
+                                "Notas del CC", 
+                                value=current_cc_notes, 
+                                key=f"notes_cc_{cc_id}",
+                                label_visibility="collapsed"
+                            )
+                            if st.button("💾 Guardar Notas CC", key=f"btn_save_notes_cc_{cc_id}"):
+                                cc_real_idx = st.session_state.df.index[st.session_state.df["ID"] == cc_id][0]
+                                st.session_state.df.at[cc_real_idx, "Notas"] = n_cc_input
+                                st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+                                st.success("Notas del Covered Call guardadas.")
+                                st.rerun()
 
                 # --- Cerrar la posición de acciones ---
                 st.divider()
@@ -1883,7 +2535,9 @@ def render_active_portfolio(df):
                     if r.get("Side", "Sell") == "Sell" and total_close_cost <= 0.05:
                         pass
                     else:
-                        comisiones_cierre += qty_to_close * 0.65
+                        r_broker = r.get("Broker", "IB")
+                        fee_rate = 0.0 if r_broker == "Tradier" else 0.65
+                        comisiones_cierre += qty_to_close * fee_rate
                 comisiones_totales = comisiones_apertura + comisiones_cierre
 
                 # Cálculo de PnL usando la función centralizada
@@ -1934,7 +2588,9 @@ def render_active_portfolio(df):
                             new_closed_row["PrecioAccionCierre"] = stock_price
                             
                             # Asignar COSTO, PNL y ProfitPct solo a la primera pata para no duplicar
-                            new_closed_row["Comisiones"] = (float(row.get("Comisiones", 0.0)) / qty_total * qty_to_close) + (qty_to_close * 0.65 if not (row.get("Side", "Sell") == "Sell" and total_close_cost <= 0.05) else 0.0)
+                            r_broker = row.get("Broker", "IB")
+                            fee_rate = 0.0 if r_broker == "Tradier" else 0.65
+                            new_closed_row["Comisiones"] = (float(row.get("Comisiones", 0.0)) / qty_total * qty_to_close) + (qty_to_close * fee_rate if not (row.get("Side", "Sell") == "Sell" and total_close_cost <= 0.05) else 0.0)
                             if row["ID"] == target_group.iloc[0]["ID"]:
                                 new_closed_row["CostoCierre"] = total_close_cost
                                 new_closed_row["PnL_USD_Realizado"] = manual_pnl
@@ -1954,7 +2610,9 @@ def render_active_portfolio(df):
                             df.at[real_idx, "Estado"] = "Cerrada"
                             df.at[real_idx, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             df.at[real_idx, "PrecioAccionCierre"] = stock_price
-                            df.at[real_idx, "Comisiones"] = float(row.get("Comisiones", 0.0)) + (qty_to_close * 0.65 if not (row.get("Side", "Sell") == "Sell" and total_close_cost <= 0.05) else 0.0)
+                            r_broker = row.get("Broker", "IB")
+                            fee_rate = 0.0 if r_broker == "Tradier" else 0.65
+                            df.at[real_idx, "Comisiones"] = float(row.get("Comisiones", 0.0)) + (qty_to_close * fee_rate if not (row.get("Side", "Sell") == "Sell" and total_close_cost <= 0.05) else 0.0)
                             if row["ID"] == target_group.iloc[0]["ID"]:
                                 df.at[real_idx, "CostoCierre"] = total_close_cost
                                 df.at[real_idx, "PnL_USD_Realizado"] = manual_pnl
@@ -2022,7 +2680,9 @@ def render_active_portfolio(df):
                         if l.get("Side", "Sell") == "Sell" and roll_close_cost <= 0.05:
                             pass
                         else:
-                            roll_comisiones_cierre += qty_roll * 0.65
+                            l_broker = l.get("Broker", "IB")
+                            fee_rate = 0.0 if l_broker == "Tradier" else 0.65
+                            roll_comisiones_cierre += qty_roll * fee_rate
                     roll_comisiones_totales = roll_comisiones_apertura + roll_comisiones_cierre
 
                     # Cálculo de PnL del cierre usando función centralizada
@@ -2067,7 +2727,7 @@ def render_active_portfolio(df):
                         new_legs_data.append({
                             "Side": leg["Side"], "Type": leg["OptionType"], "Strike": n_strike, "Delta": n_delta,
                             "Contratos": qty_new_roll, "Ticker": leg["Ticker"], "Estrategia": leg["Estrategia"],
-                            "OldID": leg["ID"]
+                            "OldID": leg["ID"], "Broker": leg.get("Broker", "IB")
                         })
                     
                     # ... [Lógica de Pre-cálculo BE insertada en pasos anteriores] ...
@@ -2096,7 +2756,9 @@ def render_active_portfolio(df):
                                 real_idx = df.index[df["ID"] == leg["ID"]][0]
                                 df.at[real_idx, "Estado"] = "Rolada"
                                 df.at[real_idx, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                df.at[real_idx, "Comisiones"] = float(leg.get("Comisiones", 0.0)) + (qty_roll * 0.65 if not (leg.get("Side", "Sell") == "Sell" and roll_close_cost <= 0.05) else 0.0)
+                                l_broker = leg.get("Broker", "IB")
+                                fee_rate = 0.0 if l_broker == "Tradier" else 0.65
+                                df.at[real_idx, "Comisiones"] = float(leg.get("Comisiones", 0.0)) + (qty_roll * fee_rate if not (leg.get("Side", "Sell") == "Sell" and roll_close_cost <= 0.05) else 0.0)
                                 if leg["ID"] == legs_to_roll[0]["ID"]:
                                     df.at[real_idx, "CostoCierre"] = roll_close_cost
                                     df.at[real_idx, "PnL_USD_Realizado"] = roll_pnl_manual
@@ -2130,7 +2792,8 @@ def render_active_portfolio(df):
                                     "UpdatedAt": datetime.now().isoformat(), "FechaCierre": pd.NA,
                                     "MaxProfitUSD": (p_recibida * n_leg["Contratos"] * 100), "ProfitPct": 0.0, "PnL_Capital_Pct": 0.0,
                                     "PrecioAccionCierre": 0.0, "PnL_USD_Realizado": 0.0,
-                                    "Comisiones": n_leg["Contratos"] * 0.65,
+                                    "Comisiones": n_leg["Contratos"] * (0.0 if n_leg["Broker"] == "Tradier" else 0.65),
+                                    "Broker": n_leg["Broker"],
                                     "EarningsDate": target_group.iloc[0].get("EarningsDate", pd.NA), # Mantener EarningsDate del original
                                     "DividendosDate": target_group.iloc[0].get("DividendosDate", pd.NA) # Mantener DividendosDate
                                 })
@@ -2382,9 +3045,10 @@ def render_active_portfolio(df):
                                 "ProfitPct": 0.0,
                                 "PnL_Capital_Pct": 0.0,
                                 "PrecioAccionCierre": 0.0,
-                                "PnL_USD_Realizado": 0.0,
-                                "Comisiones": 0.0,
-                                "EarningsDate": target_group.iloc[0].get("EarningsDate", pd.NA),
+                                                                "PnL_USD_Realizado": 0.0,
+                                                                "Comisiones": 0.0,
+                                                                "Broker": sell_put_leg.get("Broker", "IB"),
+                                                                "EarningsDate": target_group.iloc[0].get("EarningsDate", pd.NA),
                                 "DividendosDate": target_group.iloc[0].get("DividendosDate", pd.NA),
                                 "WheelParentChainID": target_chain,
                                 "CostBaseReal": costo_base_calc,
@@ -2461,6 +3125,7 @@ def render_active_portfolio(df):
                             "UpdatedAt": datetime.now().isoformat(), "FechaCierre": pd.NA,
                             "MaxProfitUSD": 0.0, "ProfitPct": 0.0, "PnL_Capital_Pct": 0.0,
                             "PrecioAccionCierre": 0.0, "PnL_USD_Realizado": 0.0, "Comisiones": 0.0,
+                            "Broker": assign_leg.get("Broker", "IB"),
                             "EarningsDate": assign_leg.get("EarningsDate", pd.NA), "DividendosDate": assign_leg.get("DividendosDate", pd.NA),
                             "WheelParentChainID": target_chain, "CostBaseReal": cost_base_gen,
                             "CoveredCallChainID": pd.NA, "CoveredCallPrima": 0.0, "WheelLeg": "long_stock",
@@ -2490,7 +3155,7 @@ def render_express_0dte():
         "CSP (Cash Secured Put)", "Long Call", "Long Put"
     ]
     
-    col_t, col_e, col_c = st.columns([1, 2, 1])
+    col_t, col_e, col_c, col_b = st.columns([1, 2, 1, 1])
     
     default_ticker = dup_defaults.get("ticker", "SPX") if dup_defaults else "SPX"
     default_strat_idx = express_strategies.index(dup_defaults.get("estrategia")) if dup_defaults and dup_defaults.get("estrategia") in express_strategies else 0
@@ -2499,14 +3164,19 @@ def render_express_0dte():
     ticker_exp = col_t.text_input("Ticker", value=default_ticker, key="exp_ticker").upper()
     estrategia_exp = col_e.selectbox("Estrategia", express_strategies, index=default_strat_idx, key="exp_estrategia")
     contratos_exp = col_c.number_input("Contratos", min_value=1, value=default_contratos, key="exp_contratos")
+    broker_exp = col_b.selectbox("Broker", ["IB", "Tradier"], key="exp_broker")
     
     # La fecha de apertura y vencimiento son HOY (0DTE)
     hoy = date.today()
-    col_p, col_bp = st.columns(2)
+    col_p, col_bp, col_fee = st.columns(3)
     default_prima = float(dup_defaults.get("prima", 0.0)) if dup_defaults else 0.0
     default_bp = float(dup_defaults.get("buying_power", 0.0)) if dup_defaults else 0.0
+    
+    default_comision_exp = 0.0 if broker_exp == "Tradier" else (contratos_exp * 0.65)
+    
     prima_exp = col_p.number_input("💰 Prima recibida ($/acción)", value=default_prima, step=0.01, key="exp_prima")
     bp_exp = col_bp.number_input("🏦 Capital Reservado ($)", value=default_bp, step=100.0, key="exp_bp", help="Buying Power que reserva tu broker")
+    comision_exp = col_fee.number_input("Comisiones ($)", value=float(default_comision_exp), step=0.05, key="exp_comision", help="Comisiones por pata de la estrategia.")
     
     # --- Cierre (opcional, si ya cerró la operación) ---
     st.markdown("---")
@@ -2541,8 +3211,15 @@ def render_express_0dte():
         fecha_cierre_str = pd.NA
         
         if ya_cerro:
+            total_legs_count = len(leg_defs)
+            total_comisiones_exp = comision_exp * total_legs_count
             pnl_usd, profit_pct, _ = calculate_pnl_metrics(
-                prima_exp, cierre_exp, contratos_exp, estrategia_exp, bp_exp
+                prima_neta=prima_exp, 
+                costo_cierre_neto=cierre_exp, 
+                contracts=contratos_exp, 
+                strategy=estrategia_exp, 
+                bp=bp_exp,
+                comisiones_totales=total_comisiones_exp
             )
             estado_final = "Cerrada"
             fecha_cierre_str = fecha_cierre_exp.strftime("%Y-%m-%d")
@@ -2578,7 +3255,8 @@ def render_express_0dte():
                 "PnL_Capital_Pct": (pnl_usd / bp_exp * 100) if (bp_exp > 0 and i_leg == 0 and ya_cerro) else 0.0,
                 "PrecioAccionCierre": 0.0,
                 "PnL_USD_Realizado": pnl_usd if (i_leg == 0 and ya_cerro) else 0.0,
-                "Comisiones": contratos_exp * 0.65,
+                "Comisiones": comision_exp,
+                "Broker": broker_exp,
                 "EarningsDate": pd.NA,
                 "DividendosDate": pd.NA,
             })
@@ -2590,7 +3268,7 @@ def render_express_0dte():
         pnl_txt = f" | PnL: ${pnl_usd:,.2f}" if ya_cerro else ""
         st.toast(f"⚡ {ticker_exp} {estrategia_exp} registrada ({estado_txt}){pnl_txt}", icon="🚀")
         # Limpiar claves del formulario express
-        for _k in ["exp_ticker", "exp_prima", "exp_cierre", "exp_notas", "exp_bp", "exp_contratos", "exp_estrategia", "exp_cerrada", "exp_fecha_cierre"]:
+        for _k in ["exp_ticker", "exp_prima", "exp_cierre", "exp_notas", "exp_bp", "exp_contratos", "exp_estrategia", "exp_cerrada", "exp_fecha_cierre", "exp_broker", "exp_comision"]:
             if _k in st.session_state:
                 del st.session_state[_k]
         st.rerun()
@@ -2607,9 +3285,10 @@ def render_new_trade():
     with tab_completo:
     
         # === FASE 1: ¿Qué hiciste? (esencial) ===
-        c_top1, c_top2 = st.columns([1, 2])
+        c_top1, c_top2, c_top3 = st.columns([1, 2, 1])
         ticker = c_top1.text_input("Ticker", key="nt_ticker").upper()
         estrategia = c_top2.selectbox("Estrategia", ESTRATEGIAS, key="nt_estrategia")
+        broker = c_top3.selectbox("Broker", ["IB", "Tradier"], key="nt_broker")
         
         # Determinar patas según selección
         legs_count = 1
@@ -2704,10 +3383,15 @@ def render_new_trade():
                 fecha_apertura = c_ad2.date_input("📅 Fecha Apertura", value=date.today(), help="Cambia si registras la operación un día diferente.", key="f_apert")
                 user_tags = c_ad3.text_input("🏷️ Tags", placeholder="income, hedge", help="Etiquetas separadas por coma", key="tags_input")
                 
-                c_bp1, c_bp2, c_bp3 = st.columns(3)
+                c_bp1, c_bp2, c_bp3, c_bp4 = st.columns(4)
                 buy_pow = c_bp1.number_input("Capital Reservado ($)", value=0.0, step=100.0, help="Buying Power reservado por tu broker para esta posición.", key="bp_input")
-                earn_dt = c_bp2.date_input("📢 Fecha Earnings (Opcional)", value=None, help="Si hay resultados próximos, introduce la fecha para trackearlos.", key="earn_input")
-                div_dt = c_bp3.date_input("💰 Fecha Dividendos (Opcional)", value=None, help="Si hay dividendos próximos, introduce la fecha.", key="div_input")
+                
+                # Comisiones calculadas por defecto según broker
+                default_comision = 0.0 if st.session_state.get("nt_broker", "IB") == "Tradier" else (contratos * 0.65)
+                comision_val = c_bp2.number_input("Comisiones ($)", value=float(default_comision), step=0.05, key="nt_comision_val", help="Comisiones de apertura.")
+                
+                earn_dt = c_bp3.date_input("📢 Fecha Earnings (Opcional)", value=None, help="Si hay resultados próximos, introduce la fecha para trackearlos.", key="earn_input")
+                div_dt = c_bp4.date_input("💰 Fecha Dividendos (Opcional)", value=None, help="Si hay dividendos próximos, introduce la fecha.", key="div_input")
                 
                 if is_dual_be:
                     c_be1, c_be2, c_be3 = st.columns(3)
@@ -2765,7 +3449,8 @@ def render_new_trade():
                         "MaxProfitUSD": (total_premium * contratos * 100) if i_leg == 0 else 0.0,
                         "ProfitPct": 0.0, "PnL_Capital_Pct": 0.0,
                         "PrecioAccionCierre": 0.0, "PnL_USD_Realizado": 0.0,
-                        "Comisiones": contratos * 0.65,
+                        "Comisiones": comision_val,
+                        "Broker": broker,
                         "EarningsDate": earn_dt.strftime("%Y-%m-%d") if earn_dt else pd.NA,
                         "DividendosDate": div_dt.strftime("%Y-%m-%d") if div_dt else pd.NA
                     })
@@ -2775,7 +3460,7 @@ def render_new_trade():
                     st.session_state.df = pd.concat([st.session_state.df, new_df], ignore_index=True)
                     st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
                     _saved_ticker = ticker
-                    for _k in ["nt_ticker", "nt_premium", "nt_contratos", "nt_expiry", "nt_estrategia", "nt_delta2"]:
+                    for _k in ["nt_ticker", "nt_premium", "nt_contratos", "nt_expiry", "nt_estrategia", "nt_delta2", "nt_broker", "nt_comision_val"]:
                         if _k in st.session_state:
                             del st.session_state[_k]
                     st.toast(f"✅ {_saved_ticker} registrada correctamente.", icon="🎉")
@@ -3154,10 +3839,17 @@ def render_inline_edit(trade_id):
         n_strike = c4.number_input("Strike", value=float(row["Strike"]))
         n_delta = c5.number_input("Delta", value=float(row["Delta"]), step=0.01)
         
-        ce1, ce2, ce3 = st.columns(3)
+        ce1, ce2, ce3, ce4 = st.columns(4)
         n_setup = ce1.selectbox("Setup", SETUPS, index=SETUPS.index(row["Setup"]) if "Setup" in row and row["Setup"] in SETUPS else 0)
         n_estrategia = ce2.selectbox("Estrategia", ESTRATEGIAS, index=ESTRATEGIAS.index(row["Estrategia"]) if row["Estrategia"] in ESTRATEGIAS else 0)
         n_tags = ce3.text_input("Tags", value=str(row.get("Tags", "") or ""), help="Etiquetas separadas por coma")
+        
+        curr_broker = row.get("Broker", "IB")
+        if pd.isna(curr_broker) or curr_broker == "" or str(curr_broker) == "nan":
+            curr_broker = "IB"
+        broker_options = ["IB", "Tradier"]
+        broker_idx = broker_options.index(curr_broker) if curr_broker in broker_options else 0
+        n_broker = ce4.selectbox("Broker", broker_options, index=broker_idx)
         
         c6, c7, c8, c8_2, c8_3 = st.columns(5)
         n_prima = c6.number_input("Prima Neta (por acción)", value=float(row["PrimaRecibida"]))
@@ -3202,6 +3894,7 @@ def render_inline_edit(trade_id):
             st.session_state.df.at[idx, "Setup"] = n_setup
             st.session_state.df.at[idx, "Estrategia"] = n_estrategia
             st.session_state.df.at[idx, "Tags"] = n_tags.strip()
+            st.session_state.df.at[idx, "Broker"] = n_broker
             st.session_state.df.at[idx, "FechaApertura"] = pd.to_datetime(n_fecha_ap)
             st.session_state.df.at[idx, "Expiry"] = pd.to_datetime(n_expiry)
             st.session_state.df.at[idx, "FechaCierre"] = pd.to_datetime(n_fecha_cl) if n_estado != "Abierta" else pd.NA

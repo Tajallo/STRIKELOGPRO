@@ -927,6 +927,11 @@ def sync_active_portfolio_calendars(active_df):
     progress_bar.progress(100)
     status_text.empty()
     
+    # Limpiar las claves de session_state para forzar la recarga de los widgets con los nuevos datos
+    for k in list(st.session_state.keys()):
+        if k.startswith("earn_") or k.startswith("div_"):
+            del st.session_state[k]
+    
     if success_count > 0:
         st.session_state.df = JournalManager.save_with_backup(df_copy)
         msg = f"Sincronización completada. Se actualizaron {success_count} tickers: {', '.join(updated_tickers)}."
@@ -1438,6 +1443,24 @@ def render_active_portfolio(df):
                 # Sub-header visual con Tags (sin duplicar earnings)
                 tags_html = "".join([f"<span class='tag-pill'>{t.strip()}</span>" for t in tags if t.strip()])
                 st.markdown(f"{dit_display} &nbsp; {tags_html}", unsafe_allow_html=True)
+                
+                # Mostrar fechas de Earnings y Dividendos si existen
+                date_alerts = []
+                if earnings_date:
+                    days_to_earn = (earnings_date - date.today()).days
+                    if days_to_earn >= 0:
+                        date_alerts.append(f"📢 **Resultados:** {earnings_date} (en {days_to_earn}d)")
+                    else:
+                        date_alerts.append(f"📢 **Resultados:** {earnings_date} (hace {abs(days_to_earn)}d)")
+                if dividendos_date:
+                    days_to_div = (dividendos_date - date.today()).days
+                    if days_to_div >= 0:
+                        date_alerts.append(f"💰 **Ex-Dividendo:** {dividendos_date} (en {days_to_div}d)")
+                    else:
+                        date_alerts.append(f"💰 **Ex-Dividendo:** {dividendos_date} (hace {abs(days_to_div)}d)")
+                
+                if date_alerts:
+                    st.markdown("<div style='margin-top: 4px; font-size: 13px; color: #bdc3c7;'>" + " &nbsp;•&nbsp; ".join(date_alerts) + "</div>", unsafe_allow_html=True)
                 
                 st.markdown("---")
                 

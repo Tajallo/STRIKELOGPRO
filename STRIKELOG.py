@@ -43,7 +43,7 @@ ESTRATEGIAS = [
     "Put Credit Spread", "Call Credit Spread", 
     "Put Debit Spread", "Call Debit Spread",
     "Iron Condor", "Iron Fly",
-    "Butterfly", "Broken Wing Butterfly (BWB)",
+    "Butterfly", "Broken Wing Butterfly (BWB)", "Flyagonal",
     "Strangle", "Straddle",
     "Calendar", "Diagonal",
     "Ratio Spread", "Backspread", 
@@ -55,7 +55,10 @@ SIDES = ["Sell", "Buy"]
 OPTION_TYPES = ["Put", "Call", "Stock"]
 
 # Estrategias que tienen dos Break Even (zona de beneficio entre dos strikes)
-DUAL_BE_STRATEGIES = ["Iron Condor", "Iron Fly", "Strangle", "Straddle", "Butterfly", "Broken Wing Butterfly (BWB)"]
+DUAL_BE_STRATEGIES = ["Iron Condor", "Iron Fly", "Strangle", "Straddle", "Butterfly", "Broken Wing Butterfly (BWB)", "Flyagonal"]
+
+# Estrategias complejas que típicamente usan patas con vencimientos independientes
+MULTI_EXPIRY_STRATEGIES = ["Calendar", "Diagonal", "Flyagonal"]
 
 # Auto-populate de patas según estrategia (Side, OptionType por pata)
 LEG_DEFAULTS = {
@@ -69,6 +72,7 @@ LEG_DEFAULTS = {
     "Iron Fly": [("Sell", "Put"), ("Buy", "Put"), ("Sell", "Call"), ("Buy", "Call")],
     "Butterfly": [("Buy", "Call"), ("Sell", "Call"), ("Buy", "Call")],
     "Broken Wing Butterfly (BWB)": [("Buy", "Put"), ("Sell", "Put"), ("Buy", "Put")],
+    "Flyagonal": [("Buy", "Call"), ("Sell", "Call"), ("Sell", "Call"), ("Buy", "Call"), ("Sell", "Put"), ("Buy", "Put")],
     "Strangle": [("Sell", "Put"), ("Sell", "Call")],
     "Straddle": [("Sell", "Put"), ("Sell", "Call")],
     "Collar": [("Sell", "Call"), ("Buy", "Put")],
@@ -463,6 +467,23 @@ def suggest_breakeven(strategy, legs_data, total_premium):
         if strategy == "Long Call":
             return (main_strike + premium, 0.0)
         
+        # Flyagonal - BE aproximado (zona de beneficio entre short Put y short Call)
+        if strategy == "Flyagonal":
+            sell_put_strike = 0.0
+            sell_call_strike = 0.0
+            for leg in legs_data:
+                side = leg.get("Side", "")
+                opt_type = leg.get("Type", leg.get("OptionType", ""))
+                strike = float(leg.get("Strike", 0.0))
+                if side == "Sell":
+                    if opt_type == "Put":
+                        sell_put_strike = strike
+                    elif opt_type == "Call":
+                        sell_call_strike = strike
+            if sell_put_strike > 0 and sell_call_strike > 0:
+                return (sell_put_strike - premium, sell_call_strike + premium)
+            return (main_strike - premium, main_strike + premium)
+            
         # Calendar / Diagonal - BE aproximado basado en el strike vendido
         if strategy in ["Calendar", "Diagonal"]:
             for leg in legs_data:
@@ -1384,16 +1405,14 @@ def render_active_portfolio(df):
                             
                             st.caption(f"**Evolución del BE (último rol):** `{prev_be:.2f}` → `{curr_be:.2f}` ({icon_trend} {diff_be:+.2f})")
                 
-                st.markdown("###### 🦵 Patas de la Estrategia")
-                
                 # Tabla de Legs Custom para mejor alineación
-                leg_cols = st.columns([1.5, 1, 1.5, 1, 1.5, 1.5, 1])
-                fields = ["Lado", "Tipo", "Strike", "Cnt", "Delta", "Prima", "Edit"]
+                leg_cols = st.columns([1.5, 1, 1.2, 0.8, 1, 1.2, 1.8, 1])
+                fields = ["Lado", "Tipo", "Strike", "Cnt", "Delta", "Prima", "Venc.", "Edit"]
                 for i, f in enumerate(fields):
                     leg_cols[i].markdown(f"**{f}**")
                 
                 for _, leg in group.iterrows():
-                    l_c1, l_c2, l_c3, l_c4, l_c5, l_c6, l_c7 = st.columns([1.5, 1, 1.5, 1, 1.5, 1.5, 1])
+                    l_c1, l_c2, l_c3, l_c4, l_c5, l_c6, l_c7, l_c8 = st.columns([1.5, 1, 1.2, 0.8, 1, 1.2, 1.8, 1])
                     side_color = "#e74c3c" if leg["Side"] == "Sell" else "#27ae60"
                     l_c1.markdown(f"<span style='color:{side_color}; font-weight:bold;'>{leg['Side']}</span>", unsafe_allow_html=True)
                     l_c2.write(leg["OptionType"])
@@ -1401,7 +1420,14 @@ def render_active_portfolio(df):
                     l_c4.write(f"{int(leg.get('Contratos', 1))}")
                     l_c5.write(f"{leg.get('Delta', 0):.2f}")
                     l_c6.write(f"${leg.get('PrimaRecibida', 0):.2f}")
-                    if l_c7.button("✏️", key=f"edit_leg_{leg['ID']}"):
+                    
+                    try:
+                        exp_str = pd.to_datetime(leg["Expiry"]).strftime("%Y-%m-%d")
+                    except:
+                        exp_str = str(leg.get("Expiry", "-"))
+                    l_c7.write(exp_str)
+                    
+                    if l_c8.button("✏️", key=f"edit_leg_{leg['ID']}"):
                         st.session_state["edit_trade_id"] = leg["ID"]
                         st.rerun()
                 
@@ -1782,6 +1808,9 @@ def render_active_portfolio(df):
                             elif wheel_lower == "buy_put_open":
                                 role_class = "role-buy-put-open"
                                 role_text = "PCS: Compra Put (Protección)"
+                            elif "flyagonal" in estr_lower:
+                                role_class = "role-flyagonal"
+                                role_text = "Flyagonal 🦋"
                                 
                             badge_class = "badge-cerrada"
                             if leg_state == "Abierta":
@@ -1927,6 +1956,9 @@ def render_active_portfolio(df):
                             elif "iron condor" in estr_lower:
                                 role_class = "role-defensive"
                                 role_text = "Iron Condor"
+                            elif "flyagonal" in estr_lower:
+                                role_class = "role-flyagonal"
+                                role_text = "Flyagonal 🦋"
                                 
                             # PnL
                             total_pnl = sum(float(r.get("PnL_USD_Realizado", 0.0)) for r in legs_sorted if pd.notna(r.get("PnL_USD_Realizado")))
@@ -1975,9 +2007,14 @@ def render_active_portfolio(df):
                                 opt_type = r_leg.get("OptionType", "")
                                 strike = float(r_leg.get("Strike", 0.0)) if pd.notna(r_leg.get("Strike")) else 0.0
                                 l_state = r_leg.get("Estado", "Cerrada")
+                                leg_expiry = r_leg.get("Expiry", "")
                                 
+                                expiry_suffix = ""
+                                if pd.notna(leg_expiry) and leg_expiry:
+                                    expiry_suffix = f" ({str(leg_expiry).split(' ')[0]})"
+                                    
                                 state_icon = "✅" if l_state == "Cerrada" else "⏳" if l_state == "Abierta" else "📦"
-                                details_html += f'<span class="detail-item">{side} {opt_type} Strike: &#36;{strike:.2f} {state_icon}</span> '
+                                details_html += f'<span class="detail-item">{side} {opt_type} Strike: &#36;{strike:.2f}{expiry_suffix} {state_icon}</span> '
                                 
                             contratos_shared = int(legs_sorted[0].get("Contratos", 1)) if pd.notna(legs_sorted[0].get("Contratos")) else 1
                             details_html += f'<span class="detail-item">Contratos: {contratos_shared}</span>'
@@ -2094,6 +2131,7 @@ def render_active_portfolio(df):
                     .role-covered-call {{ background: rgba(58, 134, 200, 0.1); color: #3a86c8; border: 1px solid rgba(58, 134, 200, 0.2); }}
                     .role-defensive {{ background: rgba(155, 89, 182, 0.1); color: #9b59b6; border: 1px solid rgba(155, 89, 182, 0.2); }}
                     .role-stock {{ background: rgba(243, 156, 18, 0.1); color: #f39c12; border: 1px solid rgba(243, 156, 18, 0.2); }}
+                    .role-flyagonal {{ background: rgba(255, 0, 127, 0.1); color: #ff007f; border: 1px solid rgba(255, 0, 127, 0.2); }}
                     .role-generic {{ background: rgba(149, 165, 166, 0.1); color: #95a5a6; border: 1px solid rgba(149, 165, 166, 0.2); }}
 
                     .timeline-date {{
@@ -3314,8 +3352,19 @@ def render_new_trade():
         premium_help = "Precio NETO por acción de todas las patas combinadas." if legs_count > 1 else "Precio por acción (ej: 1.50)."
         total_premium = c_p1.number_input("Prima ($/acción)", value=0.0, step=0.01, help=premium_help, key="nt_premium")
         contratos = c_p2.number_input("Contratos", value=1, min_value=1, key="nt_contratos")
-        expiry = c_p3.date_input("📅 Vencimiento", key="nt_expiry")
+        
+        # Etiqueta adaptada para el vencimiento global
+        is_multi_exp = estrategia in MULTI_EXPIRY_STRATEGIES
+        expiry_label = "📅 Vence (Cercano)" if is_multi_exp else "📅 Vencimiento"
+        expiry = c_p3.date_input(expiry_label, key="nt_expiry")
         c_p4.markdown(f"<br><span style='font-size:16px;'>**{dir_label}**</span>", unsafe_allow_html=True)
+        
+        # Casilla opcional para vencimientos independientes
+        usar_vencimientos_distintos = st.checkbox(
+            "📅 Usar vencimientos independientes por pata",
+            value=is_multi_exp,
+            help="Permite definir fechas de vencimiento diferentes por pata (ej: estrategias de tiempo como Calendars, Diagonals o Flyagonals)."
+        )
         
         # === FASE 2: Strikes (el dato que realmente cambia por trade) ===
         st.markdown(f"#### ⚡ Strikes — {estrategia}")
@@ -3324,33 +3373,105 @@ def render_new_trade():
             legs_data = []
             
             if has_defaults and estrategia != "Custom / Other":
-                # --- MODO SIMPLIFICADO: Side/Type con badge de color ---
-                strike_cols = st.columns(legs_count)
-                for i in range(legs_count):
-                    def_side, def_type = leg_defaults[i]
-                    strike_cols[i].markdown(leg_color_label(def_side, def_type), unsafe_allow_html=True)
-                    l_strike = strike_cols[i].number_input(
-                        "Strike", 
-                        key=f"strike_{estrategia}_{i}",
-                        help=f"Pata {i+1}: {def_side} {def_type}"
-                    )
-                    legs_data.append({"Side": def_side, "Type": def_type, "Strike": l_strike, "Delta": 0.0})
-            else:
-                # --- MODO COMPLETO: para Custom / Other o estrategias sin defaults ---
-                for i in range(legs_count):
-                    default_side_idx = 0
-                    default_type_idx = 0
-                    if i < len(leg_defaults):
+                if usar_vencimientos_distintos:
+                    # --- MODO SIMPLIFICADO CON VENCIMIENTOS INDEPENDIENTES ---
+                    st.markdown("<div style='margin-bottom: 10px;'><b>Selecciona strikes y vencimientos individuales por pata:</b></div>", unsafe_allow_html=True)
+                    for i in range(legs_count):
                         def_side, def_type = leg_defaults[i]
-                        default_side_idx = SIDES.index(def_side) if def_side in SIDES else 0
-                        default_type_idx = OPTION_TYPES.index(def_type) if def_type in OPTION_TYPES else 0
-                    
-                    with st.expander(f"Pata {i+1}", expanded=True):
-                        c1, c2, c3 = st.columns(3)
-                        l_side = c1.selectbox(f"Side {i+1}", SIDES, index=default_side_idx, key=f"side_{estrategia}_{i}")
-                        l_type = c2.selectbox(f"Type {i+1}", OPTION_TYPES, index=default_type_idx, key=f"type_{estrategia}_{i}")
-                        l_strike = c3.number_input(f"Strike {i+1}", key=f"strike_{estrategia}_{i}")
-                        legs_data.append({"Side": l_side, "Type": l_type, "Strike": l_strike, "Delta": 0.0})
+                        
+                        # Flyagonal visual grouping
+                        if estrategia == "Flyagonal":
+                            if i == 0:
+                                st.markdown("🦋 **Mariposa de Calls (Calls Butterfly)**")
+                            elif i == 4:
+                                st.markdown("📉 **Put Diagonal Spread**")
+                                
+                        c_info, c_strike, c_exp = st.columns([2, 2, 3])
+                        
+                        c_info.markdown("<br>", unsafe_allow_html=True)
+                        c_info.markdown(leg_color_label(def_side, def_type), unsafe_allow_html=True)
+                        
+                        l_strike = c_strike.number_input(
+                            f"Strike Pata {i+1}", 
+                            value=0.0, step=0.5,
+                            key=f"strike_{estrategia}_{i}",
+                            help=f"Pata {i+1}: {def_side} {def_type}"
+                        )
+                        
+                        # Expiración por defecto
+                        default_date = expiry
+                        if estrategia == "Flyagonal" and i == 5:
+                            # La pata comprada del Diagonal de Puts suele ser a más largo plazo (calendarizado)
+                            default_date = expiry + timedelta(days=30)
+                        elif estrategia in ["Calendar", "Diagonal"] and i == 1:
+                            # La pata comprada de Calendar/Diagonal suele ser a más largo plazo
+                            default_date = expiry + timedelta(days=30)
+                            
+                        l_expiry = c_exp.date_input(
+                            f"Vence Pata {i+1}",
+                            value=default_date,
+                            key=f"expiry_{estrategia}_{i}"
+                        )
+                        
+                        legs_data.append({
+                            "Side": def_side, 
+                            "Type": def_type, 
+                            "Strike": l_strike, 
+                            "Expiry": l_expiry,
+                            "Delta": 0.0
+                        })
+                else:
+                    # --- MODO SIMPLIFICADO NORMAL: Side/Type con badge de color ---
+                    strike_cols = st.columns(legs_count)
+                    for i in range(legs_count):
+                        def_side, def_type = leg_defaults[i]
+                        strike_cols[i].markdown(leg_color_label(def_side, def_type), unsafe_allow_html=True)
+                        l_strike = strike_cols[i].number_input(
+                            "Strike", 
+                            key=f"strike_{estrategia}_{i}",
+                            help=f"Pata {i+1}: {def_side} {def_type}"
+                        )
+                        legs_data.append({"Side": def_side, "Type": def_type, "Strike": l_strike, "Delta": 0.0})
+            else:
+                if usar_vencimientos_distintos:
+                    # --- MODO COMPLETO CON VENCIMIENTOS INDEPENDIENTES ---
+                    for i in range(legs_count):
+                        default_side_idx = 0
+                        default_type_idx = 0
+                        if i < len(leg_defaults):
+                            def_side, def_type = leg_defaults[i]
+                            default_side_idx = SIDES.index(def_side) if def_side in SIDES else 0
+                            default_type_idx = OPTION_TYPES.index(def_type) if def_type in OPTION_TYPES else 0
+                        
+                        with st.expander(f"Pata {i+1}", expanded=True):
+                            c1, c2, c3, c4 = st.columns(4)
+                            l_side = c1.selectbox(f"Side {i+1}", SIDES, index=default_side_idx, key=f"side_{estrategia}_{i}")
+                            l_type = c2.selectbox(f"Type {i+1}", OPTION_TYPES, index=default_type_idx, key=f"type_{estrategia}_{i}")
+                            l_strike = c3.number_input(f"Strike {i+1}", key=f"strike_{estrategia}_{i}")
+                            l_expiry = c4.date_input(f"Vencimiento {i+1}", value=expiry, key=f"expiry_{estrategia}_{i}")
+                            legs_data.append({
+                                "Side": l_side, 
+                                "Type": l_type, 
+                                "Strike": l_strike, 
+                                "Expiry": l_expiry,
+                                "Delta": 0.0
+                            })
+                else:
+                    # --- MODO COMPLETO NORMAL: para Custom / Other o estrategias sin defaults ---
+                    for i in range(legs_count):
+                        default_side_idx = 0
+                        default_type_idx = 0
+                        if i < len(leg_defaults):
+                            def_side, def_type = leg_defaults[i]
+                            default_side_idx = SIDES.index(def_side) if def_side in SIDES else 0
+                            default_type_idx = OPTION_TYPES.index(def_type) if def_type in OPTION_TYPES else 0
+                        
+                        with st.expander(f"Pata {i+1}", expanded=True):
+                            c1, c2, c3 = st.columns(3)
+                            l_side = c1.selectbox(f"Side {i+1}", SIDES, index=default_side_idx, key=f"side_{estrategia}_{i}")
+                            l_type = c2.selectbox(f"Type {i+1}", OPTION_TYPES, index=default_type_idx, key=f"type_{estrategia}_{i}")
+                            l_strike = c3.number_input(f"Strike {i+1}", key=f"strike_{estrategia}_{i}")
+                            legs_data.append({"Side": l_side, "Type": l_type, "Strike": l_strike, "Delta": 0.0})
             
             # Delta global (1 solo input para la pata principal)
             main_side = legs_data[0]["Side"] if legs_data else "Sell"
@@ -3423,13 +3544,15 @@ def render_new_trade():
 
                 for i_leg, leg in enumerate(legs_final):
                     s_val = leg["Strike"] 
+                    # Usar vencimiento de la pata si se ha personalizado, si no usar el vencimiento base
+                    leg_expiry = leg.get("Expiry", expiry)
                     new_rows.append({
                         "ID": str(uuid4()),
                         "ChainID": chain_id,
                         "ParentID": pd.NA,
                         "Ticker": ticker,
                         "FechaApertura": fecha_apertura.strftime("%Y-%m-%d"),
-                        "Expiry": expiry.strftime("%Y-%m-%d"),
+                        "Expiry": leg_expiry.strftime("%Y-%m-%d") if isinstance(leg_expiry, (date, datetime)) else str(leg_expiry),
                         "Estrategia": estrategia,
                         "Setup": setup_val,
                         "Tags": user_tags,

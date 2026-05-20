@@ -1456,7 +1456,7 @@ def render_active_portfolio(df):
                          df.at[real_idx, "UpdatedAt"] = datetime.now().isoformat()
                     
                     st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
-                    st.success("📝 Notas y fechas guardadas correctamente.")
+                    st.toast("💾 Notas y fechas guardadas correctamente.", icon="✅")
                     st.rerun()
                     
                 # Acciones Rápidas

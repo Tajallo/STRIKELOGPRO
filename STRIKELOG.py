@@ -84,6 +84,21 @@ LEG_DEFAULTS = {
     "Backspread": [("Buy", "Put"), ("Sell", "Put")],
 }
 
+# Índices para cálculo de comisiones en Tradier
+INDICES = {"SPX", "NDX", "RUT", "VIX", "DJX", "XSP"}
+
+def get_fee_rate(broker: str, ticker: str) -> float:
+    """
+    Retorna la comisión por contrato según el broker y el subyacente (ticker).
+    Tradier cobra comisiones ($0.65) solo para índices.
+    IB cobra $0.65 para todo.
+    """
+    if not isinstance(ticker, str):
+        ticker = str(ticker)
+    if broker == "Tradier":
+        return 0.65 if ticker.upper() in INDICES else 0.0
+    return 0.65
+
 # ----------------------------
 # Gestión de Datos
 # ----------------------------
@@ -1620,7 +1635,7 @@ def render_active_portfolio(df):
                             pass
                         else:
                             r_broker = r.get("Broker", "IB")
-                            fee_rate = 0.0 if r_broker == "Tradier" else 0.65
+                            fee_rate = get_fee_rate(r_broker, r.get("Ticker", ""))
                             cierre_comisiones += int(r.get("Contratos", 1)) * fee_rate
                     q_comisiones += cierre_comisiones
 
@@ -2335,7 +2350,7 @@ def render_active_portfolio(df):
                                 "MaxProfitUSD": cc_prima_val * contratos_st * 100,
                                 "ProfitPct": 0.0, "PnL_Capital_Pct": 0.0,
                                 "PrecioAccionCierre": 0.0, "PnL_USD_Realizado": 0.0,
-                                "Comisiones": 0.0 if stock_row.get("Broker", "IB") == "Tradier" else (contratos_st * 0.65),
+                                "Comisiones": contratos_st * get_fee_rate(stock_row.get("Broker", "IB"), stock_ticker),
                                 "Broker": stock_row.get("Broker", "IB"),
                                 "EarningsDate": stock_row.get("EarningsDate", pd.NA),
                                 "DividendosDate": stock_row.get("DividendosDate", pd.NA),
@@ -2689,7 +2704,7 @@ def render_active_portfolio(df):
                         pass
                     else:
                         r_broker = r.get("Broker", "IB")
-                        fee_rate = 0.0 if r_broker == "Tradier" else 0.65
+                        fee_rate = get_fee_rate(r_broker, r.get("Ticker", ""))
                         comisiones_cierre += qty_to_close * fee_rate
                 comisiones_totales = comisiones_apertura + comisiones_cierre
 
@@ -2742,7 +2757,7 @@ def render_active_portfolio(df):
                             
                             # Asignar COSTO, PNL y ProfitPct solo a la primera pata para no duplicar
                             r_broker = row.get("Broker", "IB")
-                            fee_rate = 0.0 if r_broker == "Tradier" else 0.65
+                            fee_rate = get_fee_rate(r_broker, row.get("Ticker", ""))
                             new_closed_row["Comisiones"] = (float(row.get("Comisiones", 0.0)) / qty_total * qty_to_close) + (qty_to_close * fee_rate if not (row.get("Side", "Sell") == "Sell" and total_close_cost <= 0.05) else 0.0)
                             if row["ID"] == target_group.iloc[0]["ID"]:
                                 new_closed_row["CostoCierre"] = total_close_cost
@@ -2764,7 +2779,7 @@ def render_active_portfolio(df):
                             df.at[real_idx, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             df.at[real_idx, "PrecioAccionCierre"] = stock_price
                             r_broker = row.get("Broker", "IB")
-                            fee_rate = 0.0 if r_broker == "Tradier" else 0.65
+                            fee_rate = get_fee_rate(r_broker, row.get("Ticker", ""))
                             df.at[real_idx, "Comisiones"] = float(row.get("Comisiones", 0.0)) + (qty_to_close * fee_rate if not (row.get("Side", "Sell") == "Sell" and total_close_cost <= 0.05) else 0.0)
                             if row["ID"] == target_group.iloc[0]["ID"]:
                                 df.at[real_idx, "CostoCierre"] = total_close_cost
@@ -2834,7 +2849,7 @@ def render_active_portfolio(df):
                             pass
                         else:
                             l_broker = l.get("Broker", "IB")
-                            fee_rate = 0.0 if l_broker == "Tradier" else 0.65
+                            fee_rate = get_fee_rate(l_broker, l.get("Ticker", ""))
                             roll_comisiones_cierre += qty_roll * fee_rate
                     roll_comisiones_totales = roll_comisiones_apertura + roll_comisiones_cierre
 
@@ -2910,7 +2925,7 @@ def render_active_portfolio(df):
                                 df.at[real_idx, "Estado"] = "Rolada"
                                 df.at[real_idx, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                 l_broker = leg.get("Broker", "IB")
-                                fee_rate = 0.0 if l_broker == "Tradier" else 0.65
+                                fee_rate = get_fee_rate(l_broker, leg.get("Ticker", ""))
                                 df.at[real_idx, "Comisiones"] = float(leg.get("Comisiones", 0.0)) + (qty_roll * fee_rate if not (leg.get("Side", "Sell") == "Sell" and roll_close_cost <= 0.05) else 0.0)
                                 if leg["ID"] == legs_to_roll[0]["ID"]:
                                     df.at[real_idx, "CostoCierre"] = roll_close_cost
@@ -2945,7 +2960,7 @@ def render_active_portfolio(df):
                                     "UpdatedAt": datetime.now().isoformat(), "FechaCierre": pd.NA,
                                     "MaxProfitUSD": (p_recibida * n_leg["Contratos"] * 100), "ProfitPct": 0.0, "PnL_Capital_Pct": 0.0,
                                     "PrecioAccionCierre": 0.0, "PnL_USD_Realizado": 0.0,
-                                    "Comisiones": n_leg["Contratos"] * (0.0 if n_leg["Broker"] == "Tradier" else 0.65),
+                                    "Comisiones": n_leg["Contratos"] * get_fee_rate(n_leg["Broker"], n_leg["Ticker"]),
                                     "Broker": n_leg["Broker"],
                                     "EarningsDate": target_group.iloc[0].get("EarningsDate", pd.NA), # Mantener EarningsDate del original
                                     "DividendosDate": target_group.iloc[0].get("DividendosDate", pd.NA) # Mantener DividendosDate
@@ -3317,7 +3332,7 @@ def render_express_0dte():
     ticker_exp = col_t.text_input("Ticker", value=default_ticker, key="exp_ticker").upper()
     estrategia_exp = col_e.selectbox("Estrategia", express_strategies, index=default_strat_idx, key="exp_estrategia")
     contratos_exp = col_c.number_input("Contratos", min_value=1, value=default_contratos, key="exp_contratos")
-    broker_exp = col_b.selectbox("Broker", ["IB", "Tradier"], key="exp_broker")
+    broker_exp = col_b.selectbox("Broker", ["Tradier", "IB"], key="exp_broker")
     
     # La fecha de apertura y vencimiento son HOY (0DTE)
     hoy = date.today()
@@ -3325,11 +3340,11 @@ def render_express_0dte():
     default_prima = float(dup_defaults.get("prima", 0.0)) if dup_defaults else 0.0
     default_bp = float(dup_defaults.get("buying_power", 0.0)) if dup_defaults else 0.0
     
-    default_comision_exp = 0.0 if broker_exp == "Tradier" else (contratos_exp * 0.65)
+    default_comision_exp = contratos_exp * get_fee_rate(broker_exp, ticker_exp)
     
     prima_exp = col_p.number_input("💰 Prima recibida ($/acción)", value=default_prima, step=0.01, key="exp_prima")
     bp_exp = col_bp.number_input("🏦 Capital Reservado ($)", value=default_bp, step=100.0, key="exp_bp", help="Buying Power que reserva tu broker")
-    comision_exp = col_fee.number_input("Comisiones ($)", value=float(default_comision_exp), step=0.05, key="exp_comision", help="Comisiones por pata de la estrategia.")
+    comision_exp = col_fee.number_input("Comisiones ($)", value=float(default_comision_exp), step=0.05, key=f"exp_comision_{broker_exp}_{ticker_exp}", help="Comisiones por pata de la estrategia.")
     
     # --- Cierre (opcional, si ya cerró la operación) ---
     st.markdown("---")
@@ -3421,9 +3436,12 @@ def render_express_0dte():
         pnl_txt = f" | PnL: ${pnl_usd:,.2f}" if ya_cerro else ""
         st.toast(f"⚡ {ticker_exp} {estrategia_exp} registrada ({estado_txt}){pnl_txt}", icon="🚀")
         # Limpiar claves del formulario express
-        for _k in ["exp_ticker", "exp_prima", "exp_cierre", "exp_notas", "exp_bp", "exp_contratos", "exp_estrategia", "exp_cerrada", "exp_fecha_cierre", "exp_broker", "exp_comision"]:
+        for _k in ["exp_ticker", "exp_prima", "exp_cierre", "exp_notas", "exp_bp", "exp_contratos", "exp_estrategia", "exp_cerrada", "exp_fecha_cierre", "exp_broker"]:
             if _k in st.session_state:
                 del st.session_state[_k]
+        dynamic_exp_key = f"exp_comision_{broker_exp}_{ticker_exp}"
+        if dynamic_exp_key in st.session_state:
+            del st.session_state[dynamic_exp_key]
         st.rerun()
 
 
@@ -3441,7 +3459,7 @@ def render_new_trade():
         c_top1, c_top2, c_top3 = st.columns([1, 2, 1])
         ticker = c_top1.text_input("Ticker", key="nt_ticker").upper()
         estrategia = c_top2.selectbox("Estrategia", ESTRATEGIAS, key="nt_estrategia")
-        broker = c_top3.selectbox("Broker", ["IB", "Tradier"], key="nt_broker")
+        broker = c_top3.selectbox("Broker", ["Tradier", "IB"], key="nt_broker")
         
         # Determinar patas según selección
         legs_count = 1
@@ -3625,8 +3643,8 @@ def render_new_trade():
                 buy_pow = c_bp1.number_input("Capital Reservado ($)", value=0.0, step=100.0, help="Buying Power reservado por tu broker para esta posición.", key="bp_input")
                 
                 # Comisiones calculadas por defecto según broker
-                default_comision = 0.0 if st.session_state.get("nt_broker", "IB") == "Tradier" else (contratos * 0.65)
-                comision_val = c_bp2.number_input("Comisiones ($)", value=float(default_comision), step=0.05, key="nt_comision_val", help="Comisiones de apertura.")
+                default_comision = contratos * get_fee_rate(st.session_state.get("nt_broker", "IB"), ticker)
+                comision_val = c_bp2.number_input("Comisiones ($)", value=float(default_comision), step=0.05, key=f"nt_comision_val_{st.session_state.get('nt_broker', 'IB')}_{ticker}", help="Comisiones de apertura.")
                 
                 earn_dt = c_bp3.date_input("📢 Fecha Earnings (Opcional)", value=None, help="Si hay resultados próximos, introduce la fecha para trackearlos.", key="earn_input")
                 div_dt = c_bp4.date_input("💰 Fecha Dividendos (Opcional)", value=None, help="Si hay dividendos próximos, introduce la fecha.", key="div_input")
@@ -3700,9 +3718,12 @@ def render_new_trade():
                     st.session_state.df = pd.concat([st.session_state.df, new_df], ignore_index=True)
                     st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
                     _saved_ticker = ticker
-                    for _k in ["nt_ticker", "nt_premium", "nt_contratos", "nt_expiry", "nt_estrategia", "nt_delta2", "nt_broker", "nt_comision_val"]:
+                    for _k in ["nt_ticker", "nt_premium", "nt_contratos", "nt_expiry", "nt_estrategia", "nt_delta2", "nt_broker"]:
                         if _k in st.session_state:
                             del st.session_state[_k]
+                    dynamic_nt_key = f"nt_comision_val_{st.session_state.get('nt_broker', 'IB')}_{ticker}"
+                    if dynamic_nt_key in st.session_state:
+                        del st.session_state[dynamic_nt_key]
                     st.toast(f"✅ {_saved_ticker} registrada correctamente.", icon="🎉")
                     st.rerun()
         

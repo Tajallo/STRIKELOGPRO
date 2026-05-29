@@ -158,7 +158,7 @@ class JournalManager:
                 continue
             if r.get("WheelLeg") == "buy_put_open":
                 continue
-            if r["Estrategia"] in ["CSP (Cash Secured Put)", "CSP", "Long Stock (Asignación)", "Long Stock"]:
+            if r["Estrategia"] in ["Long Stock (Asignación)", "Long Stock"]:
                 continue
                 
             estr_lower = str(r.get("Estrategia", "")).lower()
@@ -1765,7 +1765,7 @@ def render_active_portfolio(df):
                     continue
                 if r.get("WheelLeg") == "buy_put_open":
                     continue
-                if r["Estrategia"] in ["CSP (Cash Secured Put)", "CSP", "Long Stock (Asignación)", "Long Stock"]:
+                if r["Estrategia"] in ["Long Stock (Asignación)", "Long Stock"]:
                     continue
                     
                 estr_lower = str(r.get("Estrategia", "")).lower()
@@ -3501,6 +3501,37 @@ def render_new_trade():
             help="Permite definir fechas de vencimiento diferentes por pata (ej: estrategias de tiempo como Calendars, Diagonals o Flyagonals)."
         )
         
+        # Vincular a la Rueda si hay ciclos abiertos
+        wheel_options = ["Ninguno (Operación independiente)"]
+        wheel_chains = [None]
+        active_wheels_count = 0
+        
+        if ticker and not st.session_state.df.empty:
+            active_wheels = st.session_state.df[
+                (st.session_state.df["Estrategia"] == "Long Stock (Asignación)") &
+                (st.session_state.df["Estado"] == "Abierta") &
+                (st.session_state.df["Ticker"] == ticker)
+            ]
+            active_wheels_count = len(active_wheels)
+            for _, w_row in active_wheels.iterrows():
+                w_strike = float(w_row.get("Strike", 0.0))
+                w_be = float(w_row.get("BreakEven", 0.0))
+                w_chain = w_row.get("ChainID")
+                w_shares = int(w_row.get("Contratos", 1)) * 100
+                wheel_options.append(f"🎡 Rueda: {w_shares} acciones @ ${w_strike:.2f} (BE: ${w_be:.2f}) [ID: {w_chain}]")
+                wheel_chains.append(w_chain)
+
+        selected_chain_id = None
+        if active_wheels_count > 0:
+            selected_wheel_idx = st.selectbox(
+                "🎡 Vincular a Ciclo de La Rueda activo",
+                options=range(len(wheel_options)),
+                format_func=lambda x: wheel_options[x],
+                key="nt_wheel_link",
+                help="Selecciona un ciclo de la rueda abierto para vincular esta operación a él. Las primas y comisiones de esta operación se contabilizarán en el costo base de esa rueda."
+            )
+            selected_chain_id = wheel_chains[selected_wheel_idx]
+        
         # === FASE 2: Strikes (el dato que realmente cambia por trade) ===
         st.markdown(f"#### ⚡ Strikes — {estrategia}")
         
@@ -3677,6 +3708,17 @@ def render_new_trade():
                 
                 legs_final = legs_data
 
+                stock_id = pd.NA
+                wheel_leg_val = pd.NA
+                if selected_chain_id:
+                    # Buscamos la fila de acciones para este ChainID
+                    stock_rows = st.session_state.df[st.session_state.df["ChainID"] == selected_chain_id]
+                    if not stock_rows.empty:
+                        stock_row = stock_rows.iloc[0]
+                        stock_id = stock_row["ID"]
+                        if estrategia == "CC (Covered Call)":
+                            wheel_leg_val = "covered_call"
+
                 for i_leg, leg in enumerate(legs_final):
                     s_val = leg["Strike"] 
                     # Usar vencimiento de la pata si se ha personalizado, si no usar el vencimiento base
@@ -3684,7 +3726,7 @@ def render_new_trade():
                     new_rows.append({
                         "ID": str(uuid4()),
                         "ChainID": chain_id,
-                        "ParentID": pd.NA,
+                        "ParentID": stock_id if selected_chain_id else pd.NA,
                         "Ticker": ticker,
                         "FechaApertura": fecha_apertura.strftime("%Y-%m-%d"),
                         "Expiry": leg_expiry.strftime("%Y-%m-%d") if isinstance(leg_expiry, (date, datetime)) else str(leg_expiry),
@@ -3710,12 +3752,26 @@ def render_new_trade():
                         "Comisiones": comision_val,
                         "Broker": broker,
                         "EarningsDate": earn_dt.strftime("%Y-%m-%d") if earn_dt else pd.NA,
-                        "DividendosDate": div_dt.strftime("%Y-%m-%d") if div_dt else pd.NA
+                        "DividendosDate": div_dt.strftime("%Y-%m-%d") if div_dt else pd.NA,
+                        "WheelParentChainID": selected_chain_id if selected_chain_id else pd.NA,
+                        "WheelLeg": wheel_leg_val if selected_chain_id else pd.NA,
+                        "CostBaseReal": 0.0,
+                        "CoveredCallChainID": pd.NA,
+                        "CoveredCallPrima": 0.0
                     })
                 
                 if new_rows:
                     new_df = pd.DataFrame(new_rows)
                     st.session_state.df = pd.concat([st.session_state.df, new_df], ignore_index=True)
+                    
+                    # --- ACTUALIZACIÓN DE LA POSICIÓN DE ACCIONES (si corresponde) ---
+                    if selected_chain_id:
+                        stock_real_idx = st.session_state.df.index[st.session_state.df["ChainID"] == selected_chain_id][0]
+                        if estrategia == "CC (Covered Call)":
+                            st.session_state.df.at[stock_real_idx, "CoveredCallChainID"] = chain_id
+                            cc_prima_acum = float(st.session_state.df.at[stock_real_idx, "CoveredCallPrima"] or 0)
+                            st.session_state.df.at[stock_real_idx, "CoveredCallPrima"] = cc_prima_acum + total_premium
+                            
                     st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
                     _saved_ticker = ticker
                     for _k in ["nt_ticker", "nt_premium", "nt_contratos", "nt_expiry", "nt_estrategia", "nt_delta2", "nt_broker"]:

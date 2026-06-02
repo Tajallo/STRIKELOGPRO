@@ -2684,124 +2684,149 @@ def render_active_portfolio(df):
                 manage_dit = (date.today() - manage_apertura).days
                 st.caption(f"⏱️ Posición abierta hace **{manage_dit} días** (desde {manage_apertura})")
                 
-                c1, c2, c3 = st.columns(3)
-                qty_to_close = c1.number_input("Contratos", min_value=1, max_value=int(target_group.iloc[0]["Contratos"]), value=int(target_group.iloc[0]["Contratos"]), step=1)
-                total_close_cost = c2.number_input("Precio Cierre ($/acción)", value=0.0, step=0.01)
-                stock_price = c3.number_input("Precio Subyacente", value=0.0, step=0.01, help="Opcional, para referencia.")
+                # Selección de patas a cerrar
+                legs_to_close = []
+                if is_multi_leg:
+                    st.markdown("#### Selecciona las patas a cerrar:")
+                    for idx, leg in target_group.iterrows():
+                        c_sel, c_info = st.columns([1, 4])
+                        should_close = c_sel.checkbox("Cerrar", value=True, key=f"check_close_{leg['ID']}")
+                        c_info.markdown(f"{leg_color_label(leg['Side'], leg['OptionType'])} &nbsp; **@ {leg['Strike']}**", unsafe_allow_html=True)
+                        if should_close:
+                            legs_to_close.append(leg)
+                else:
+                    legs_to_close = list(target_group.iloc[i] for i in range(len(target_group)))
 
-                is_partial = qty_to_close < int(target_group.iloc[0]["Contratos"])
-                
-                # Prima neta original (suma de todas las patas, que realmente solo está en pata 0)
-                total_entry = target_group["PrimaRecibida"].sum()
-                qty_total = int(target_group.iloc[0]["Contratos"])
-                total_bp = target_group["BuyingPower"].sum()
-                
-                # Comisiones estimadas de cierre
-                comisiones_apertura = sum(float(r.get("Comisiones", 0.0)) for _, r in target_group.iterrows()) / qty_total * qty_to_close
-                comisiones_cierre = 0.0
-                for _, r in target_group.iterrows():
-                    if r.get("Side", "Sell") == "Sell" and total_close_cost <= 0.05:
-                        pass
-                    else:
-                        r_broker = r.get("Broker", "IB")
-                        fee_rate = get_fee_rate(r_broker, r.get("Ticker", ""))
-                        comisiones_cierre += qty_to_close * fee_rate
-                comisiones_totales = comisiones_apertura + comisiones_cierre
+                if not legs_to_close:
+                    st.warning("Selecciona al menos una pata para realizar el cierre.")
+                else:
+                    c1, c2, c3 = st.columns(3)
+                    qty_to_close = c1.number_input("Contratos", min_value=1, max_value=int(legs_to_close[0]["Contratos"]), value=int(legs_to_close[0]["Contratos"]), step=1)
+                    total_close_cost = c2.number_input("Precio Cierre ($/acción)", value=0.0, step=0.01)
+                    stock_price = c3.number_input("Precio Subyacente", value=0.0, step=0.01, help="Opcional, para referencia.")
 
-                # Cálculo de PnL usando la función centralizada
-                pnl_preview, profit_pct_preview, roc_preview = calculate_pnl_metrics(
-                    prima_neta=total_entry,
-                    costo_cierre_neto=total_close_cost,
-                    contracts=qty_to_close,
-                    strategy=current_strategy,
-                    bp=total_bp,
-                    side_first_leg=target_group.iloc[0]["Side"],
-                    comisiones_totales=comisiones_totales
-                )
+                    qty_total = int(legs_to_close[0]["Contratos"])
+                    is_partial_contracts = qty_to_close < qty_total
+                    is_partial_legs = len(legs_to_close) < len(target_group)
+                    is_partial = is_partial_contracts or is_partial_legs
                     
-                st.markdown("#### 📊 Resultado")
-                c_res1, c_res2, c_res3 = st.columns(3)
-                c_res1.metric("PnL", f"${pnl_preview:,.2f}")
-                c_res2.metric("Captura", f"{profit_pct_preview:.1f}%")
-                if total_bp > 0:
-                    c_res3.metric("RoC", f"{roc_preview:.1f}%")
-                
-                manual_pnl = st.number_input("PnL Final ($)", value=float(pnl_preview), step=1.0, help="Ajusta solo si tu broker reporta un valor diferente.")
-                
-                if pnl_preview < -500:
-                    st.warning(f"⚠️ Atención: Estás registrando una pérdida significativa de ${pnl_preview:,.2f}")
-
-                btn_label = "✅ Cierre Parcial" if is_partial else "✅ Cerrar Todo"
-                
-                # Calcular ProfitPct final basado en el PnL que realmente se va a guardar
-                max_profit_usd = total_entry * qty_to_close * 100
-                final_profit_pct = (manual_pnl / max_profit_usd * 100) if max_profit_usd > 0 else 0.0
-                
-                c_close_btn, c_cancel_btn = st.columns([2, 1])
-                if c_close_btn.button(btn_label, type="primary", use_container_width=True):
-                    for idx, row in target_group.iterrows():
-                        real_idx = df.index[df["ID"] == row["ID"]][0]
-                        
-                        if is_partial:
-                            # 1. Reducir contratos en la posición original
-                            df.at[real_idx, "Contratos"] = qty_total - qty_to_close
-                            df.at[real_idx, "Comisiones"] = float(row.get("Comisiones", 0.0)) / qty_total * (qty_total - qty_to_close)
-                            
-                            # 2. Crear nueva entrada CERRADA con la cantidad cerrada
-                            new_closed_row = row.copy()
-                            new_closed_row["ID"] = str(uuid4())[:8]
-                            new_closed_row["Contratos"] = qty_to_close
-                            new_closed_row["Estado"] = "Cerrada"
-                            new_closed_row["FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            new_closed_row["PrecioAccionCierre"] = stock_price
-                            
-                            # Asignar COSTO, PNL y ProfitPct solo a la primera pata para no duplicar
-                            r_broker = row.get("Broker", "IB")
-                            fee_rate = get_fee_rate(r_broker, row.get("Ticker", ""))
-                            new_closed_row["Comisiones"] = (float(row.get("Comisiones", 0.0)) / qty_total * qty_to_close) + (qty_to_close * fee_rate if not (row.get("Side", "Sell") == "Sell" and total_close_cost <= 0.05) else 0.0)
-                            if row["ID"] == target_group.iloc[0]["ID"]:
-                                new_closed_row["CostoCierre"] = total_close_cost
-                                new_closed_row["PnL_USD_Realizado"] = manual_pnl
-                                new_closed_row["ProfitPct"] = final_profit_pct
-                                new_closed_row["PnL_Capital_Pct"] = (manual_pnl / total_bp * 100) if total_bp > 0 else 0.0
-                            else:
-                                new_closed_row["CostoCierre"] = 0.0
-                                new_closed_row["PnL_USD_Realizado"] = 0.0
-                                new_closed_row["ProfitPct"] = 0.0
-                                new_closed_row["PnL_Capital_Pct"] = 0.0
-                            
-                            # Añadir la fila cerrada
-                            st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_closed_row])], ignore_index=True)
-                            
+                    # Prima neta original de las patas seleccionadas
+                    total_entry = sum(float(l["PrimaRecibida"]) for l in legs_to_close)
+                    total_bp = sum(float(l["BuyingPower"]) for l in legs_to_close)
+                    
+                    # Comisiones estimadas de cierre
+                    comisiones_apertura = sum(float(r.get("Comisiones", 0.0)) for r in legs_to_close) / qty_total * qty_to_close
+                    comisiones_cierre = 0.0
+                    for r in legs_to_close:
+                        if r.get("Side", "Sell") == "Sell" and total_close_cost <= 0.05:
+                            pass
                         else:
-                            # Cierre TOTAL normal
-                            df.at[real_idx, "Estado"] = "Cerrada"
-                            df.at[real_idx, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            df.at[real_idx, "PrecioAccionCierre"] = stock_price
-                            r_broker = row.get("Broker", "IB")
-                            fee_rate = get_fee_rate(r_broker, row.get("Ticker", ""))
-                            df.at[real_idx, "Comisiones"] = float(row.get("Comisiones", 0.0)) + (qty_to_close * fee_rate if not (row.get("Side", "Sell") == "Sell" and total_close_cost <= 0.05) else 0.0)
-                            if row["ID"] == target_group.iloc[0]["ID"]:
-                                df.at[real_idx, "CostoCierre"] = total_close_cost
-                                df.at[real_idx, "PnL_USD_Realizado"] = manual_pnl
-                                df.at[real_idx, "ProfitPct"] = final_profit_pct
-                                df.at[real_idx, "PnL_Capital_Pct"] = (manual_pnl / total_bp * 100) if total_bp > 0 else 0.0
-                            else:
-                                df.at[real_idx, "CostoCierre"] = 0.0
-                                df.at[real_idx, "PnL_USD_Realizado"] = 0.0
-                                df.at[real_idx, "ProfitPct"] = 0.0
-                                df.at[real_idx, "PnL_Capital_Pct"] = 0.0
-                            
-                    st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
-                    # Activar post-mortem prompt
-                    st.session_state["post_mortem"] = {"chain_id": target_chain, "ticker": target_group.iloc[0]["Ticker"], "pnl": manual_pnl}
-                    del st.session_state["manage_chain_id"]
-                    st.success("Operación actualizada correctamente.")
-                    st.rerun()
+                            r_broker = r.get("Broker", "IB")
+                            fee_rate = get_fee_rate(r_broker, r.get("Ticker", ""))
+                            comisiones_cierre += qty_to_close * fee_rate
+                    comisiones_totales = comisiones_apertura + comisiones_cierre
 
-                if c_cancel_btn.button("🚫 Cancelar", key="cancel_close_btn", use_container_width=True):
-                    del st.session_state["manage_chain_id"]
-                    st.rerun()
+                    # Cálculo de PnL usando la función centralizada
+                    pnl_preview, profit_pct_preview, roc_preview = calculate_pnl_metrics(
+                        prima_neta=total_entry,
+                        costo_cierre_neto=total_close_cost,
+                        contracts=qty_to_close,
+                        strategy=current_strategy,
+                        bp=total_bp,
+                        side_first_leg=legs_to_close[0]["Side"],
+                        comisiones_totales=comisiones_totales
+                    )
+                        
+                    st.markdown("#### 📊 Resultado")
+                    c_res1, c_res2, c_res3 = st.columns(3)
+                    c_res1.metric("PnL", f"${pnl_preview:,.2f}")
+                    c_res2.metric("Captura", f"{profit_pct_preview:.1f}%")
+                    if total_bp > 0:
+                        c_res3.metric("RoC", f"{roc_preview:.1f}%")
+                    
+                    manual_pnl = st.number_input("PnL Final ($)", value=float(pnl_preview), step=1.0, help="Ajusta solo si tu broker reporta un valor diferente.")
+                    
+                    if pnl_preview < -500:
+                        st.warning(f"⚠️ Atención: Estás registrando una pérdida significativa de ${pnl_preview:,.2f}")
+
+                    btn_label = "✅ Cierre Parcial" if is_partial else "✅ Cerrar Todo"
+                    
+                    # Calcular ProfitPct final basado en el PnL que realmente se va a guardar
+                    max_profit_usd = total_entry * qty_to_close * 100
+                    final_profit_pct = (manual_pnl / max_profit_usd * 100) if max_profit_usd > 0 else 0.0
+                    
+                    c_close_btn, c_cancel_btn = st.columns([2, 1])
+                    if c_close_btn.button(btn_label, type="primary", use_container_width=True):
+                        legs_to_close_ids = [l["ID"] for l in legs_to_close]
+                        first_leg_id = legs_to_close[0]["ID"]
+                        
+                        for idx, row in target_group.iterrows():
+                            # Si esta pata no fue seleccionada para cerrar, se queda abierta (la omitimos)
+                            if row["ID"] not in legs_to_close_ids:
+                                continue
+                                
+                            real_idx = df.index[df["ID"] == row["ID"]][0]
+                            
+                            if is_partial_contracts:
+                                # 1. Reducir contratos en la posición original
+                                df.at[real_idx, "Contratos"] = qty_total - qty_to_close
+                                df.at[real_idx, "Comisiones"] = float(row.get("Comisiones", 0.0)) / qty_total * (qty_total - qty_to_close)
+                                
+                                # 2. Crear nueva entrada CERRADA con la cantidad cerrada
+                                new_closed_row = row.copy()
+                                new_closed_row["ID"] = str(uuid4())[:8]
+                                new_closed_row["Contratos"] = qty_to_close
+                                new_closed_row["Estado"] = "Cerrada"
+                                new_closed_row["FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                new_closed_row["PrecioAccionCierre"] = stock_price
+                                
+                                # Asignar COSTO, PNL y ProfitPct solo a la primera pata seleccionada para no duplicar
+                                r_broker = row.get("Broker", "IB")
+                                fee_rate = get_fee_rate(r_broker, row.get("Ticker", ""))
+                                new_closed_row["Comisiones"] = (float(row.get("Comisiones", 0.0)) / qty_total * qty_to_close) + (qty_to_close * fee_rate if not (row.get("Side", "Sell") == "Sell" and total_close_cost <= 0.05) else 0.0)
+                                if row["ID"] == first_leg_id:
+                                    new_closed_row["CostoCierre"] = total_close_cost
+                                    new_closed_row["PnL_USD_Realizado"] = manual_pnl
+                                    new_closed_row["ProfitPct"] = final_profit_pct
+                                    new_closed_row["PnL_Capital_Pct"] = (manual_pnl / total_bp * 100) if total_bp > 0 else 0.0
+                                else:
+                                    new_closed_row["CostoCierre"] = 0.0
+                                    new_closed_row["PnL_USD_Realizado"] = 0.0
+                                    new_closed_row["ProfitPct"] = 0.0
+                                    new_closed_row["PnL_Capital_Pct"] = 0.0
+                                
+                                # Añadir la fila cerrada
+                                st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_closed_row])], ignore_index=True)
+                                
+                            else:
+                                # Cierre de esta pata
+                                df.at[real_idx, "Estado"] = "Cerrada"
+                                df.at[real_idx, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                df.at[real_idx, "PrecioAccionCierre"] = stock_price
+                                r_broker = row.get("Broker", "IB")
+                                fee_rate = get_fee_rate(r_broker, row.get("Ticker", ""))
+                                df.at[real_idx, "Comisiones"] = float(row.get("Comisiones", 0.0)) + (qty_to_close * fee_rate if not (row.get("Side", "Sell") == "Sell" and total_close_cost <= 0.05) else 0.0)
+                                if row["ID"] == first_leg_id:
+                                    df.at[real_idx, "CostoCierre"] = total_close_cost
+                                    df.at[real_idx, "PnL_USD_Realizado"] = manual_pnl
+                                    df.at[real_idx, "ProfitPct"] = final_profit_pct
+                                    df.at[real_idx, "PnL_Capital_Pct"] = (manual_pnl / total_bp * 100) if total_bp > 0 else 0.0
+                                else:
+                                    df.at[real_idx, "CostoCierre"] = 0.0
+                                    df.at[real_idx, "PnL_USD_Realizado"] = 0.0
+                                    df.at[real_idx, "ProfitPct"] = 0.0
+                                    df.at[real_idx, "PnL_Capital_Pct"] = 0.0
+                                
+                        st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+                        # Activar post-mortem prompt
+                        st.session_state["post_mortem"] = {"chain_id": target_chain, "ticker": target_group.iloc[0]["Ticker"], "pnl": manual_pnl}
+                        del st.session_state["manage_chain_id"]
+                        st.success("Operación actualizada correctamente.")
+                        st.rerun()
+
+                    if c_cancel_btn.button("🚫 Cancelar", key="cancel_close_btn", use_container_width=True):
+                        del st.session_state["manage_chain_id"]
+                        st.rerun()
 
             # --- TAB 2: ROLL ---
             with tab_roll:

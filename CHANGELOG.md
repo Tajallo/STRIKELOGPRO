@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 ### Added
+- **Selective Leg Closing**: Enhanced the "Cerrar" tab in the management panel with checkboxes, allowing users to select and close individual legs of a multi-leg strategy (like an Iron Condor or a Put Credit Spread) independently. The app dynamically recalculates net premiums, closing costs, and PnL exclusively for the selected legs, leaving the unselected legs open and manageable under the original `ChainID`.
 - **Wheel Campaign Selector**: Added a selectbox in the trade entry form that dynamically displays open wheel campaigns (stock positions) for the selected ticker. Selecting a campaign automatically links the new option by populating `ParentID`, `WheelParentChainID`, and `WheelLeg`. For Covered Calls, it also updates the active CC reference (`CoveredCallChainID` and `CoveredCallPrima`) on the parent stock row.
 - **Flyagonal Strategy Support**: Added native support for the 6-leg hybrid Flyagonal strategy. Includes automatic suggestion of front-month and back-month expiration dates (front-month base + 30 days default for long Put protective leg).
 - **Independent Leg Expirations**: Added a checkbox `📅 Usar vencimientos independientes por pata` and a vertical vertical-form layout for multi-expiry strategies (Flyagonal, Calendar, Diagonal). Leg expirations are written individually to the `Expiry` column in the CSV.

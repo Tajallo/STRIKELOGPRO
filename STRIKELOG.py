@@ -294,6 +294,27 @@ CREDIT_STRATEGIES = [
     "Ratio Spread",
 ]
 
+def is_option_expired(expiry_val) -> bool:
+    """
+    Determina si una opción ha vencido, considerando la zona horaria de Nueva York
+    y el cierre del mercado americano (16:00 EST/EDT).
+    """
+    if pd.isna(expiry_val):
+        return False
+    try:
+        from zoneinfo import ZoneInfo
+        ny_tz = ZoneInfo("America/New_York")
+        ny_now = datetime.now(ny_tz)
+        expiry_date = pd.to_datetime(expiry_val).date()
+        if expiry_date < ny_now.date():
+            return True
+        elif expiry_date == ny_now.date():
+            return ny_now.hour >= 16
+        else:
+            return False
+    except Exception:
+        return (pd.to_datetime(expiry_val).date() - date.today()).days < 0
+
 def detect_strategy_direction(strategy, side_first_leg="Sell"):
     """
     Detecta si una estrategia opera en CRÉDITO (Sell) o DÉBITO (Buy).
@@ -1065,7 +1086,7 @@ def render_active_portfolio(df):
             dte_val = (expiry_date - today).days
         except:
             continue
-        if dte_val <= 0:
+        if is_option_expired(expiry_val):
             expired_chains[chain_id] = first
 
     if expired_chains:
@@ -1706,6 +1727,86 @@ def render_active_portfolio(df):
         </style>
         """, unsafe_allow_html=True)
 
+        # --- UNIFICACIÓN DE CAMPANAS DE LA RUEDA ---
+        dup_tickers = wheel_stocks["Ticker"].value_counts()
+        dup_tickers = dup_tickers[dup_tickers > 1].index.tolist()
+
+        if dup_tickers:
+            with st.expander("🔗 Unificar Ciclos de La Rueda (Fusionar Posiciones)", expanded=False):
+                st.markdown(
+                    "Permite combinar múltiples asignaciones del mismo ticker en una sola posición de La Rueda. "
+                    "Se calculará el precio de compra promedio y se reasociarán todas las primas, comisiones y Covered Calls vinculados al ciclo principal."
+                )
+                ticker_to_merge = st.selectbox("Selecciona el Ticker a unificar", dup_tickers, key="merge_ticker_select")
+                
+                # Obtener filas activas para este ticker
+                ticker_rows = wheel_stocks[wheel_stocks["Ticker"] == ticker_to_merge].copy()
+                
+                # Mostrar las posiciones
+                master_options = []
+                master_ids = []
+                for idx, r in ticker_rows.iterrows():
+                    master_options.append(f"Master: ID {r['ID'][:8]} — {r['Contratos']*100} acciones @ ${float(r['Strike']):.2f} (Abierto el {pd.to_datetime(r['FechaApertura']).strftime('%Y-%m-%d')})")
+                    master_ids.append(r["ID"])
+                    
+                selected_master_idx = st.selectbox(
+                    "Selecciona la posición de destino (Master)",
+                    options=range(len(master_options)),
+                    format_func=lambda x: master_options[x],
+                    key="merge_master_select"
+                )
+                master_id = master_ids[selected_master_idx]
+                master_row = ticker_rows[ticker_rows["ID"] == master_id].iloc[0]
+                master_chain = master_row["ChainID"]
+                
+                # Mostrar preview de lo que ocurrirá
+                source_rows = ticker_rows[ticker_rows["ID"] != master_id]
+                total_shares = int(master_row.get("Contratos", 1)) * 100
+                total_cost = float(master_row.get("Strike", 0.0)) * total_shares
+                source_ids = []
+                source_chains = []
+                for _, r in source_rows.iterrows():
+                    s_shares = int(r.get("Contratos", 1)) * 100
+                    total_shares += s_shares
+                    total_cost += float(r.get("Strike", 0.0)) * s_shares
+                    source_ids.append(r["ID"])
+                    source_chains.append(r["ChainID"])
+                    
+                average_strike = round(total_cost / total_shares, 4)
+                new_contracts = int(total_shares / 100)
+                
+                st.info(
+                    f"📊 **Preview de Fusión para {ticker_to_merge}:**\n"
+                    f"- Nueva cantidad: **{total_shares} acciones** ({new_contracts} contrato{'s' if new_contracts > 1 else ''})\n"
+                    f"- Nuevo precio promedio (Strike): **${average_strike:.2f}**\n"
+                    f"- Se reasociarán todas las primas/operaciones de los ciclos fusionados en la línea de tiempo del Master."
+                )
+                
+                if st.button("🔗 Combinar y unificar posiciones", type="primary", key="btn_execute_merge_wheels"):
+                    df_copy = st.session_state.df.copy()
+                    
+                    # 1. Actualizar Master en df
+                    master_idx_in_df = df_copy.index[df_copy["ID"] == master_id][0]
+                    df_copy.at[master_idx_in_df, "Contratos"] = new_contracts
+                    df_copy.at[master_idx_in_df, "Strike"] = average_strike
+                    df_copy.at[master_idx_in_df, "BuyingPower"] = average_strike * total_shares
+                    
+                    # 2. Re-link child/parent relationships
+                    df_copy.loc[df_copy["ParentID"].isin(source_ids), "ParentID"] = master_id
+                    df_copy.loc[df_copy["WheelParentChainID"].isin(source_chains), "WheelParentChainID"] = master_chain
+                    
+                    # 3. Consolidar CoveredCallPrima
+                    master_cc_prima = float(master_row.get("CoveredCallPrima", 0.0)) + sum(float(r.get("CoveredCallPrima", 0.0)) for _, r in source_rows.iterrows())
+                    df_copy.at[master_idx_in_df, "CoveredCallPrima"] = master_cc_prima
+                    
+                    # 4. Borrar las filas de stock de origen
+                    df_copy = df_copy[~df_copy["ID"].isin(source_ids)].reset_index(drop=True)
+                    
+                    # Guardar y refrescar
+                    st.session_state.df = JournalManager.save_with_backup(df_copy)
+                    st.success("✅ ¡Posiciones de La Rueda unificadas con éxito!")
+                    st.rerun()
+
         for _, stock_row in wheel_stocks.iterrows():
             stock_ticker = stock_row["Ticker"]
             stock_chain  = stock_row["ChainID"]
@@ -2307,16 +2408,125 @@ def render_active_portfolio(df):
                 st.divider()
 
                 # --- Panel: Añadir / Gestionar Covered Call ---
-                if not tiene_cc:
+                # --- Panel: Añadir / Gestionar Covered Call ---
+                # Buscar CCs activos vinculados dinámicamente
+                cc_activos = df[
+                    ((df["ParentID"] == stock_id) | (df["WheelParentChainID"] == stock_chain)) &
+                    (df["Estrategia"] == "CC (Covered Call)") &
+                    (df["Estado"] == "Abierta")
+                ]
+                tiene_cc = not cc_activos.empty
+                total_cc_contracts = cc_activos["Contratos"].sum() if tiene_cc else 0
+
+                if tiene_cc:
+                    st.markdown("#### 📋 Covered Calls activos")
+                    for _, cc_row in cc_activos.iterrows():
+                        cc_chain_val = cc_row["ChainID"]
+                        cc_linked = df[df["ChainID"] == cc_chain_val]
+                        if not cc_linked.empty:
+                            cc_leg = cc_linked.iloc[0]
+                            cc_strike_metric = float(cc_leg.get('Strike', 0))
+                            cc_prima_metric = float(cc_leg.get('PrimaRecibida', 0))
+                            cc_cnt_metric = int(cc_leg.get('Contratos', 1))
+                            try:
+                                exp_cc_str = pd.to_datetime(cc_leg["Expiry"]).strftime("%d %b %Y")
+                            except:
+                                exp_cc_str = "N/A"
+                            
+                            st.markdown(f"**Covered Call Strike ${cc_strike_metric:.2f} ({cc_cnt_metric} contrato{'s' if cc_cnt_metric > 1 else ''})** (Vence: {exp_cc_str})")
+                            cc_info1, cc_info2, cc_info3 = st.columns(3)
+                            cc_info1.metric("Strike CC", f"${cc_strike_metric:.2f}")
+                            cc_info2.metric("Prima CC", f"${cc_prima_metric:.2f}/acción")
+                            cc_info3.metric("Vencimiento", exp_cc_str)
+                            
+                            # Botón expirar para este CC específico
+                            col_exp1, col_exp2 = st.columns([2, 1])
+                            with col_exp1:
+                                st.caption(
+                                    f"⌛ Si este CC (Strike ${cc_strike_metric:.2f}) expiró sin valor (OTM), ciérralo a $0.00."
+                                )
+                            with col_exp2:
+                                if st.button(
+                                    "⌛ Expirar este CC",
+                                    key=f"btn_expire_cc_{cc_chain_val}",
+                                    help="Cierra este Covered Call a $0.00 (expirado OTM)."
+                                ):
+                                    st.session_state[f"expire_cc_{cc_chain_val}"] = True
+                                    st.rerun()
+                                    
+                            if st.session_state.get(f"expire_cc_{cc_chain_val}", False):
+                                cc_strike_exp = cc_strike_metric
+                                cc_prima_exp  = cc_prima_metric
+                                cc_cntr_exp   = float(cc_leg.get("Contratos", 1))
+                                pnl_exp_total = cc_prima_exp * cc_cntr_exp * 100
+                                
+                                st.warning(
+                                    f"⚠️ Confirmas que el **CC Strike ${cc_strike_exp:.2f}** expiró sin valor (OTM). "
+                                    f"La prima cobrada de **${cc_prima_exp:.2f}/acción** (${pnl_exp_total:.2f} total) "
+                                    f"queda como beneficio íntegro."
+                                )
+                                cexp1, cexp2 = st.columns(2)
+                                if cexp1.button("✅ Confirmar Expiración del CC", type="primary",
+                                                key=f"confirm_expire_cc_{cc_chain_val}"):
+                                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                    
+                                    # 1. Cerrar el CC a $0.00 con PnL = prima íntegra
+                                    cc_exp_rows_idx = st.session_state.df.index[
+                                        (st.session_state.df["ChainID"] == cc_chain_val) &
+                                        (st.session_state.df["Estado"] == "Abierta")
+                                    ]
+                                    for idx_exp in cc_exp_rows_idx:
+                                        p_exp = float(st.session_state.df.at[idx_exp, "PrimaRecibida"] or 0)
+                                        c_exp = float(st.session_state.df.at[idx_exp, "Contratos"] or 1)
+                                        pnl_row_exp = p_exp * c_exp * 100
+                                        
+                                        st.session_state.df.at[idx_exp, "Estado"] = "Cerrada"
+                                        st.session_state.df.at[idx_exp, "FechaCierre"] = now_str
+                                        st.session_state.df.at[idx_exp, "CostoCierre"] = 0.0
+                                        st.session_state.df.at[idx_exp, "PnL_USD_Realizado"] = pnl_row_exp
+                                        st.session_state.df.at[idx_exp, "Notas"] = (
+                                            str(st.session_state.df.at[idx_exp, "Notas"] or "") +
+                                            f" [OTM — expirado sin valor. Prima íntegra: ${pnl_row_exp:.2f}]"
+                                        )
+                                        
+                                    # 2. Desvincular el CC de las acciones si es el CoveredCallChainID actual de las acciones
+                                    stock_exp_idx = st.session_state.df.index[
+                                        st.session_state.df["ID"] == stock_id
+                                    ][0]
+                                    if st.session_state.df.at[stock_exp_idx, "CoveredCallChainID"] == cc_chain_val:
+                                        # Buscar si hay otra CC activa para vincularla, o poner NA
+                                        other_active_ccs = cc_activos[cc_activos["ChainID"] != cc_chain_val]
+                                        if not other_active_ccs.empty:
+                                            st.session_state.df.at[stock_exp_idx, "CoveredCallChainID"] = other_active_ccs.iloc[0]["ChainID"]
+                                        else:
+                                            st.session_state.df.at[stock_exp_idx, "CoveredCallChainID"] = pd.NA
+                                            
+                                    st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+                                    if f"expire_cc_{cc_chain_val}" in st.session_state:
+                                        del st.session_state[f"expire_cc_{cc_chain_val}"]
+                                    st.success(
+                                        f"✅ CC Strike ${cc_strike_exp:.2f} expirado a $0.00. Prima cobrada: ${pnl_exp_total:.2f}."
+                                    )
+                                    st.rerun()
+                                    
+                                if cexp2.button("❌ Cancelar", key=f"cancel_expire_cc_{cc_chain_val}"):
+                                    del st.session_state[f"expire_cc_{cc_chain_val}"]
+                                    st.rerun()
+                            st.markdown("---")
+
+                if total_cc_contracts < contratos_st:
                     st.markdown("#### ➕ Vincular Covered Call")
                     st.caption("Registra una venta de Call sobre estas acciones para reducir el costo base.")
-                    cc1, cc2, cc3 = st.columns(3)
+                    cc1, cc2, cc3, cc4 = st.columns(4)
                     cc_strike_val  = cc1.number_input("Strike del Call vendido", value=precio_compra * 1.02, step=0.5,
                                                       key=f"cc_strike_{stock_id}")
                     cc_prima_val   = cc2.number_input("Prima cobrada ($/acción)", value=0.0, step=0.01,
                                                       key=f"cc_prima_{stock_id}")
                     cc_expiry_val  = cc3.date_input("Vencimiento del CC", value=date.today() + timedelta(days=30),
                                                     key=f"cc_exp_{stock_id}")
+                    cc_contracts_max = max(1, contratos_st - total_cc_contracts)
+                    cc_contracts_val = cc4.number_input("Contratos", value=cc_contracts_max, min_value=1, max_value=cc_contracts_max, step=1,
+                                                        key=f"cc_cnt_{stock_id}")
 
                     nuevo_be = costo_base_dinamico - cc_prima_val
                     if cc_prima_val > 0:
@@ -2341,16 +2551,16 @@ def render_active_portfolio(df):
                                 "Side": "Sell", "OptionType": "Call",
                                 "Strike": cc_strike_val, "Delta": -0.3,
                                 "PrimaRecibida": cc_prima_val, "CostoCierre": 0.0,
-                                "Contratos": contratos_st,
-                                "BuyingPower": 0.0,  # Las acciones ya son el colateral
+                                "Contratos": cc_contracts_val,
+                                "BuyingPower": 0.0,
                                 "BreakEven": cc_strike_val + cc_prima_val, "BreakEven_Upper": 0.0,
                                 "POP": 70.0, "Estado": "Abierta",
-                                "Notas": f"CC vinculado a {acciones_st} acciones de {stock_ticker} (WheelChain: {stock_chain})",
+                                "Notas": f"CC vinculado a {cc_contracts_val*100} acciones de {stock_ticker} (WheelChain: {stock_chain})",
                                 "UpdatedAt": datetime.now().isoformat(), "FechaCierre": pd.NA,
-                                "MaxProfitUSD": cc_prima_val * contratos_st * 100,
+                                "MaxProfitUSD": cc_prima_val * cc_contracts_val * 100,
                                 "ProfitPct": 0.0, "PnL_Capital_Pct": 0.0,
                                 "PrecioAccionCierre": 0.0, "PnL_USD_Realizado": 0.0,
-                                "Comisiones": contratos_st * get_fee_rate(stock_row.get("Broker", "IB"), stock_ticker),
+                                "Comisiones": cc_contracts_val * get_fee_rate(stock_row.get("Broker", "IB"), stock_ticker),
                                 "Broker": stock_row.get("Broker", "IB"),
                                 "EarningsDate": stock_row.get("EarningsDate", pd.NA),
                                 "DividendosDate": stock_row.get("DividendosDate", pd.NA),
@@ -2367,7 +2577,7 @@ def render_active_portfolio(df):
                             # Actualizar la posición de acciones: vincular el CC y acumular prima
                             stock_real_idx = st.session_state.df.index[st.session_state.df["ID"] == stock_id][0]
                             st.session_state.df.at[stock_real_idx, "CoveredCallChainID"] = cc_chain_new
-                            st.session_state.df.at[stock_real_idx, "CoveredCallPrima"] = cc_prima_acum + cc_prima_val
+                            st.session_state.df.at[stock_real_idx, "CoveredCallPrima"] = cc_prima_acum + (cc_prima_val * cc_contracts_val / contratos_st)
                             st.session_state.df.at[stock_real_idx, "CostBaseReal"] = nuevo_be
                             st.session_state.df.at[stock_real_idx, "BreakEven"] = nuevo_be
 
@@ -2375,92 +2585,7 @@ def render_active_portfolio(df):
                             st.success(f"✅ Covered Call añadido. Nuevo costo base: ${nuevo_be:.2f}")
                             st.rerun()
                 else:
-                    # Hay CC vinculado — mostrar resumen y botón Expirar CC (Escenario B)
-                    st.markdown("#### 📋 Covered Call activo")
-                    cc_linked = df[df["ChainID"] == cc_chain_id]
-                    if not cc_linked.empty:
-                        cc_leg = cc_linked.iloc[0]
-                        cc_info1, cc_info2, cc_info3 = st.columns(3)
-                        cc_info1.metric("Strike CC", f"${float(cc_leg.get('Strike', 0)):.2f}")
-                        cc_info2.metric("Prima CC", f"${float(cc_leg.get('PrimaRecibida', 0)):.2f}/acción")
-                        try:
-                            exp_cc_str = pd.to_datetime(cc_leg["Expiry"]).strftime("%d %b %Y")
-                        except:
-                            exp_cc_str = "N/A"
-                        cc_info3.metric("Vencimiento", exp_cc_str)
-
-                    # --- ESCENARIO B: CC expira OTM — conservar acciones ---
-                    st.markdown("---")
-                    col_exp1, col_exp2 = st.columns([2, 1])
-                    with col_exp1:
-                        st.caption(
-                            "⌛ Si el CC expiró sin valor (OTM), ciérralo a $0.00. "
-                            "Las acciones permanecen intactas y podrás vender un nuevo CC el mes siguiente."
-                        )
-                    with col_exp2:
-                        if st.button(
-                            "⌛ Expirar CC (Conservar Acciones)",
-                            key=f"btn_expire_cc_{stock_id}",
-                            help="Cierra el Covered Call a $0.00 (expirado OTM). Las acciones siguen en cartera."
-                        ):
-                            st.session_state[f"expire_cc_{stock_id}"] = True
-
-                    if st.session_state.get(f"expire_cc_{stock_id}", False):
-                        cc_strike_exp = float(cc_linked.iloc[0].get("Strike", 0)) if not cc_linked.empty else 0.0
-                        cc_prima_exp  = float(cc_linked.iloc[0].get("PrimaRecibida", 0)) if not cc_linked.empty else 0.0
-                        cc_cntr_exp   = float(cc_linked.iloc[0].get("Contratos", contratos_st)) if not cc_linked.empty else contratos_st
-                        pnl_exp_total = cc_prima_exp * cc_cntr_exp * 100
-
-                        st.warning(
-                            f"⚠️ Confirmas que el **CC Strike ${cc_strike_exp:.2f}** expiró sin valor (OTM). "
-                            f"La prima cobrada de **${cc_prima_exp:.2f}/acción** (${pnl_exp_total:.2f} total) "
-                            f"queda como beneficio íntegro. "
-                            f"Las **{acciones_st} acciones de {stock_ticker}** se mantienen en cartera."
-                        )
-                        cexp1, cexp2 = st.columns(2)
-                        if cexp1.button("✅ Confirmar Expiración del CC", type="primary",
-                                        key=f"confirm_expire_cc_{stock_id}"):
-                            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-                            # 1. Cerrar el CC a $0.00 con PnL = prima íntegra
-                            cc_exp_rows_idx = st.session_state.df.index[
-                                (st.session_state.df["ChainID"] == cc_chain_id) &
-                                (st.session_state.df["Estado"] == "Abierta")
-                            ]
-                            for idx_exp in cc_exp_rows_idx:
-                                p_exp = float(st.session_state.df.at[idx_exp, "PrimaRecibida"] or 0)
-                                c_exp = float(st.session_state.df.at[idx_exp, "Contratos"] or 1)
-                                pnl_row_exp = p_exp * c_exp * 100
-
-                                st.session_state.df.at[idx_exp, "Estado"] = "Cerrada"
-                                st.session_state.df.at[idx_exp, "FechaCierre"] = now_str
-                                st.session_state.df.at[idx_exp, "CostoCierre"] = 0.0
-                                st.session_state.df.at[idx_exp, "PnL_USD_Realizado"] = pnl_row_exp
-                                st.session_state.df.at[idx_exp, "Notas"] = (
-                                    str(st.session_state.df.at[idx_exp, "Notas"] or "") +
-                                    f" [OTM — expirado sin valor. Prima íntegra: ${pnl_row_exp:.2f}]"
-                                )
-
-                            # 2. Desvincular el CC de las acciones → queda libre para nuevo CC
-                            stock_exp_idx = st.session_state.df.index[
-                                st.session_state.df["ID"] == stock_id
-                            ][0]
-                            st.session_state.df.at[stock_exp_idx, "CoveredCallChainID"] = pd.NA
-                            # Nota: CoveredCallPrima mantiene el acumulado histórico (no se borra)
-
-                            st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
-                            if f"expire_cc_{stock_id}" in st.session_state:
-                                del st.session_state[f"expire_cc_{stock_id}"]
-                            st.success(
-                                f"✅ CC expirado a $0.00. Prima cobrada íntegra: ${pnl_exp_total:.2f}. "
-                                f"Las {acciones_st} acciones de {stock_ticker} siguen abiertas. "
-                                f"Ya puedes vender un nuevo Covered Call. 🎡"
-                            )
-                            st.rerun()
-
-                        if cexp2.button("❌ Cancelar", key=f"cancel_expire_cc_{stock_id}"):
-                            del st.session_state[f"expire_cc_{stock_id}"]
-                            st.rerun()
+                    st.info("⚠️ Todo el colateral de acciones ya está cubierto por Covered Calls activos.")
 
                     st.caption("💡 Para añadir otro Covered Call tras el vencimiento, usa el botón ⌛ de arriba.")
 

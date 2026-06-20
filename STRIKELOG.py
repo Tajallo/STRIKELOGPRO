@@ -3397,66 +3397,199 @@ def render_active_portfolio(df):
 
 
                 else:
-                    # --- Asignación genérica para CSP u otras estrategias ---
-                    st.markdown("#### 📜 Asignación")
-                    if is_pcs:
-                        st.warning("⚠️ No se pudo identificar el Sell Put del spread. Usando flujo genérico.")
+                    if current_strategy_assign == "CC (Covered Call)":
+                        st.markdown("#### 📜 Asignación de Covered Call (CC)")
+                        st.markdown("""
+                        <div style='background:linear-gradient(135deg,#2b1f1f,#2f0f0f); border:1px solid #ff4b4b; 
+                             border-radius:10px; padding:16px; margin-bottom:16px;'>
+                        <h4 style='color:#ff4b4b; margin:0 0 8px 0;'>🚨 Asignación de Covered Call (Ejercido ITM)</h4>
+                        <p style='color:#bdc3c7; margin:0; font-size:13px;'>
+                        Al ser asignado en un Covered Call (CC), estás obligado a <b>VENDER</b> tus acciones al precio de Strike. 
+                        Se retirarán/venderán las acciones correspondientes de tu cartera.
+                        </p>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                        assign_leg = target_group.iloc[0]
+                        assign_price_gen = float(assign_leg["Strike"])
+                        contratos_gen = int(assign_leg["Contratos"])
+                        shares_to_sell = contratos_gen * 100
+
+                        st.warning(f"Se te asignará el CC: se **VENDERÁN/RETIRARÁN {shares_to_sell} acciones** de **{ticker_assign}** a **${assign_price_gen:.2f}**.")
+
+                        # Buscar la posición de acciones activa vinculada
+                        cc_parent_id = assign_leg.get("ParentID")
+                        cc_wheel_parent_chain = assign_leg.get("WheelParentChainID")
+                        
+                        stock_row = None
+                        # Intentar buscar por ParentID
+                        if pd.notna(cc_parent_id) and str(cc_parent_id).strip() != "" and str(cc_parent_id) != "nan":
+                            stock_rows = df[(df["ID"] == cc_parent_id) & (df["Estado"] == "Abierta")]
+                            if not stock_rows.empty:
+                                stock_row = stock_rows.iloc[0]
+                        
+                        # Intentar buscar por WheelParentChainID
+                        if stock_row is None and pd.notna(cc_wheel_parent_chain) and str(cc_wheel_parent_chain).strip() != "" and str(cc_wheel_parent_chain) != "nan":
+                            stock_rows = df[(df["ChainID"] == cc_wheel_parent_chain) & (df["Estrategia"].isin(["Long Stock (Asignación)", "Long Stock"])) & (df["Estado"] == "Abierta")]
+                            if not stock_rows.empty:
+                                stock_row = stock_rows.iloc[0]
+                                
+                        # Intentar buscar por Ticker
+                        if stock_row is None:
+                            stock_rows = df[(df["Ticker"] == ticker_assign) & (df["Estrategia"].isin(["Long Stock (Asignación)", "Long Stock"])) & (df["Estado"] == "Abierta")]
+                            if not stock_rows.empty:
+                                stock_row = stock_rows.iloc[0]
+
+                        if stock_row is not None:
+                            stock_id = stock_row["ID"]
+                            contratos_st = int(stock_row.get("Contratos", 1))
+                            acciones_st = contratos_st * 100
+                            costo_base_dinamico = JournalManager.calculate_stock_dynamic_be(df, stock_row)
+                            pnl_acciones = (assign_price_gen - costo_base_dinamico) * shares_to_sell
+                            
+                            st.info(f"📈 **Posición de acciones detectada:** {acciones_st} acciones de **{ticker_assign}** (ID: {stock_id[:4]}).\n"
+                                    f"- Costo Base Real (BE): **${costo_base_dinamico:.2f}**\n"
+                                    f"- PnL Estimado de la venta de acciones: **${pnl_acciones:,.2f}**")
+                        else:
+                            st.error(f"⚠️ **Atención:** No se encontró una posición activa de acciones para **{ticker_assign}** en tu cartera. "
+                                     f"Se registrará la asignación del Covered Call, pero no se cerrarán acciones automáticamente.")
+
+                        c_assign_btn2, c_assign_cancel2 = st.columns([2, 1])
+                        if c_assign_btn2.button("✅ Confirmar Asignación de CC", type="primary", use_container_width=True, key="btn_assign_cc_confirm"):
+                            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            
+                            # 1. Marcar el Covered Call como Asignado
+                            total_comisiones_ap = sum(float(r.get("Comisiones", 0.0)) for _, r in target_group.iterrows())
+                            for idx_g, row_g in target_group.iterrows():
+                                real_idx_g = st.session_state.df.index[st.session_state.df["ID"] == row_g["ID"]][0]
+                                st.session_state.df.at[real_idx_g, "Estado"] = "Asignada"
+                                st.session_state.df.at[real_idx_g, "FechaCierre"] = now_str
+                                st.session_state.df.at[real_idx_g, "MaxProfitUSD"] = 0.0
+                                if row_g["ID"] == assign_leg["ID"]:
+                                    pnl_cc = (float(row_g["PrimaRecibida"]) * contratos_gen * 100) - total_comisiones_ap
+                                    st.session_state.df.at[real_idx_g, "PnL_USD_Realizado"] = pnl_cc
+                                    st.session_state.df.at[real_idx_g, "Notas"] = str(row_g.get("Notas", "")) + f" [ASIGNADA a {assign_price_gen}]"
+                                else:
+                                    st.session_state.df.at[real_idx_g, "PnL_USD_Realizado"] = 0.0
+                                    
+                            # 2. Si hay posición de acciones, cerrarla o reducirla
+                            if stock_row is not None:
+                                stock_real_idx = st.session_state.df.index[st.session_state.df["ID"] == stock_id][0]
+                                costo_base_dinamico = JournalManager.calculate_stock_dynamic_be(st.session_state.df, stock_row)
+                                pnl_acciones = (assign_price_gen - costo_base_dinamico) * shares_to_sell
+                                
+                                if acciones_st == shares_to_sell:
+                                    # Cerrar completamente la posición de acciones
+                                    st.session_state.df.at[stock_real_idx, "Estado"] = "Cerrada"
+                                    st.session_state.df.at[stock_real_idx, "FechaCierre"] = now_str
+                                    st.session_state.df.at[stock_real_idx, "CostoCierre"] = assign_price_gen
+                                    st.session_state.df.at[stock_real_idx, "PrecioAccionCierre"] = assign_price_gen
+                                    st.session_state.df.at[stock_real_idx, "PnL_USD_Realizado"] = pnl_acciones
+                                    st.session_state.df.at[stock_real_idx, "Notas"] = str(stock_row.get("Notas", "")) + f" [RETIRADAS por asignación de CC a ${assign_price_gen:.2f} | PnL: ${pnl_acciones:.2f}]"
+                                    st.session_state.df.at[stock_real_idx, "CoveredCallChainID"] = pd.NA
+                                elif acciones_st > shares_to_sell:
+                                    # Reducir la posición de acciones: Splitting the row
+                                    # A. Fila cerrada para las acciones vendidas
+                                    closed_stock_row = stock_row.copy()
+                                    closed_stock_row["ID"] = str(uuid4())[:8]
+                                    closed_stock_row["Contratos"] = contratos_gen
+                                    closed_stock_row["Estado"] = "Cerrada"
+                                    closed_stock_row["FechaCierre"] = now_str
+                                    closed_stock_row["CostoCierre"] = assign_price_gen
+                                    closed_stock_row["PrecioAccionCierre"] = assign_price_gen
+                                    closed_stock_row["PnL_USD_Realizado"] = pnl_acciones
+                                    closed_stock_row["Notas"] = str(stock_row.get("Notas", "")) + f" [RETIRADAS parciales por asignación de CC a ${assign_price_gen:.2f} | PnL: ${pnl_acciones:.2f}]"
+                                    closed_stock_row["CoveredCallChainID"] = pd.NA
+                                    closed_stock_row["BuyingPower"] = assign_price_gen * shares_to_sell
+                                    
+                                    # B. Actualizar la fila original abierta con el remanente
+                                    nuevos_contratos = (acciones_st - shares_to_sell) // 100
+                                    st.session_state.df.at[stock_real_idx, "Contratos"] = nuevos_contratos
+                                    st.session_state.df.at[stock_real_idx, "BuyingPower"] = float(stock_row.get("Strike", 0.0)) * nuevos_contratos * 100
+                                    st.session_state.df.at[stock_real_idx, "Notas"] = str(stock_row.get("Notas", "")) + f" [Reducido en {shares_to_sell} por asignación de CC]"
+                                    
+                                    # Añadir la fila cerrada
+                                    st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([closed_stock_row])], ignore_index=True)
+                                else:
+                                    # En caso de discrepancia, cerramos las que hay
+                                    st.session_state.df.at[stock_real_idx, "Estado"] = "Cerrada"
+                                    st.session_state.df.at[stock_real_idx, "FechaCierre"] = now_str
+                                    st.session_state.df.at[stock_real_idx, "CostoCierre"] = assign_price_gen
+                                    st.session_state.df.at[stock_real_idx, "PrecioAccionCierre"] = assign_price_gen
+                                    pnl_acciones_limit = (assign_price_gen - costo_base_dinamico) * acciones_st
+                                    st.session_state.df.at[stock_real_idx, "PnL_USD_Realizado"] = pnl_acciones_limit
+                                    st.session_state.df.at[stock_real_idx, "Notas"] = str(stock_row.get("Notas", "")) + f" [RETIRADAS por asignación de CC a ${assign_price_gen:.2f} | PnL: ${pnl_acciones_limit:.2f}]"
+                                    st.session_state.df.at[stock_real_idx, "CoveredCallChainID"] = pd.NA
+
+                            st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+                            del st.session_state["manage_chain_id"]
+                            st.success(f"Operación de Covered Call y posición de acciones actualizadas por asignación.")
+                            st.rerun()
+
+                        if c_assign_cancel2.button("🚫 Cancelar", key="cancel_assign_btn2_cc", use_container_width=True):
+                            del st.session_state["manage_chain_id"]
+                            st.rerun()
                     else:
-                        st.info(f"Marcando **{current_strategy_assign}** como Asignada y creando posición de acciones.")
+                        # --- Asignación genérica para CSP u otras estrategias ---
+                        st.markdown("#### 📜 Asignación")
+                        if is_pcs:
+                            st.warning("⚠️ No se pudo identificar el Sell Put del spread. Usando flujo genérico.")
+                        else:
+                            st.info(f"Marcando **{current_strategy_assign}** como Asignada y creando posición de acciones.")
 
-                    assign_leg = target_group.iloc[0]
-                    assign_price_gen = float(assign_leg["Strike"])
-                    contratos_gen = int(assign_leg["Contratos"])
+                        assign_leg = target_group.iloc[0]
+                        assign_price_gen = float(assign_leg["Strike"])
+                        contratos_gen = int(assign_leg["Contratos"])
 
-                    st.info(f"Se te asignarán **{contratos_gen * 100} acciones** de **{ticker_assign}** a **${assign_price_gen:.2f}**.")
+                        st.info(f"Se te asignarán **{contratos_gen * 100} acciones** de **{ticker_assign}** a **${assign_price_gen:.2f}**.")
 
-                    c_assign_btn2, c_assign_cancel2 = st.columns([2, 1])
-                    if c_assign_btn2.button("✅ Confirmar Asignación", type="primary", use_container_width=True, key="btn_assign_generic"):
-                        total_comisiones_ap = sum(float(r.get("Comisiones", 0.0)) for _, r in target_group.iterrows())
-                        now_str2 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        for idx_g, row_g in target_group.iterrows():
-                            real_idx_g = df.index[df["ID"] == row_g["ID"]][0]
-                            df.at[real_idx_g, "Estado"] = "Asignada"
-                            df.at[real_idx_g, "FechaCierre"] = now_str2
-                            df.at[real_idx_g, "MaxProfitUSD"] = 0.0
-                            if row_g["ID"] == assign_leg["ID"]:
-                                pnl_gen = (float(row_g["PrimaRecibida"]) * contratos_gen * 100) - total_comisiones_ap
-                                df.at[real_idx_g, "PnL_USD_Realizado"] = pnl_gen
-                                df.at[real_idx_g, "Notas"] = str(row_g.get("Notas", "")) + f" [ASIGNADA a {assign_price_gen}]"
-                            else:
-                                df.at[real_idx_g, "PnL_USD_Realizado"] = 0.0
+                        c_assign_btn2, c_assign_cancel2 = st.columns([2, 1])
+                        if c_assign_btn2.button("✅ Confirmar Asignación", type="primary", use_container_width=True, key="btn_assign_generic"):
+                            total_comisiones_ap = sum(float(r.get("Comisiones", 0.0)) for _, r in target_group.iterrows())
+                            now_str2 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            for idx_g, row_g in target_group.iterrows():
+                                real_idx_g = df.index[df["ID"] == row_g["ID"]][0]
+                                df.at[real_idx_g, "Estado"] = "Asignada"
+                                df.at[real_idx_g, "FechaCierre"] = now_str2
+                                df.at[real_idx_g, "MaxProfitUSD"] = 0.0
+                                if row_g["ID"] == assign_leg["ID"]:
+                                    pnl_gen = (float(row_g["PrimaRecibida"]) * contratos_gen * 100) - total_comisiones_ap
+                                    df.at[real_idx_g, "PnL_USD_Realizado"] = pnl_gen
+                                    df.at[real_idx_g, "Notas"] = str(row_g.get("Notas", "")) + f" [ASIGNADA a {assign_price_gen}]"
+                                else:
+                                    df.at[real_idx_g, "PnL_USD_Realizado"] = 0.0
 
-                        # Crear Long Stock genérico
-                        stock_chain_id2 = str(uuid4())[:8]
-                        prima_gen = float(assign_leg.get("PrimaRecibida", 0.0))
-                        cost_base_gen = assign_price_gen - prima_gen
-                        stock_row2 = {
-                            "ID": str(uuid4())[:8], "ChainID": stock_chain_id2, "ParentID": assign_leg["ID"],
-                            "Ticker": ticker_assign, "FechaApertura": datetime.now().strftime("%Y-%m-%d"),
-                            "Expiry": pd.to_datetime("2099-12-31").normalize(), "Estrategia": "Long Stock (Asignación)",
-                            "Setup": str(assign_leg.get("Setup", "Otro")), "Tags": "la-rueda,asignacion",
-                            "Side": "Buy", "OptionType": "Stock", "Strike": assign_price_gen, "Delta": 1.0,
-                            "PrimaRecibida": prima_gen, "CostoCierre": 0.0, "Contratos": contratos_gen,
-                            "BuyingPower": assign_price_gen * contratos_gen * 100,
-                            "BreakEven": cost_base_gen, "BreakEven_Upper": 0.0, "POP": 0.0, "Estado": "Abierta",
-                            "Notas": f"Acciones por asignación de {current_strategy_assign}. Costo base: ${cost_base_gen:.2f}",
-                            "UpdatedAt": datetime.now().isoformat(), "FechaCierre": pd.NA,
-                            "MaxProfitUSD": 0.0, "ProfitPct": 0.0, "PnL_Capital_Pct": 0.0,
-                            "PrecioAccionCierre": 0.0, "PnL_USD_Realizado": 0.0, "Comisiones": 0.0,
-                            "Broker": assign_leg.get("Broker", "IB"),
-                            "EarningsDate": assign_leg.get("EarningsDate", pd.NA), "DividendosDate": assign_leg.get("DividendosDate", pd.NA),
-                            "WheelParentChainID": target_chain, "CostBaseReal": cost_base_gen,
-                            "CoveredCallChainID": pd.NA, "CoveredCallPrima": 0.0, "WheelLeg": "long_stock",
-                        }
-                        st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([stock_row2])], ignore_index=True)
-                        st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
-                        del st.session_state["manage_chain_id"]
-                        st.success("Operación marcada como Asignada y acciones creadas.")
-                        st.rerun()
+                            # Crear Long Stock genérico
+                            stock_chain_id2 = str(uuid4())[:8]
+                            prima_gen = float(assign_leg.get("PrimaRecibida", 0.0))
+                            cost_base_gen = assign_price_gen - prima_gen
+                            stock_row2 = {
+                                "ID": str(uuid4())[:8], "ChainID": stock_chain_id2, "ParentID": assign_leg["ID"],
+                                "Ticker": ticker_assign, "FechaApertura": datetime.now().strftime("%Y-%m-%d"),
+                                "Expiry": pd.to_datetime("2099-12-31").normalize(), "Estrategia": "Long Stock (Asignación)",
+                                "Setup": str(assign_leg.get("Setup", "Otro")), "Tags": "la-rueda,asignacion",
+                                "Side": "Buy", "OptionType": "Stock", "Strike": assign_price_gen, "Delta": 1.0,
+                                "PrimaRecibida": prima_gen, "CostoCierre": 0.0, "Contratos": contratos_gen,
+                                "BuyingPower": assign_price_gen * contratos_gen * 100,
+                                "BreakEven": cost_base_gen, "BreakEven_Upper": 0.0, "POP": 0.0, "Estado": "Abierta",
+                                "Notas": f"Acciones por asignación de {current_strategy_assign}. Costo base: ${cost_base_gen:.2f}",
+                                "UpdatedAt": datetime.now().isoformat(), "FechaCierre": pd.NA,
+                                "MaxProfitUSD": 0.0, "ProfitPct": 0.0, "PnL_Capital_Pct": 0.0,
+                                "PrecioAccionCierre": 0.0, "PnL_USD_Realizado": 0.0, "Comisiones": 0.0,
+                                "Broker": assign_leg.get("Broker", "IB"),
+                                "EarningsDate": assign_leg.get("EarningsDate", pd.NA), "DividendosDate": assign_leg.get("DividendosDate", pd.NA),
+                                "WheelParentChainID": target_chain, "CostBaseReal": cost_base_gen,
+                                "CoveredCallChainID": pd.NA, "CoveredCallPrima": 0.0, "WheelLeg": "long_stock",
+                            }
+                            st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([stock_row2])], ignore_index=True)
+                            st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+                            del st.session_state["manage_chain_id"]
+                            st.success("Operación marcada como Asignada y acciones creadas.")
+                            st.rerun()
 
-                    if c_assign_cancel2.button("🚫 Cancelar", key="cancel_assign_btn2", use_container_width=True):
-                        del st.session_state["manage_chain_id"]
-                        st.rerun()
+                        if c_assign_cancel2.button("🚫 Cancelar", key="cancel_assign_btn2", use_container_width=True):
+                            del st.session_state["manage_chain_id"]
+                            st.rerun()
 
 def render_express_0dte():
     """Formulario simplificado para operaciones 0DTE (especialmente SPX)."""

@@ -27,4 +27,5 @@ All notable changes to this project will be documented in this file.
 - **Broker Commission Bug & Index Exceptions**: Added `get_fee_rate` helper function to handle broker-specific fees. Tradier now correctly defaults to `$0.65/contract` on indices (`SPX`, `NDX`, `RUT`, `VIX`, `DJX`, `XSP`) and `$0.00` on standard equities/ETFs, while IB always charges `$0.65`.
 - **Streamlit Widget Session Caching**: Implemented dynamic keys for commission input fields. This fixes the issue where Streamlit's state cache prevented the commission from resetting when changing the selected broker.
 - **Default Broker to Tradier**: Set **Tradier** as the pre-selected default broker when opening the application forms.
+- **Ambiguous pd.NA Comparisons**: Fixed a `TypeError` when evaluating `r.get("WheelLeg") == "sell_put"` inside the active portfolio and cost base calculations. If the value in the column is `pd.NA` (which happens when adding a new trade in memory), comparing it directly returns `pd.NA` and raises a TypeError in Python conditional statements. Added `.fillna("")` and `pd.notna()` checks to ensure comparisons are safe against pandas missing values.
 

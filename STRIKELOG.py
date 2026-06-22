@@ -133,8 +133,8 @@ class JournalManager:
         # 1. prima_neta_pcs (Si es 0.0 en el stock row, la recuperamos dinámicamente de los registros del PCS original)
         prima_neta_pcs = float(stock_row.get("PrimaRecibida", 0.0))
         if prima_neta_pcs == 0.0:
-            sell_put_rows = campaign_rows[campaign_rows["WheelLeg"] == "sell_put"]
-            buy_put_rows = campaign_rows[campaign_rows["WheelLeg"] == "buy_put_open"]
+            sell_put_rows = campaign_rows[campaign_rows["WheelLeg"].fillna("") == "sell_put"]
+            buy_put_rows = campaign_rows[campaign_rows["WheelLeg"].fillna("") == "buy_put_open"]
             sell_put_prima = float(sell_put_rows.iloc[0].get("PrimaRecibida", 0.0)) if not sell_put_rows.empty else 0.0
             buy_put_prima = abs(float(buy_put_rows[buy_put_rows["Estado"] != "Asignada"].iloc[0].get("PrimaRecibida", 0.0))) if not buy_put_rows.empty else 0.0
             if sell_put_prima > 0:
@@ -142,7 +142,7 @@ class JournalManager:
 
         # 2. Buscar si el Buy Put de La Rueda ya fue cerrado (para calcular venta del Buy Put)
         buy_put_prima_extra = 0.0
-        closed_bp_rows = campaign_rows[(campaign_rows["WheelLeg"] == "buy_put_open") & (campaign_rows["Estado"] != "Abierta") & (campaign_rows["Estado"] != "Asignada")]
+        closed_bp_rows = campaign_rows[(campaign_rows["WheelLeg"].fillna("") == "buy_put_open") & (campaign_rows["Estado"] != "Abierta") & (campaign_rows["Estado"] != "Asignada")]
         if not closed_bp_rows.empty:
             buy_put_prima_extra = abs(float(closed_bp_rows.iloc[0].get("CostoCierre", 0.0)))
 
@@ -154,9 +154,9 @@ class JournalManager:
         for _, r in campaign_rows.iterrows():
             if r["ID"] == stock_id or r.get("internal_type") == "long_stock":
                 continue
-            if r.get("WheelLeg") == "sell_put":
+            if pd.notna(r.get("WheelLeg")) and r.get("WheelLeg") == "sell_put":
                 continue
-            if r.get("WheelLeg") == "buy_put_open":
+            if pd.notna(r.get("WheelLeg")) and r.get("WheelLeg") == "buy_put_open":
                 continue
             if r["Estrategia"] in ["Long Stock (Asignación)", "Long Stock"]:
                 continue
@@ -1839,8 +1839,8 @@ def render_active_portfolio(df):
             # 1. prima_neta_pcs (Si es 0.0 en el stock row, la recuperamos dinámicamente de los registros del PCS original)
             prima_neta_pcs = float(stock_row.get("PrimaRecibida", 0))
             if prima_neta_pcs == 0.0:
-                sell_put_rows = campaign_rows[campaign_rows["WheelLeg"] == "sell_put"]
-                buy_put_rows = campaign_rows[campaign_rows["WheelLeg"] == "buy_put_open"]
+                sell_put_rows = campaign_rows[campaign_rows["WheelLeg"].fillna("") == "sell_put"]
+                buy_put_rows = campaign_rows[campaign_rows["WheelLeg"].fillna("") == "buy_put_open"]
                 sell_put_prima = float(sell_put_rows.iloc[0].get("PrimaRecibida", 0)) if not sell_put_rows.empty else 0.0
                 buy_put_prima = abs(float(buy_put_rows[buy_put_rows["Estado"] != "Asignada"].iloc[0].get("PrimaRecibida", 0))) if not buy_put_rows.empty else 0.0
                 if sell_put_prima > 0:
@@ -1849,7 +1849,7 @@ def render_active_portfolio(df):
             # 2. Buscar si el Buy Put de La Rueda ya fue cerrado (para calcular venta del Buy Put)
             buy_put_prima_extra = 0.0
             buy_put_closed = False
-            closed_bp_rows = campaign_rows[(campaign_rows["WheelLeg"] == "buy_put_open") & (campaign_rows["Estado"] != "Abierta") & (campaign_rows["Estado"] != "Asignada")]
+            closed_bp_rows = campaign_rows[(campaign_rows["WheelLeg"].fillna("") == "buy_put_open") & (campaign_rows["Estado"] != "Abierta") & (campaign_rows["Estado"] != "Asignada")]
             if not closed_bp_rows.empty:
                 buy_put_prima_extra = abs(float(closed_bp_rows.iloc[0].get("CostoCierre", 0)))
                 buy_put_closed = True
@@ -1862,9 +1862,9 @@ def render_active_portfolio(df):
             for _, r in campaign_rows.iterrows():
                 if r["ID"] == stock_id or r.get("internal_type") == "long_stock":
                     continue
-                if r.get("WheelLeg") == "sell_put":
+                if pd.notna(r.get("WheelLeg")) and r.get("WheelLeg") == "sell_put":
                     continue
-                if r.get("WheelLeg") == "buy_put_open":
+                if pd.notna(r.get("WheelLeg")) and r.get("WheelLeg") == "buy_put_open":
                     continue
                 if r["Estrategia"] in ["Long Stock (Asignación)", "Long Stock"]:
                     continue

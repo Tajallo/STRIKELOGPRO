@@ -18,6 +18,7 @@ All notable changes to this project will be documented in this file.
   - Total campaign commission aggregation factored into dynamic `Costo Base Real (BE)` calculation.
   - Side-by-side notes editors for active stock and covered calls.
 ### Fixed
+- **PnL Filter Precision**: Rounded historical PnL sums to 2 decimal places to resolve float precision issues that caused transactions to be incorrectly excluded from the history view under the PnL slider filter.
 - **Covered Call Assignment Logic**: Corrected the assignment logic for `"CC (Covered Call)"` strategies. Instead of creating a new `"Long Stock (Asignación)"` position when assigned, the system now correctly sells/retires the corresponding shares from the active stock inventory, closing the stock position or reducing its contract size accordingly.
 - **CSP Cost Base Contributions**: Fixed an issue where CSP (Cash Secured Put) options closed/expired within a wheel campaign were excluded from the dynamic cost base calculations. Now, extra or rolled CSPs successfully reduce the stock's Break Even.
 - **Always Visible Save Changes Button**: Fixed a UI issue where the "💾 Guardar Notas y Fechas" button in the Active Portfolio panel was conditionally rendered only after changes were detected. The button is now always visible at the bottom of the notes and dates section for a clearer and more intuitive experience.

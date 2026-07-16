@@ -4141,7 +4141,7 @@ def render_history(df):
         )
         
         # Fila 4: Slider PnL
-        chain_pnl_for_slider = hist_df.groupby("ChainID")["PnL_USD_Realizado"].sum()
+        chain_pnl_for_slider = hist_df.groupby("ChainID")["PnL_USD_Realizado"].sum().round(2)
         pnl_min_sl = float(chain_pnl_for_slider.min()) if not chain_pnl_for_slider.empty else -1000.0
         pnl_max_sl = float(chain_pnl_for_slider.max()) if not chain_pnl_for_slider.empty else 1000.0
         if pnl_min_sl == pnl_max_sl:
@@ -4208,7 +4208,7 @@ def render_history(df):
         main_leg = group_sorted.iloc[0]
 
         # PnL total de la operación (suma de todas las patas)
-        total_pnl = group["PnL_USD_Realizado"].sum()
+        total_pnl = round(group["PnL_USD_Realizado"].sum(), 2)
 
         # Prima neta total (suma de todas las patas)
         prima_total = group["PrimaRecibida"].sum()
@@ -4259,7 +4259,7 @@ def render_history(df):
         })
 
     # --- Filtros sobre los resúmenes de cadena ---
-    chain_summaries = [c for c in chain_summaries if pnl_range[0] <= c["PnL_Total"] <= pnl_range[1]]
+    chain_summaries = [c for c in chain_summaries if pnl_range[0] <= round(c["PnL_Total"], 2) <= pnl_range[1]]
     if resultado_filt == "✅ Ganadoras":
         chain_summaries = [c for c in chain_summaries if c["PnL_Total"] >= 0]
     elif resultado_filt == "❌ Perdedoras":

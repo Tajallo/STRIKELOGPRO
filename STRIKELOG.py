@@ -582,6 +582,126 @@ def leg_color_label(side, option_type):
         f">{side} {option_type}</span>"
     )
 
+def detect_strategy_from_legs(legs):
+    """
+    Detecta la estrategia de opción según la configuración de las patas (list de dicts).
+    Cada dict tiene 'Side', 'Type' o 'OptionType', 'Strike'.
+    """
+    if not legs:
+        return None
+        
+    num_legs = len(legs)
+    sides = [l.get("Side") for l in legs]
+    types = [l.get("Type", l.get("OptionType")) for l in legs]
+    strikes = [float(l.get("Strike", 0)) for l in legs]
+    
+    # 1 Pata
+    if num_legs == 1:
+        side, opt_type = sides[0], types[0]
+        if side == "Sell" and opt_type == "Put":
+            return "CSP (Cash Secured Put)"
+        elif side == "Sell" and opt_type == "Call":
+            return "CC (Covered Call)"
+        elif side == "Buy" and opt_type == "Call":
+            return "Long Call"
+        elif side == "Buy" and opt_type == "Put":
+            return "Long Put"
+            
+    # 2 Patas
+    elif num_legs == 2:
+        if types[0] == "Put" and types[1] == "Put":
+            sell_idx = sides.index("Sell") if "Sell" in sides else -1
+            buy_idx = sides.index("Buy") if "Buy" in sides else -1
+            if sell_idx != -1 and buy_idx != -1:
+                sell_strike = strikes[sell_idx]
+                buy_strike = strikes[buy_idx]
+                if sell_strike > buy_strike:
+                    return "Put Credit Spread"
+                else:
+                    return "Put Debit Spread"
+        elif types[0] == "Call" and types[1] == "Call":
+            sell_idx = sides.index("Sell") if "Sell" in sides else -1
+            buy_idx = sides.index("Buy") if "Buy" in sides else -1
+            if sell_idx != -1 and buy_idx != -1:
+                sell_strike = strikes[sell_idx]
+                buy_strike = strikes[buy_idx]
+                if buy_strike > sell_strike:
+                    return "Call Credit Spread"
+                else:
+                    return "Call Debit Spread"
+        elif "Put" in types and "Call" in types:
+            if sides[0] == "Sell" and sides[1] == "Sell":
+                if strikes[0] == strikes[1]:
+                    return "Straddle"
+                else:
+                    return "Strangle"
+                
+    # 4 Patas
+    elif num_legs == 4:
+        if sides.count("Sell") == 2 and sides.count("Buy") == 2:
+            if types.count("Put") == 2 and types.count("Call") == 2:
+                return "Iron Condor"
+                
+    return None
+
+def get_campaign_steps(df, start_id):
+    """
+    Rastrea todas las transacciones conectadas a start_id (por ChainID o ParentID/ID)
+    y las devuelve ordenadas por pasos cronológicos de ChainID.
+    Retorna una lista de tuplas: (chain_id, step_df) ordenadas por fecha.
+    """
+    df = df.copy()
+    visited = set()
+    queue = [start_id]
+    visited.add(start_id)
+    
+    while queue:
+        curr_id = queue.pop(0)
+        curr_rows = df[df["ID"] == curr_id]
+        if curr_rows.empty:
+            continue
+        curr_row = curr_rows.iloc[0]
+        
+        # 1. Conexión por ParentID
+        parent_id = curr_row.get("ParentID")
+        if pd.notna(parent_id) and str(parent_id) != "" and parent_id not in visited:
+            visited.add(parent_id)
+            queue.append(parent_id)
+            
+        # 2. Conexiones por hijos (ParentID == curr_id)
+        children_ids = df[df["ParentID"] == curr_id]["ID"].tolist()
+        for child_id in children_ids:
+            if child_id not in visited:
+                visited.add(child_id)
+                queue.append(child_id)
+                
+        # 3. Conexiones por ChainID (hermanos)
+        c_id = curr_row.get("ChainID")
+        if pd.notna(c_id) and str(c_id) != "":
+            siblings = df[df["ChainID"] == c_id]
+            for _, sib_row in siblings.iterrows():
+                sib_id = sib_row["ID"]
+                if sib_id not in visited:
+                    visited.add(sib_id)
+                    queue.append(sib_id)
+                
+                # También buscar si el hermano tiene padres
+                sib_parent = sib_row.get("ParentID")
+                if pd.notna(sib_parent) and str(sib_parent) != "" and sib_parent not in visited:
+                    visited.add(sib_parent)
+                    queue.append(sib_parent)
+                    
+    campaign_df = df[df["ID"].isin(visited)]
+    grouped_steps = []
+    for c_id, step_df in campaign_df.groupby("ChainID"):
+        min_date = pd.to_datetime(step_df["FechaApertura"].min())
+        if pd.isna(min_date):
+            min_date = pd.Timestamp.min
+        grouped_steps.append((c_id, step_df, min_date))
+        
+    grouped_steps.sort(key=lambda x: x[2])
+    return [(item[0], item[1]) for item in grouped_steps]
+
 def get_roll_history(df, current_id):
     """Rastrea hacia atrás todos los padres de un trade para obtener la secuencia de roles."""
     history = []
@@ -1348,82 +1468,68 @@ def render_active_portfolio(df):
         strat_dir = detect_strategy_direction(strategy, first_row["Side"])
         dir_icon = "📥" if strat_dir == "Sell" else "📤"
         
-        # Identificar historial de Rolls
-        roll_chain = get_roll_history(df, first_row["ID"])
-        num_rolls = len(roll_chain) - 1 # El actual no cuenta como roll
+        # Identificar historial de Rolls usando BFS
+        campaign_steps = get_campaign_steps(df, first_row["ID"])
+        num_rolls = len(campaign_steps) - 1 # El actual no cuenta como roll
         
         roll_label = f" 🔄 x{num_rolls}" if num_rolls > 0 else ""
 
-        # Cálculos extendidos de la cadena (Rolls + Actual)
-        # Cálculos extendidos de la cadena (Rolls + Actual)
-        # CORRECCIÓN: get_roll_history devuelve solo la rama de UN ID (una pata).
-        # Para estrategias multi-pata (IC), la prima está dividida. Debemos sumar
-        # la prima de TODO el ChainID de cada paso en la historia.
-        
+        # Cálculos extendidos de la campaña (Rolls + Actual)
         hist_credits = 0.0
         hist_debits = 0.0
         
-        # Iteramos sobre cada paso histórico (cada 'eslabón' de la cadena de esa pata)
-        # y buscamos sus "hermanos" de ChainID para sumar la prima completa de la estrategia en ese momento.
-        seen_chains = set()
-        for r in roll_chain:
-            c_id = r["ChainID"]
-            if c_id not in seen_chains:
-                seen_chains.add(c_id)
-                # Buscar todas las patas que pertenecían a ese ChainID
-                step_group = df[df["ChainID"] == c_id]
+        for c_id, step_df in campaign_steps:
+            for _, leg_row in step_df.iterrows():
+                p_rec = float(leg_row.get("PrimaRecibida", 0.0) or 0.0)
+                c_clo = float(leg_row.get("CostoCierre", 0.0) or 0.0)
+                side = leg_row.get("Side", "Sell")
                 
-                # Calcular créditos y débitos según el lado (Sell = Credito, Buy = Debito)
-                for _, leg_row in step_group.iterrows():
-                    p_rec = float(leg_row.get("PrimaRecibida", 0.0) or 0.0)
-                    c_clo = float(leg_row.get("CostoCierre", 0.0) or 0.0)
-                    side = leg_row.get("Side", "Sell")
-                    
-                    if side == "Sell":
-                        hist_credits += p_rec
-                        if r["Estado"] != "Abierta":
-                            hist_debits += c_clo
-                    else: # Buy (long leg)
-                        hist_debits += p_rec
-                        if r["Estado"] != "Abierta":
-                            hist_credits += c_clo
+                if side == "Sell":
+                    hist_credits += p_rec
+                    if leg_row["Estado"] != "Abierta":
+                        hist_debits += c_clo
+                else: # Buy (long leg)
+                    hist_debits += p_rec
+                    if leg_row["Estado"] != "Abierta":
+                        hist_credits += c_clo
 
         net_credit_chain = hist_credits - hist_debits
 
-        # Sumar el PnL Realizado de todas las patas pertenecientes a los ChainIDs de la historia
+        # Sumar el PnL Realizado de todas las patas cerradas de la historia
         realized_pnl_chain = 0.0
-        seen_chains_pnl = set()
-        for r in roll_chain:
-            c_id = r["ChainID"]
-            if c_id not in seen_chains_pnl:
-                seen_chains_pnl.add(c_id)
-                if r["Estado"] != "Abierta":
-                    step_group = df[df["ChainID"] == c_id]
-                    realized_pnl_chain += step_group["PnL_USD_Realizado"].sum()
+        for c_id, step_df in campaign_steps:
+            closed_legs = step_df[step_df["Estado"] != "Abierta"]
+            realized_pnl_chain += closed_legs["PnL_USD_Realizado"].sum()
         
         # Recálculo dinámico del Break Even
-        is_dual_be = strategy in DUAL_BE_STRATEGIES
+        # Si la estrategia tiene patas activas parciales, detectamos la estrategia real actual
+        legs_for_be = []
+        if not is_stock_position:
+            legs_for_be = [{"Side": r["Side"], "Type": r["OptionType"], "OptionType": r["OptionType"],
+                            "Strike": float(r["Strike"])} for _, r in group.iterrows()]
+            detected_strat = detect_strategy_from_legs(legs_for_be)
+            effective_strategy = detected_strat if detected_strat else strategy
+        else:
+            effective_strategy = strategy
+            
+        is_dual_be = effective_strategy in DUAL_BE_STRATEGIES
         calculated_be = 0.0
         calculated_be_upper = 0.0
-        legs_for_be = []
 
         # Detectar si es un Covered Call vinculado a La Rueda
         is_cc_rueda = (
-            strategy == "CC (Covered Call)" and
+            effective_strategy == "CC (Covered Call)" and
             ("la-rueda" in str(first_row.get("Tags", "")) or
              "covered-call" in str(first_row.get("Tags", "")) or
              pd.notna(first_row.get("ParentID")))
         )
 
         # Long Stock: no tiene lógica de opciones — usar el BE guardado (CostBaseReal)
-        # El detalle dinámico completo se gestiona en el Panel "La Rueda" más abajo.
         if is_stock_position:
             calculated_be = float(first_row.get("BreakEven", 0) or 0)
             calculated_be_upper = 0.0
         elif is_cc_rueda:
             # CC vinculado a acciones: BE = Strike + prima de ESTA pata únicamente.
-            # No usar net_credit_chain (acumulado de toda la historia) ya que
-            # confunde con el BE global de las acciones subyacentes.
             strike_cc = float(first_row.get("Strike", 0) or 0)
             prima_actual_cc = abs(float(first_row.get("PrimaRecibida", 0) or 0))
             calculated_be = strike_cc + prima_actual_cc   # BE pata individual
@@ -1433,21 +1539,12 @@ def render_active_portfolio(df):
         else:
             try:
                 if is_dual_be:
-                    legs_for_be = [{"Side": r["Side"], "Type": r["OptionType"], "OptionType": r["OptionType"],
-                                    "Strike": float(r["Strike"])} for _, r in group.iterrows()]
-                    calculated_be, calculated_be_upper = suggest_breakeven(strategy, legs_for_be, net_credit_chain)
-
+                    calculated_be, calculated_be_upper = suggest_breakeven(effective_strategy, legs_for_be, net_credit_chain)
                     if calculated_be == 0.0 and calculated_be_upper == 0.0:
                         calculated_be = float(first_row["BreakEven"] or 0)
                         calculated_be_upper = float(first_row.get("BreakEven_Upper", 0) or 0)
                 else:
-                    legs_for_be = [{"Side": first_row["Side"], "Type": first_row["OptionType"],
-                                    "OptionType": first_row["OptionType"], "Strike": float(first_row["Strike"])}]
-                    if len(group) > 1:
-                        legs_for_be = [{"Side": r["Side"], "Type": r["OptionType"], "OptionType": r["OptionType"],
-                                        "Strike": float(r["Strike"])} for _, r in group.iterrows()]
-
-                    calculated_be, _ = suggest_breakeven(strategy, legs_for_be, net_credit_chain)
+                    calculated_be, _ = suggest_breakeven(effective_strategy, legs_for_be, net_credit_chain)
                     if calculated_be == 0.0:
                         calculated_be = float(first_row["BreakEven"] or 0)
             except Exception as e:
@@ -1463,7 +1560,6 @@ def render_active_portfolio(df):
             be_str = f"${calculated_be:,.2f}"
         
         # Componentes del título expandido
-        # Formato: 13 Mar
         try:
             exp_date_obj = pd.to_datetime(first_row["Expiry"])
             exp_str_title = exp_date_obj.strftime("%d %b")
@@ -1472,16 +1568,19 @@ def render_active_portfolio(df):
             
         strikes_short = " / ".join(f"{float(r['Strike']):g}" for _, r in group.iterrows())
         
-        # Header del Expander Limpio + Earnings/Div Icon (Sin HTML en título expander)
+        # Título de estrategia dinámico
+        strategy_display = f"{effective_strategy} (de {strategy})" if effective_strategy != strategy else strategy
+        
+        # Header del Expander Limpio + Earnings/Div Icon
         alerts_list = []
         if earnings_txt: alerts_list.append(f"🚨 {earnings_txt} 🚨")
         if div_txt: alerts_list.append(f"🚨 {div_txt} 🚨")
         
         alerts_str = "   ".join(alerts_list)
         if alerts_str:
-            header_title = f"{ticker} {exp_str_title} {strikes_short} {strategy} {roll_label}   {alerts_str}"
+            header_title = f"{ticker} {exp_str_title} {strikes_short} {strategy_display} {roll_label}   {alerts_str}"
         else:
-            header_title = f"{ticker} {exp_str_title} {strikes_short} {strategy} {roll_label}"
+            header_title = f"{ticker} {exp_str_title} {strikes_short} {strategy_display} {roll_label}"
         
         # Layout de Tarjeta
         c_dte, c_card = st.columns([1, 10])
@@ -1490,9 +1589,7 @@ def render_active_portfolio(df):
             st.markdown(dte_html, unsafe_allow_html=True)
             
         with c_card:
-            # Usamos un expander para el detalle, pero el título ya tiene mucha info
             with st.expander(header_title, expanded=False):
-                # Sub-header visual con Tags (sin duplicar earnings)
                 tags_html = "".join([f"<span class='tag-pill'>{t.strip()}</span>" for t in tags if t.strip()])
                 st.markdown(f"{dit_display} &nbsp; {tags_html}", unsafe_allow_html=True)
                 
@@ -1535,34 +1632,32 @@ def render_active_portfolio(df):
                 m3.metric("Capital Reservado", f"${total_bp:,.2f}")
                 m4.metric("PnL Realizado (Rolls)", f"${realized_pnl_chain:,.2f}", delta=f"${realized_pnl_chain:,.2f}" if realized_pnl_chain != 0 else None)
             
-                # --- SECCIÓN DE HISTORIAL DE ROLLS (Corregida) ---
+                # --- SECCIÓN DE HISTORIAL DE ROLLS (BFS Detallado) ---
                 if num_rolls > 0:
                     st.markdown("#### 🕒 Historial de esta posición")
                     
-                    # Reconstruir la cadena histórica completa para visualización
-                    reversed_chain = list(reversed(roll_chain))
-                    if reversed_chain:
-                        origin = reversed_chain[0]
-                        origin_date = pd.to_datetime(origin['FechaApertura']).strftime("%Y-%m-%d") if pd.notna(origin['FechaApertura']) else "N/A"
-                        st.info(f"📍 **Origen:** Abierto el `{origin_date}` con Strike `{origin.get('Strike', '')} {origin.get('OptionType', '')}`.")
+                    if campaign_steps:
+                        first_step_df = campaign_steps[0][1]
+                        origin_date = pd.to_datetime(first_step_df.iloc[0]['FechaApertura']).strftime("%Y-%m-%d") if pd.notna(first_step_df.iloc[0]['FechaApertura']) else "N/A"
+                        st.info(f"📍 **Origen:** Campaña iniciada el `{origin_date}`.")
                         
                         hist_data = []
-                        for i, r in enumerate(reversed_chain):
-                            # Etiquetar cada paso
+                        for i, (c_id, step_df) in enumerate(campaign_steps):
                             if i == 0: label = "ORIGEN"
-                            elif i == len(reversed_chain) - 1: label = "ACTUAL" # La última en la lista reversed es la actual
+                            elif i == len(campaign_steps) - 1: label = "ACTUAL"
                             else: label = f"ROL #{i}"
                             
-                            f_apertura = pd.to_datetime(r["FechaApertura"]).strftime("%Y-%m-%d") if pd.notna(r["FechaApertura"]) else ""
+                            first_leg = step_df.iloc[0]
+                            f_apertura = pd.to_datetime(first_leg["FechaApertura"]).strftime("%Y-%m-%d") if pd.notna(first_leg["FechaApertura"]) else ""
                             
-                            # Sumar PnL de todas las patas de este paso (ChainID)
-                            step_group = df[df["ChainID"] == r["ChainID"]]
-                            step_pnl_val = step_group["PnL_USD_Realizado"].sum()
-                            pnl_val = f"${step_pnl_val:.2f}" if r['Estado'] != 'Abierta' else "-"
+                            # Sumar PnL de las patas cerradas de este paso (ChainID)
+                            closed_legs = step_df[step_df["Estado"] != "Abierta"]
+                            step_pnl_val = closed_legs["PnL_USD_Realizado"].sum() if not closed_legs.empty else 0.0
+                            pnl_val = f"${step_pnl_val:.2f}" if step_pnl_val != 0.0 else "-"
                             
                             # Calcular prima neta de apertura de este paso (ChainID)
                             opening_premium = 0.0
-                            for _, leg_row in step_group.iterrows():
+                            for _, leg_row in step_df.iterrows():
                                 p_rec = float(leg_row.get("PrimaRecibida", 0.0) or 0.0)
                                 if leg_row.get("Side", "Sell") == "Sell":
                                     opening_premium += p_rec
@@ -1570,12 +1665,67 @@ def render_active_portfolio(df):
                                     opening_premium -= p_rec
                             prima_val = f"${opening_premium:+.2f}" if opening_premium != 0 else "$0.00"
                             
+                            # Detalle de las patas/strikes en este paso
+                            strikes_list = []
+                            for _, leg_row in step_df.iterrows():
+                                status_suffix = ""
+                                if leg_row["Estado"] == "Cerrada":
+                                    status_suffix = " ❌"
+                                elif leg_row["Estado"] == "Rolada":
+                                    status_suffix = " 🔄"
+                                elif leg_row["Estado"] == "Asignada":
+                                    status_suffix = " 📜"
+                                
+                                strikes_list.append(
+                                    f"{leg_row.get('Side', 'Sell')} {float(leg_row.get('Strike', 0)):g} {leg_row.get('OptionType', 'Put')} (x{int(leg_row.get('Contratos', 1))}){status_suffix}"
+                                )
+                            strike_display = " / ".join(strikes_list)
+                            
+                            # Calcular BE dinámico en esta etapa de la campaña
+                            credits_i = 0.0
+                            debits_i = 0.0
+                            for j in range(i + 1):
+                                _, prev_step_df = campaign_steps[j]
+                                for _, leg_row in prev_step_df.iterrows():
+                                    p_rec = float(leg_row.get("PrimaRecibida", 0.0) or 0.0)
+                                    c_clo = float(leg_row.get("CostoCierre", 0.0) or 0.0)
+                                    side = leg_row.get("Side", "Sell")
+                                    if side == "Sell":
+                                        credits_i += p_rec
+                                        if j < i or leg_row["Estado"] != "Abierta":
+                                            debits_i += c_clo
+                                    else:
+                                        debits_i += p_rec
+                                        if j < i or leg_row["Estado"] != "Abierta":
+                                            credits_i += c_clo
+                            net_premium_i = credits_i - debits_i
+                            
+                            # Usar suggest_breakeven para esta etapa
+                            legs_i = [{"Side": leg["Side"], "Type": leg["OptionType"], "OptionType": leg["OptionType"],
+                                       "Strike": float(leg["Strike"])} for _, leg in step_df.iterrows()]
+                            # Detectar estrategia en esta etapa específica
+                            step_strat = detect_strategy_from_legs(legs_i)
+                            if not step_strat:
+                                step_strat = first_leg["Estrategia"]
+                                
+                            step_be_lower, step_be_upper = suggest_breakeven(step_strat, legs_i, net_premium_i)
+                            
+                            if step_strat in DUAL_BE_STRATEGIES and step_be_upper > 0:
+                                be_val = f"{step_be_lower:.2f} / {step_be_upper:.2f}"
+                            else:
+                                be_val = f"{step_be_lower:.2f}"
+                            
+                            # Costo de cierre de las patas cerradas de este paso
+                            closing_cost = closed_legs["CostoCierre"].sum() if not closed_legs.empty else 0.0
+                            costo_val = f"${closing_cost:.2f}" if closing_cost != 0.0 else "-"
+                            
                             hist_data.append({
                                 "Etapa": label,
                                 "Fecha": f_apertura,
-                                "Strike": f"{r.get('Strike','')} {r.get('OptionType','')}",
+                                "Operación / Patas": strike_display,
                                 "Prima": prima_val,
-                                "BE": f"{r.get('BreakEven',0):.2f}",
+                                "Cierre": costo_val,
+                                "BE Acum.": be_val,
                                 "PnL Realizado": pnl_val
                             })
                         
@@ -1583,16 +1733,41 @@ def render_active_portfolio(df):
                         st.table(pd.DataFrame(hist_data))
                         
                         # Mostrar evolución del BE
-                        if len(reversed_chain) >= 2:
-                            prev_be = reversed_chain[-2].get("BreakEven", 0.0)
-                            curr_be = first_row.get("BreakEven", 0.0)
-                            diff_be = float(curr_be) - float(prev_be)
+                        if len(campaign_steps) >= 2:
+                            # Calcular el BE de la etapa anterior para comparar
+                            _, prev_step_df = campaign_steps[-2]
+                            prev_legs = [{"Side": l["Side"], "Type": l["OptionType"], "OptionType": l["OptionType"],
+                                          "Strike": float(l["Strike"])} for _, l in prev_step_df.iterrows()]
+                            prev_step_strat = detect_strategy_from_legs(prev_legs) or campaign_steps[-2][1].iloc[0]["Estrategia"]
+                            
+                            # Calcular net_premium para el paso anterior
+                            credits_prev = 0.0
+                            debits_prev = 0.0
+                            for j in range(len(campaign_steps) - 1):
+                                _, s_df = campaign_steps[j]
+                                for _, leg_row in s_df.iterrows():
+                                    p_rec = float(leg_row.get("PrimaRecibida", 0.0) or 0.0)
+                                    c_clo = float(leg_row.get("CostoCierre", 0.0) or 0.0)
+                                    side = leg_row.get("Side", "Sell")
+                                    if side == "Sell":
+                                        credits_prev += p_rec
+                                        if j < len(campaign_steps) - 2 or leg_row["Estado"] != "Abierta":
+                                            debits_prev += c_clo
+                                    else:
+                                        debits_prev += p_rec
+                                        if j < len(campaign_steps) - 2 or leg_row["Estado"] != "Abierta":
+                                            credits_prev += c_clo
+                            net_premium_prev = credits_prev - debits_prev
+                            prev_be_lower, _ = suggest_breakeven(prev_step_strat, prev_legs, net_premium_prev)
+                            
+                            curr_be = calculated_be
+                            diff_be = float(curr_be) - float(prev_be_lower)
                             
                             icon_trend = "➡️"
                             if diff_be > 0: icon_trend = "📈"
                             elif diff_be < 0: icon_trend = "📉"
                             
-                            st.caption(f"**Evolución del BE (último rol):** `{prev_be:.2f}` → `{curr_be:.2f}` ({icon_trend} {diff_be:+.2f})")
+                            st.caption(f"**Evolución del BE (último rol):** `{prev_be_lower:.2f}` → `{curr_be:.2f}` ({icon_trend} {diff_be:+.2f})")
                             
                         # Explicación clara de los cálculos de BE
                         if not is_dual_be:
@@ -1601,7 +1776,7 @@ def render_active_portfolio(df):
                                 if leg.get("Side") == "Sell":
                                     main_strike = float(leg.get("Strike", main_strike))
                                     break
-                            signo = "-" if "Put" in strategy or "CSP" in strategy or "Long Put" in strategy else "+"
+                            signo = "-" if "Put" in effective_strategy or "CSP" in effective_strategy or "Long Put" in effective_strategy else "+"
                             op_word = "restar" if signo == "-" else "sumar"
                             st.markdown(
                                 f"<div style='font-size: 13.5px; color: #bdc3c7; margin-top: 10px; margin-bottom: 5px; padding: 8px; background-color: #1a1e29; border-left: 3px solid #00ffa2; border-radius: 4px;'>"
@@ -3105,36 +3280,34 @@ def render_active_portfolio(df):
                     # ... [Lógica de Pre-cálculo BE insertada en pasos anteriores] ...
                     # Re-insertamos lógica de BE aquí para mantener consistencia con el bloque reemplazado
                     
-                    hist_chain_be = get_roll_history(df, legs_to_roll[0]["ID"])
+                    campaign_steps_be = get_campaign_steps(df, legs_to_roll[0]["ID"])
                     hist_credits_be = 0.0
                     hist_debits_be = 0.0
-                    seen_chains_be = set()
-                    for h in hist_chain_be:
-                        c_id = h["ChainID"]
-                        if c_id not in seen_chains_be:
-                            seen_chains_be.add(c_id)
-                            step_group = df[df["ChainID"] == c_id]
-                            for _, leg_row in step_group.iterrows():
-                                p_rec = float(leg_row.get("PrimaRecibida", 0.0) or 0.0)
-                                c_clo = float(leg_row.get("CostoCierre", 0.0) or 0.0)
-                                side = leg_row.get("Side", "Sell")
-                                if side == "Sell":
-                                    hist_credits_be += p_rec
-                                    if h["Estado"] != "Abierta":
-                                        hist_debits_be += c_clo
-                                else:
-                                    hist_debits_be += p_rec
-                                    if h["Estado"] != "Abierta":
-                                        hist_credits_be += c_clo
+                    for c_id, step_df in campaign_steps_be:
+                        for _, leg_row in step_df.iterrows():
+                            p_rec = float(leg_row.get("PrimaRecibida", 0.0) or 0.0)
+                            c_clo = float(leg_row.get("CostoCierre", 0.0) or 0.0)
+                            side = leg_row.get("Side", "Sell")
+                            if side == "Sell":
+                                hist_credits_be += p_rec
+                                if leg_row["Estado"] != "Abierta":
+                                    hist_debits_be += c_clo
+                            else:
+                                hist_debits_be += p_rec
+                                if leg_row["Estado"] != "Abierta":
+                                    hist_credits_be += c_clo
                     total_net_credit_for_be = hist_credits_be - hist_debits_be - roll_close_cost + new_net_premium
                     
-                    roll_be_lower, roll_be_upper = suggest_breakeven(roll_strategy, new_legs_data, total_net_credit_for_be)
-                    is_roll_dual = roll_strategy in DUAL_BE_STRATEGIES
+                    detected_roll_strat = detect_strategy_from_legs(new_legs_data)
+                    effective_roll_strategy = detected_roll_strat if detected_roll_strat else roll_strategy
+                    
+                    roll_be_lower, roll_be_upper = suggest_breakeven(effective_roll_strategy, new_legs_data, total_net_credit_for_be)
+                    is_roll_dual = effective_roll_strategy in DUAL_BE_STRATEGIES
                     
                     if is_roll_dual and roll_be_upper > 0:
-                        st.info(f"📊 **Nuevo Break Even Estimado:** `${roll_be_lower:.2f}` / `${roll_be_upper:.2f}` (Crédito Neto Acumulado: `${total_net_credit_for_be:.2f}`)")
+                         st.info(f"📊 **Nuevo Break Even Estimado:** `${roll_be_lower:.2f}` / `${roll_be_upper:.2f}` (Crédito Neto Acumulado: `${total_net_credit_for_be:.2f}`)")
                     else:
-                        st.info(f"📊 **Nuevo Break Even Estimado:** `${roll_be_lower:.2f}` (Crédito Neto Acumulado: `${total_net_credit_for_be:.2f}`)")
+                         st.info(f"📊 **Nuevo Break Even Estimado:** `${roll_be_lower:.2f}` (Crédito Neto Acumulado: `${total_net_credit_for_be:.2f}`)")
 
                     c_btn1, c_btn2 = st.columns([2, 1])
                     if c_btn1.button("🚀 Ejecutar Ajuste", type="primary", width="stretch"):
@@ -3171,7 +3344,7 @@ def render_active_portfolio(df):
                                 new_rows.append({
                                     "ID": str(uuid4())[:8], "ChainID": new_chain_id, "ParentID": n_leg["OldID"],
                                     "Ticker": n_leg["Ticker"], "FechaApertura": pd.Timestamp.now().normalize(), "Expiry": pd.to_datetime(new_expiry).normalize(),
-                                    "Estrategia": n_leg["Estrategia"], "Side": n_leg["Side"], "OptionType": n_leg["Type"], 
+                                    "Estrategia": effective_roll_strategy, "Side": n_leg["Side"], "OptionType": n_leg["Type"], 
                                     "Strike": n_leg["Strike"], "Delta": n_leg["Delta"],
                                     "PrimaRecibida": p_recibida, "CostoCierre": 0.0, "Contratos": n_leg["Contratos"],
                                     "BuyingPower": original_bp if i == 0 else 0.0, 

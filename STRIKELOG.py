@@ -2133,7 +2133,7 @@ def render_active_portfolio(df):
             )
             with st.expander(
                 f"🎡 {stock_ticker} — {acciones_st} acciones @ ${precio_compra:.2f}  |  BE: ${costo_base_dinamico:.2f}",
-                expanded=True
+                expanded=False
             ):
                 st.markdown(f"""
                 <div style='margin-bottom:10px;'>

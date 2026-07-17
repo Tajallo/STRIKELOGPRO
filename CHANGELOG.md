@@ -18,7 +18,9 @@ All notable changes to this project will be documented in this file.
   - Total campaign commission aggregation factored into dynamic `Costo Base Real (BE)` calculation.
   - Side-by-side notes editors for active stock and covered calls.
 - **Break Even Explanation Panel**: Added a dynamic informational card below the active portfolio history table that breaks down and explains the math behind the break-even calculation step-by-step for multi-leg strategies.
+- **Step-by-step BE Explanation Box**: Added a detailed, contract-weighted breakdown panel below the history table for active option campaign positions with rolls, detailing credits/debits from the opening and closed legs chronologically.
 ### Fixed
+- **Contract-Weighted Roll Calculations**: Fixed a mathematical bug where premiums and break-evens were summed directly per share across steps with different contract counts (e.g. 1 contract vs 2 contracts). The calculations are now properly weighted by contracts (in total dollars) and then divided by the active/new contract count to yield a mathematically precise Break-Even and Prima Total.
 - **Break Even & Net Premium Math**: Corrected the calculation of net premiums in the Active Portfolio's historical roll view. The app now accurately sums premiums based on trade side (`Sell` = credit, `Buy` = debit) and correctly aggregates total campaign PnL across all chained legs to reflect the precise Break Even.
 - **Streamlit Deprecations**: Replaced deprecated `st.components.v1.html` with `st.html(..., unsafe_allow_javascript=True)` and updated dataframe `use_container_width` argument to `width="stretch"` or `width="content"` to resolve runtime warnings and ensure future compatibility.
 - **Local Variable Initialization Bug**: Fixed `UnboundLocalError: cannot access local variable 'legs_for_be'` in the Active Portfolio view by properly scoping the variables.

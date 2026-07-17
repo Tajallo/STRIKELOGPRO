@@ -1475,25 +1475,28 @@ def render_active_portfolio(df):
         roll_label = f" 🔄 x{num_rolls}" if num_rolls > 0 else ""
 
         # Cálculos extendidos de la campaña (Rolls + Actual)
-        hist_credits = 0.0
-        hist_debits = 0.0
+        hist_credits_dollars = 0.0
+        hist_debits_dollars = 0.0
         
         for c_id, step_df in campaign_steps:
             for _, leg_row in step_df.iterrows():
                 p_rec = float(leg_row.get("PrimaRecibida", 0.0) or 0.0)
                 c_clo = float(leg_row.get("CostoCierre", 0.0) or 0.0)
                 side = leg_row.get("Side", "Sell")
+                qty = float(leg_row.get("Contratos", 1.0) or 1.0)
                 
                 if side == "Sell":
-                    hist_credits += p_rec
+                    hist_credits_dollars += p_rec * qty
                     if leg_row["Estado"] != "Abierta":
-                        hist_debits += c_clo
+                        hist_debits_dollars += c_clo * qty
                 else: # Buy (long leg)
-                    hist_debits += p_rec
+                    hist_debits_dollars += p_rec * qty
                     if leg_row["Estado"] != "Abierta":
-                        hist_credits += c_clo
+                        hist_credits_dollars += c_clo * qty
 
-        net_credit_chain = hist_credits - hist_debits
+        net_credit_dollars = hist_credits_dollars - hist_debits_dollars
+        qty_active = float(first_row.get("Contratos", 1.0) or 1.0)
+        net_credit_chain = net_credit_dollars / qty_active if qty_active > 0 else net_credit_dollars
 
         # Sumar el PnL Realizado de todas las patas cerradas de la historia
         realized_pnl_chain = 0.0
@@ -1682,23 +1685,27 @@ def render_active_portfolio(df):
                             strike_display = " / ".join(strikes_list)
                             
                             # Calcular BE dinámico en esta etapa de la campaña
-                            credits_i = 0.0
-                            debits_i = 0.0
+                            dollars_credits_i = 0.0
+                            dollars_debits_i = 0.0
                             for j in range(i + 1):
                                 _, prev_step_df = campaign_steps[j]
                                 for _, leg_row in prev_step_df.iterrows():
                                     p_rec = float(leg_row.get("PrimaRecibida", 0.0) or 0.0)
                                     c_clo = float(leg_row.get("CostoCierre", 0.0) or 0.0)
                                     side = leg_row.get("Side", "Sell")
+                                    qty = float(leg_row.get("Contratos", 1.0) or 1.0)
                                     if side == "Sell":
-                                        credits_i += p_rec
+                                        dollars_credits_i += p_rec * qty
                                         if j < i or leg_row["Estado"] != "Abierta":
-                                            debits_i += c_clo
+                                            dollars_debits_i += c_clo * qty
                                     else:
-                                        debits_i += p_rec
+                                        dollars_debits_i += p_rec * qty
                                         if j < i or leg_row["Estado"] != "Abierta":
-                                            credits_i += c_clo
-                            net_premium_i = credits_i - debits_i
+                                            dollars_credits_i += c_clo * qty
+                            
+                            step_first_leg = step_df.iloc[0]
+                            qty_step_i = float(step_first_leg.get("Contratos", 1.0) or 1.0)
+                            net_premium_i = (dollars_credits_i - dollars_debits_i) / qty_step_i if qty_step_i > 0 else (dollars_credits_i - dollars_debits_i)
                             
                             # Usar suggest_breakeven para esta etapa
                             legs_i = [{"Side": leg["Side"], "Type": leg["OptionType"], "OptionType": leg["OptionType"],
@@ -1741,23 +1748,27 @@ def render_active_portfolio(df):
                             prev_step_strat = detect_strategy_from_legs(prev_legs) or campaign_steps[-2][1].iloc[0]["Estrategia"]
                             
                             # Calcular net_premium para el paso anterior
-                            credits_prev = 0.0
-                            debits_prev = 0.0
+                            dollars_credits_prev = 0.0
+                            dollars_debits_prev = 0.0
                             for j in range(len(campaign_steps) - 1):
                                 _, s_df = campaign_steps[j]
                                 for _, leg_row in s_df.iterrows():
                                     p_rec = float(leg_row.get("PrimaRecibida", 0.0) or 0.0)
                                     c_clo = float(leg_row.get("CostoCierre", 0.0) or 0.0)
                                     side = leg_row.get("Side", "Sell")
+                                    qty = float(leg_row.get("Contratos", 1.0) or 1.0)
                                     if side == "Sell":
-                                        credits_prev += p_rec
+                                        dollars_credits_prev += p_rec * qty
                                         if j < len(campaign_steps) - 2 or leg_row["Estado"] != "Abierta":
-                                            debits_prev += c_clo
+                                            dollars_debits_prev += c_clo * qty
                                     else:
-                                        debits_prev += p_rec
+                                        dollars_debits_prev += p_rec * qty
                                         if j < len(campaign_steps) - 2 or leg_row["Estado"] != "Abierta":
-                                            credits_prev += c_clo
-                            net_premium_prev = credits_prev - debits_prev
+                                            dollars_credits_prev += c_clo * qty
+                            
+                            prev_first_leg = campaign_steps[-2][1].iloc[0]
+                            qty_prev = float(prev_first_leg.get("Contratos", 1.0) or 1.0)
+                            net_premium_prev = (dollars_credits_prev - dollars_debits_prev) / qty_prev if qty_prev > 0 else (dollars_credits_prev - dollars_debits_prev)
                             prev_be_lower, _ = suggest_breakeven(prev_step_strat, prev_legs, net_premium_prev)
                             
                             curr_be = calculated_be
@@ -1770,29 +1781,104 @@ def render_active_portfolio(df):
                             st.caption(f"**Evolución del BE (último rol):** `{prev_be_lower:.2f}` → `{curr_be:.2f}` ({icon_trend} {diff_be:+.2f})")
                             
                         # Explicación clara de los cálculos de BE
-                        if not is_dual_be:
+                        if num_rolls > 0:
+                            # Generar explicación paso a paso para el panel
+                            breakdown_lines = []
+                            total_accum_dollars = 0.0
+                            
+                            for idx_step, (c_id, step_df) in enumerate(campaign_steps):
+                                step_credits_dollars = 0.0
+                                step_debits_dollars = 0.0
+                                for _, leg_row in step_df.iterrows():
+                                    p_rec = float(leg_row.get("PrimaRecibida", 0.0) or 0.0)
+                                    c_clo = float(leg_row.get("CostoCierre", 0.0) or 0.0)
+                                    side = leg_row.get("Side", "Sell")
+                                    qty = float(leg_row.get("Contratos", 1.0) or 1.0)
+                                    if side == "Sell":
+                                        step_credits_dollars += p_rec * qty
+                                        if leg_row["Estado"] != "Abierta":
+                                            step_debits_dollars += c_clo * qty
+                                    else:
+                                        step_debits_dollars += p_rec * qty
+                                        if leg_row["Estado"] != "Abierta":
+                                            step_credits_dollars += c_clo * qty
+                                            
+                                step_net_dollars = step_credits_dollars - step_debits_dollars
+                                total_accum_dollars += step_net_dollars
+                                
+                                # Etiqueta del paso
+                                if idx_step == 0:
+                                    step_label = "Origen"
+                                elif idx_step == len(campaign_steps) - 1:
+                                    step_label = "Actual"
+                                else:
+                                    step_label = f"Rol #{idx_step}"
+                                    
+                                first_leg = step_df.iloc[0]
+                                step_contracts = int(first_leg.get("Contratos", 1))
+                                step_per_share = step_net_dollars / step_contracts if step_contracts > 0 else step_net_dollars
+                                
+                                sign_str = "+" if step_net_dollars >= 0 else "-"
+                                breakdown_lines.append(
+                                    f"<li><b>{step_label}:</b> {sign_str}&#36;{abs(step_per_share):.2f} por acción (Total: {sign_str}&#36;{abs(step_net_dollars * 100):,.2f} para {step_contracts} contr.)</li>"
+                                )
+                            
+                            # Obtener strike principal
                             main_strike = float(first_row.get("Strike", 0.0))
-                            for leg in legs_for_be:
-                                if leg.get("Side") == "Sell":
-                                    main_strike = float(leg.get("Strike", main_strike))
-                                    break
-                            signo = "-" if "Put" in effective_strategy or "CSP" in effective_strategy or "Long Put" in effective_strategy else "+"
-                            op_word = "restar" if signo == "-" else "sumar"
-                            st.markdown(
-                                f"<div style='font-size: 13.5px; color: #bdc3c7; margin-top: 10px; margin-bottom: 5px; padding: 8px; background-color: #1a1e29; border-left: 3px solid #00ffa2; border-radius: 4px;'>"
-                                f"📐 **Cálculo del BE actual:** Strike `{main_strike:.2f}` {signo} Prima Total `{net_credit_chain:.2f}` = **{be_str}** "
-                                f"*(obtenido al {op_word} la prima neta acumulada de toda la campaña al strike actual)*"
-                                f"</div>",
-                                unsafe_allow_html=True
-                            )
+                            if not is_dual_be:
+                                for leg in legs_for_be:
+                                    if leg.get("Side") == "Sell":
+                                        main_strike = float(leg.get("Strike", main_strike))
+                                        break
+                                signo = "-" if "Put" in effective_strategy or "CSP" in effective_strategy or "Long Put" in effective_strategy else "+"
+                                op_word = "restar" if signo == "-" else "sumar"
+                                final_be_desc = f"Strike {main_strike:.2f} {signo} Colchón {net_credit_chain:.3f} = {be_str}"
+                            else:
+                                final_be_desc = f"Zona de beneficio entre {be_str} basada en Colchón {net_credit_chain:.3f}"
+                            
+                            breakdown_html = f"""
+                            <div style='background-color: #1a1e29; border-left: 4px solid #f39c12; border-radius: 8px; padding: 16px; margin-top: 15px; font-family: sans-serif; color: #bdc3c7;'>
+                                <h5 style='color: #f39c12; margin: 0 0 10px 0; font-size: 14px;'>📐 Desglose del Break-Even Paso a Paso</h5>
+                                <ul style='margin: 0; padding-left: 20px; font-size: 13px; line-height: 1.6;'>
+                                    {"".join(breakdown_lines)}
+                                </ul>
+                                <hr style='border-color: #2c3e50; margin: 12px 0;'>
+                                <div style='font-size: 13px; line-height: 1.6;'>
+                                    <b>💵 Consolidación Financiera de la Campaña:</b><br>
+                                    • Prima Total Acumulada: <span style='color: #00ffa2; font-weight: bold;'>&#36;{total_accum_dollars * 100:,.2f} USD</span><br>
+                                    • Ponderación de Contratos: Como la posición actual tiene <b>{int(qty_active)} contratos</b> ({int(qty_active * 100)} acciones), repartimos el colchón:<br>
+                                    <span style='padding-left: 10px; font-style: italic; color: #95a5a6;'>Colchón = &#36;{total_accum_dollars * 100:,.2f} / {int(qty_active * 100)} acciones = <b>&#36;{net_credit_chain:.3f} por acción</b></span>
+                                </div>
+                                <div style='margin-top: 10px; font-size: 13.5px; font-weight: bold; color: #00ffa2;'>
+                                    🎯 BE Real = {final_be_desc}
+                                </div>
+                            </div>
+                            """
+                            st.markdown(breakdown_html, unsafe_allow_html=True)
                         else:
-                            st.markdown(
-                                f"<div style='font-size: 13.5px; color: #bdc3c7; margin-top: 10px; margin-bottom: 5px; padding: 8px; background-color: #1a1e29; border-left: 3px solid #00ffa2; border-radius: 4px;'>"
-                                f"📐 **Cálculo de Break Evens (BE):** Zona de beneficio entre `{be_str}` "
-                                f"basada en los strikes y la Prima Total acumulada de `{net_credit_chain:.2f}`."
-                                f"</div>",
-                                unsafe_allow_html=True
-                            )
+                            if not is_dual_be:
+                                main_strike = float(first_row.get("Strike", 0.0))
+                                for leg in legs_for_be:
+                                    if leg.get("Side") == "Sell":
+                                        main_strike = float(leg.get("Strike", main_strike))
+                                        break
+                                signo = "-" if "Put" in effective_strategy or "CSP" in effective_strategy or "Long Put" in effective_strategy else "+"
+                                op_word = "restar" if signo == "-" else "sumar"
+                                st.markdown(
+                                    f"<div style='font-size: 13.5px; color: #bdc3c7; margin-top: 10px; margin-bottom: 5px; padding: 8px; background-color: #1a1e29; border-left: 3px solid #00ffa2; border-radius: 4px;'>"
+                                    f"📐 **Cálculo del BE actual:** Strike `{main_strike:.2f}` {signo} Prima Total `{net_credit_chain:.2f}` = **{be_str}** "
+                                    f"*(obtenido al {op_word} la prima neta acumulada de toda la campaña al strike actual)*"
+                                    f"</div>",
+                                    unsafe_allow_html=True
+                                )
+                            else:
+                                st.markdown(
+                                    f"<div style='font-size: 13.5px; color: #bdc3c7; margin-top: 10px; margin-bottom: 5px; padding: 8px; background-color: #1a1e29; border-left: 3px solid #00ffa2; border-radius: 4px;'>"
+                                    f"📐 **Cálculo de Break Evens (BE):** Zona de beneficio entre `{be_str}` "
+                                    f"basada en los strikes y la Prima Total acumulada de `{net_credit_chain:.2f}`."
+                                    f"</div>",
+                                    unsafe_allow_html=True
+                                )
                 
                 # Tabla de Legs Custom para mejor alineación
                 leg_cols = st.columns([1.5, 1, 1.2, 0.8, 1, 1.2, 1.8, 1])
@@ -3281,22 +3367,25 @@ def render_active_portfolio(df):
                     # Re-insertamos lógica de BE aquí para mantener consistencia con el bloque reemplazado
                     
                     campaign_steps_be = get_campaign_steps(df, legs_to_roll[0]["ID"])
-                    hist_credits_be = 0.0
-                    hist_debits_be = 0.0
+                    dollars_credits_be = 0.0
+                    dollars_debits_be = 0.0
                     for c_id, step_df in campaign_steps_be:
                         for _, leg_row in step_df.iterrows():
                             p_rec = float(leg_row.get("PrimaRecibida", 0.0) or 0.0)
                             c_clo = float(leg_row.get("CostoCierre", 0.0) or 0.0)
                             side = leg_row.get("Side", "Sell")
+                            qty = float(leg_row.get("Contratos", 1.0) or 1.0)
                             if side == "Sell":
-                                hist_credits_be += p_rec
+                                dollars_credits_be += p_rec * qty
                                 if leg_row["Estado"] != "Abierta":
-                                    hist_debits_be += c_clo
+                                    dollars_debits_be += c_clo * qty
                             else:
-                                hist_debits_be += p_rec
+                                dollars_debits_be += p_rec * qty
                                 if leg_row["Estado"] != "Abierta":
-                                    hist_credits_be += c_clo
-                    total_net_credit_for_be = hist_credits_be - hist_debits_be - roll_close_cost + new_net_premium
+                                    dollars_credits_be += c_clo * qty
+                    
+                    total_net_credit_for_be_dollars = dollars_credits_be - dollars_debits_be - (roll_close_cost * qty_roll) + (new_net_premium * qty_new_roll)
+                    total_net_credit_for_be = total_net_credit_for_be_dollars / qty_new_roll if qty_new_roll > 0 else total_net_credit_for_be_dollars
                     
                     detected_roll_strat = detect_strategy_from_legs(new_legs_data)
                     effective_roll_strategy = detected_roll_strat if detected_roll_strat else roll_strategy

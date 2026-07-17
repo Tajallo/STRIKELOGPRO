@@ -17,7 +17,12 @@ All notable changes to this project will be documented in this file.
   - Dynamic campaign linking to trace full historical NU wheel cycles (original PCS, intermediate CSP assignment, defensive spreads, Covered Calls, and active assigned stock).
   - Total campaign commission aggregation factored into dynamic `Costo Base Real (BE)` calculation.
   - Side-by-side notes editors for active stock and covered calls.
+- **Break Even Explanation Panel**: Added a dynamic informational card below the active portfolio history table that breaks down and explains the math behind the break-even calculation step-by-step for multi-leg strategies.
 ### Fixed
+- **Break Even & Net Premium Math**: Corrected the calculation of net premiums in the Active Portfolio's historical roll view. The app now accurately sums premiums based on trade side (`Sell` = credit, `Buy` = debit) and correctly aggregates total campaign PnL across all chained legs to reflect the precise Break Even.
+- **Streamlit Deprecations**: Replaced deprecated `st.components.v1.html` with `st.html(..., unsafe_allow_javascript=True)` and updated dataframe `use_container_width` argument to `width="stretch"` or `width="content"` to resolve runtime warnings and ensure future compatibility.
+- **Local Variable Initialization Bug**: Fixed `UnboundLocalError: cannot access local variable 'legs_for_be'` in the Active Portfolio view by properly scoping the variables.
+- **PnL Metric Decimal Precision**: Fixed a cosmetic issue displaying excessive decimal places in the realized PnL delta metrics.
 - **PnL Filter Precision**: Rounded historical PnL sums to 2 decimal places to resolve float precision issues that caused transactions to be incorrectly excluded from the history view under the PnL slider filter.
 - **Covered Call Assignment Logic**: Corrected the assignment logic for `"CC (Covered Call)"` strategies. Instead of creating a new `"Long Stock (Asignación)"` position when assigned, the system now correctly sells/retires the corresponding shares from the active stock inventory, closing the stock position or reducing its contract size accordingly.
 - **CSP Cost Base Contributions**: Fixed an issue where CSP (Cash Secured Put) options closed/expired within a wheel campaign were excluded from the dynamic cost base calculations. Now, extra or rolled CSPs successfully reduce the stock's Break Even.

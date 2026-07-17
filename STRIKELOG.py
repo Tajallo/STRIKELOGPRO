@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta
 from uuid import uuid4
 import plotly.express as px
 import plotly.graph_objects as go
-import streamlit.components.v1 as components
+
 
 # ----------------------------
 # Configuración
@@ -818,7 +818,7 @@ def render_dashboard(df):
             yaxis_title="Balance ($)",
             hovermode="x unified"
         )
-        st.plotly_chart(fig_equity, use_container_width=True)
+        st.plotly_chart(fig_equity, width="stretch")
     else:
         st.info("No hay datos para mostrar la curva.")
 
@@ -839,7 +839,7 @@ def render_dashboard(df):
             yaxis_title="PnL USD",
             coloraxis_showscale=False
         )
-        st.plotly_chart(fig_monthly, use_container_width=True)
+        st.plotly_chart(fig_monthly, width="stretch")
 
     # Gráficos de análisis por categoría (colapsados)
     with st.expander("🔍 Análisis por Categoría", expanded=False):
@@ -863,7 +863,7 @@ def render_dashboard(df):
                     yaxis_title=None,
                     coloraxis_showscale=False
                 )
-                st.plotly_chart(fig_strat, use_container_width=True)
+                st.plotly_chart(fig_strat, width="stretch")
         
         with col_cat2:
             st.markdown("#### 🎯 PnL por Setup")
@@ -883,7 +883,7 @@ def render_dashboard(df):
                     yaxis_title=None,
                     coloraxis_showscale=False
                 )
-                st.plotly_chart(fig_setup, use_container_width=True)
+                st.plotly_chart(fig_setup, width="stretch")
 
 def sync_active_portfolio_calendars(active_df):
     import yfinance as yf
@@ -996,7 +996,7 @@ def render_active_portfolio(df):
     with col_sync:
         st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
         if not active_df.empty:
-            if st.button("🔄 Sincronizar Calendario", key="sync_calendar_btn", type="secondary", use_container_width=True, help="Sincroniza fechas de Earnings y Dividendos con Yahoo Finance"):
+            if st.button("🔄 Sincronizar Calendario", key="sync_calendar_btn", type="secondary", width="stretch", help="Sincroniza fechas de Earnings y Dividendos con Yahoo Finance"):
                 sync_active_portfolio_calendars(active_df)
     
     # CSS personalizado para badges y tarjetas
@@ -1141,7 +1141,7 @@ def render_active_portfolio(df):
                     if ba1.button(f"⌛ Expiró OTM — Conservar acciones",
                                   key=f"alert_exp_cc_{exp_chain_id}",
                                   help="Cierra el CC a $0.00. Las acciones permanecen en cartera.",
-                                  use_container_width=True):
+                                  width="stretch"):
                         # Cierre CC a $0.00
                         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         cc_exp_idx = st.session_state.df.index[
@@ -1173,7 +1173,7 @@ def render_active_portfolio(df):
                     if ba2.button(f"📜 Asignación (ITM)",
                                   key=f"alert_assign_cc_{exp_chain_id}",
                                   help="El CC expiró ITM. Ve al Panel La Rueda para vender las acciones.",
-                                  use_container_width=True):
+                                  width="stretch"):
                         # Redirigir al panel de gestión
                         st.session_state["manage_chain_id"] = exp_chain_id
                         st.rerun()
@@ -1184,7 +1184,7 @@ def render_active_portfolio(df):
                     if bs1.button(f"✅ Expiró sin valor ($0.00)",
                                   key=f"alert_exp_spread_{exp_chain_id}",
                                   help="Cierra todo el spread a $0.00. Prima cobrada íntegra.",
-                                  use_container_width=True):
+                                  width="stretch"):
                         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         sp_idx = st.session_state.df.index[
                             (st.session_state.df["ChainID"] == exp_chain_id) &
@@ -1217,7 +1217,7 @@ def render_active_portfolio(df):
                     if bs2.button(f"📜 Gestionar (Asignación / Parcial)",
                                   key=f"alert_assign_spread_{exp_chain_id}",
                                   help="Abre el panel de gestión completo para este spread.",
-                                  use_container_width=True):
+                                  width="stretch"):
                         st.session_state["manage_chain_id"] = exp_chain_id
                         st.rerun()
 
@@ -1226,7 +1226,7 @@ def render_active_portfolio(df):
                     bp1, bp2 = st.columns(2)
                     if bp1.button(f"✅ Expiró sin valor ($0.00)",
                                   key=f"alert_exp_put_{exp_chain_id}",
-                                  use_container_width=True):
+                                  width="stretch"):
                         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         put_idx = st.session_state.df.index[
                             (st.session_state.df["ChainID"] == exp_chain_id) &
@@ -1256,7 +1256,7 @@ def render_active_portfolio(df):
 
                     if bp2.button(f"⚙️ Abrir Gestión Completa",
                                   key=f"alert_manage_put_{exp_chain_id}",
-                                  use_container_width=True):
+                                  width="stretch"):
                         st.session_state["manage_chain_id"] = exp_chain_id
                         st.rerun()
 
@@ -1373,25 +1373,39 @@ def render_active_portfolio(df):
                 # Buscar todas las patas que pertenecían a ese ChainID
                 step_group = df[df["ChainID"] == c_id]
                 
-                # Sumar créditos (Prima Recibida) de todas las patas de ese paso
-                hist_credits += step_group["PrimaRecibida"].sum()
-                
-                # Sumar débitos (Costo Cierre) solo si ese paso NO es el actual abierto
-                # (si es 'Rolada' o 'Cerrada' - aunque en active portfolio el último es 'Abierta')
-                # En roll_chain, el índice 0 es el actual (Abierta).
-                # Verificar estado de CADA pata individualmente o del grupo?
-                # Generalmente todo el grupo cambia de estado junto.
-                if r["Estado"] != "Abierta":
-                    hist_debits += step_group["CostoCierre"].sum()
+                # Calcular créditos y débitos según el lado (Sell = Credito, Buy = Debito)
+                for _, leg_row in step_group.iterrows():
+                    p_rec = float(leg_row.get("PrimaRecibida", 0.0) or 0.0)
+                    c_clo = float(leg_row.get("CostoCierre", 0.0) or 0.0)
+                    side = leg_row.get("Side", "Sell")
+                    
+                    if side == "Sell":
+                        hist_credits += p_rec
+                        if r["Estado"] != "Abierta":
+                            hist_debits += c_clo
+                    else: # Buy (long leg)
+                        hist_debits += p_rec
+                        if r["Estado"] != "Abierta":
+                            hist_credits += c_clo
 
         net_credit_chain = hist_credits - hist_debits
 
-        realized_pnl_chain = sum(float(r["PnL_USD_Realizado"] or 0) for r in roll_chain if r["Estado"] != "Abierta")
+        # Sumar el PnL Realizado de todas las patas pertenecientes a los ChainIDs de la historia
+        realized_pnl_chain = 0.0
+        seen_chains_pnl = set()
+        for r in roll_chain:
+            c_id = r["ChainID"]
+            if c_id not in seen_chains_pnl:
+                seen_chains_pnl.add(c_id)
+                if r["Estado"] != "Abierta":
+                    step_group = df[df["ChainID"] == c_id]
+                    realized_pnl_chain += step_group["PnL_USD_Realizado"].sum()
         
         # Recálculo dinámico del Break Even
         is_dual_be = strategy in DUAL_BE_STRATEGIES
         calculated_be = 0.0
         calculated_be_upper = 0.0
+        legs_for_be = []
 
         # Detectar si es un Covered Call vinculado a La Rueda
         is_cc_rueda = (
@@ -1414,6 +1428,8 @@ def render_active_portfolio(df):
             prima_actual_cc = abs(float(first_row.get("PrimaRecibida", 0) or 0))
             calculated_be = strike_cc + prima_actual_cc   # BE pata individual
             calculated_be_upper = 0.0
+            legs_for_be = [{"Side": first_row["Side"], "Type": first_row["OptionType"],
+                            "OptionType": first_row["OptionType"], "Strike": strike_cc}]
         else:
             try:
                 if is_dual_be:
@@ -1517,7 +1533,7 @@ def render_active_portfolio(df):
                 else:
                     m2.metric("Break Evens", be_str, help="Puntos de equilibrio ajustados")
                 m3.metric("Capital Reservado", f"${total_bp:,.2f}")
-                m4.metric("PnL Realizado (Rolls)", f"${realized_pnl_chain:,.2f}", delta=realized_pnl_chain if realized_pnl_chain != 0 else None)
+                m4.metric("PnL Realizado (Rolls)", f"${realized_pnl_chain:,.2f}", delta=f"${realized_pnl_chain:,.2f}" if realized_pnl_chain != 0 else None)
             
                 # --- SECCIÓN DE HISTORIAL DE ROLLS (Corregida) ---
                 if num_rolls > 0:
@@ -1539,13 +1555,26 @@ def render_active_portfolio(df):
                             
                             f_apertura = pd.to_datetime(r["FechaApertura"]).strftime("%Y-%m-%d") if pd.notna(r["FechaApertura"]) else ""
                             
-                            # PnL solo tiene sentido para las cerradas (pasos previos)
-                            pnl_val = f"${r['PnL_USD_Realizado']:.2f}" if r['Estado'] != 'Abierta' else "-"
+                            # Sumar PnL de todas las patas de este paso (ChainID)
+                            step_group = df[df["ChainID"] == r["ChainID"]]
+                            step_pnl_val = step_group["PnL_USD_Realizado"].sum()
+                            pnl_val = f"${step_pnl_val:.2f}" if r['Estado'] != 'Abierta' else "-"
+                            
+                            # Calcular prima neta de apertura de este paso (ChainID)
+                            opening_premium = 0.0
+                            for _, leg_row in step_group.iterrows():
+                                p_rec = float(leg_row.get("PrimaRecibida", 0.0) or 0.0)
+                                if leg_row.get("Side", "Sell") == "Sell":
+                                    opening_premium += p_rec
+                                else:
+                                    opening_premium -= p_rec
+                            prima_val = f"${opening_premium:+.2f}" if opening_premium != 0 else "$0.00"
                             
                             hist_data.append({
                                 "Etapa": label,
                                 "Fecha": f_apertura,
                                 "Strike": f"{r.get('Strike','')} {r.get('OptionType','')}",
+                                "Prima": prima_val,
                                 "BE": f"{r.get('BreakEven',0):.2f}",
                                 "PnL Realizado": pnl_val
                             })
@@ -1564,6 +1593,31 @@ def render_active_portfolio(df):
                             elif diff_be < 0: icon_trend = "📉"
                             
                             st.caption(f"**Evolución del BE (último rol):** `{prev_be:.2f}` → `{curr_be:.2f}` ({icon_trend} {diff_be:+.2f})")
+                            
+                        # Explicación clara de los cálculos de BE
+                        if not is_dual_be:
+                            main_strike = float(first_row.get("Strike", 0.0))
+                            for leg in legs_for_be:
+                                if leg.get("Side") == "Sell":
+                                    main_strike = float(leg.get("Strike", main_strike))
+                                    break
+                            signo = "-" if "Put" in strategy or "CSP" in strategy or "Long Put" in strategy else "+"
+                            op_word = "restar" if signo == "-" else "sumar"
+                            st.markdown(
+                                f"<div style='font-size: 13.5px; color: #bdc3c7; margin-top: 10px; margin-bottom: 5px; padding: 8px; background-color: #1a1e29; border-left: 3px solid #00ffa2; border-radius: 4px;'>"
+                                f"📐 **Cálculo del BE actual:** Strike `{main_strike:.2f}` {signo} Prima Total `{net_credit_chain:.2f}` = **{be_str}** "
+                                f"*(obtenido al {op_word} la prima neta acumulada de toda la campaña al strike actual)*"
+                                f"</div>",
+                                unsafe_allow_html=True
+                            )
+                        else:
+                            st.markdown(
+                                f"<div style='font-size: 13.5px; color: #bdc3c7; margin-top: 10px; margin-bottom: 5px; padding: 8px; background-color: #1a1e29; border-left: 3px solid #00ffa2; border-radius: 4px;'>"
+                                f"📐 **Cálculo de Break Evens (BE):** Zona de beneficio entre `{be_str}` "
+                                f"basada en los strikes y la Prima Total acumulada de `{net_credit_chain:.2f}`."
+                                f"</div>",
+                                unsafe_allow_html=True
+                            )
                 
                 # Tabla de Legs Custom para mejor alineación
                 leg_cols = st.columns([1.5, 1, 1.2, 0.8, 1, 1.2, 1.8, 1])
@@ -1606,7 +1660,7 @@ def render_active_portfolio(df):
                 new_dividendos = c_config.date_input("💰 Dividendos", value=current_dividendos, key=f"div_{chain_id}")
                 
                 # Guardar Notas y Fechas
-                if st.button("💾 Guardar Notas y Fechas", key=f"save_changes_{chain_id}", type="primary", use_container_width=True):
+                if st.button("💾 Guardar Notas y Fechas", key=f"save_changes_{chain_id}", type="primary", width="stretch"):
                     # Actualizar notas y earnings en todas las patas del ChainID
                     for idx, row in group.iterrows():
                          real_idx = df.index[df["ID"] == row["ID"]][0]
@@ -2761,19 +2815,19 @@ def render_active_portfolio(df):
     # Panel de Gestión (aparece si seleccionas una estrategia arriba)
     if "manage_chain_id" in st.session_state:
         # Script JS para hacer scroll al ancla
-        components.html(
+        st.html(
             """
             <script>
                 // Esperamos un poco a que el DOM se renderice
                 setTimeout(function() {
-                    const element = window.parent.document.getElementById('manage_panel');
+                    const element = (window.parent.document || document).getElementById('manage_panel');
                     if (element) {
                         element.scrollIntoView({behavior: 'smooth', block: 'start'});
                     }
                 }, 300);
             </script>
             """,
-            height=0
+            unsafe_allow_javascript=True
         )
         
         target_chain = st.session_state["manage_chain_id"]
@@ -2881,7 +2935,7 @@ def render_active_portfolio(df):
                     final_profit_pct = (manual_pnl / max_profit_usd * 100) if max_profit_usd > 0 else 0.0
                     
                     c_close_btn, c_cancel_btn = st.columns([2, 1])
-                    if c_close_btn.button(btn_label, type="primary", use_container_width=True):
+                    if c_close_btn.button(btn_label, type="primary", width="stretch"):
                         legs_to_close_ids = [l["ID"] for l in legs_to_close]
                         first_leg_id = legs_to_close[0]["ID"]
                         
@@ -2949,7 +3003,7 @@ def render_active_portfolio(df):
                         st.success("Operación actualizada correctamente.")
                         st.rerun()
 
-                    if c_cancel_btn.button("🚫 Cancelar", key="cancel_close_btn", use_container_width=True):
+                    if c_cancel_btn.button("🚫 Cancelar", key="cancel_close_btn", width="stretch"):
                         del st.session_state["manage_chain_id"]
                         st.rerun()
 
@@ -3052,8 +3106,26 @@ def render_active_portfolio(df):
                     # Re-insertamos lógica de BE aquí para mantener consistencia con el bloque reemplazado
                     
                     hist_chain_be = get_roll_history(df, legs_to_roll[0]["ID"])
-                    hist_credits_be = sum(float(h["PrimaRecibida"] or 0) for h in hist_chain_be)
-                    hist_debits_be = sum(float(h["CostoCierre"] or 0) for h in hist_chain_be if h["Estado"] != "Abierta")
+                    hist_credits_be = 0.0
+                    hist_debits_be = 0.0
+                    seen_chains_be = set()
+                    for h in hist_chain_be:
+                        c_id = h["ChainID"]
+                        if c_id not in seen_chains_be:
+                            seen_chains_be.add(c_id)
+                            step_group = df[df["ChainID"] == c_id]
+                            for _, leg_row in step_group.iterrows():
+                                p_rec = float(leg_row.get("PrimaRecibida", 0.0) or 0.0)
+                                c_clo = float(leg_row.get("CostoCierre", 0.0) or 0.0)
+                                side = leg_row.get("Side", "Sell")
+                                if side == "Sell":
+                                    hist_credits_be += p_rec
+                                    if h["Estado"] != "Abierta":
+                                        hist_debits_be += c_clo
+                                else:
+                                    hist_debits_be += p_rec
+                                    if h["Estado"] != "Abierta":
+                                        hist_credits_be += c_clo
                     total_net_credit_for_be = hist_credits_be - hist_debits_be - roll_close_cost + new_net_premium
                     
                     roll_be_lower, roll_be_upper = suggest_breakeven(roll_strategy, new_legs_data, total_net_credit_for_be)
@@ -3065,7 +3137,7 @@ def render_active_portfolio(df):
                         st.info(f"📊 **Nuevo Break Even Estimado:** `${roll_be_lower:.2f}` (Crédito Neto Acumulado: `${total_net_credit_for_be:.2f}`)")
 
                     c_btn1, c_btn2 = st.columns([2, 1])
-                    if c_btn1.button("🚀 Ejecutar Ajuste", type="primary", use_container_width=True):
+                    if c_btn1.button("🚀 Ejecutar Ajuste", type="primary", width="stretch"):
                         if new_expiry < date.today():
                             st.error("No se puede rolar a una fecha pasada.")
                         else:
@@ -3124,7 +3196,7 @@ def render_active_portfolio(df):
                             st.success("Roll ejecutado con éxito.")
                             st.rerun()
 
-                    if c_btn2.button("🚫 Cancelar Roll", key="cancel_roll_btn", use_container_width=True):
+                    if c_btn2.button("🚫 Cancelar Roll", key="cancel_roll_btn", width="stretch"):
                         del st.session_state["manage_chain_id"]
                         st.rerun()
             
@@ -3214,12 +3286,12 @@ def render_active_portfolio(df):
                         # --- PASO 1: Botón inicial ---
                         c_assign_btn, c_assign_cancel = st.columns([2, 1])
                         if c_assign_btn.button("🎡 Ejecutar Asignación (La Rueda)", type="primary",
-                                               use_container_width=True, key="btn_assign_wheel"):
+                                               width="stretch", key="btn_assign_wheel"):
                             st.session_state[desglose_key] = True
                             st.rerun()
 
                         if c_assign_cancel.button("🚫 Cancelar", key="cancel_assign_btn",
-                                                  use_container_width=True):
+                                                  width="stretch"):
                             del st.session_state["manage_chain_id"]
                             st.rerun()
 
@@ -3288,7 +3360,7 @@ def render_active_portfolio(df):
                             st.caption("⬆️ Introduce la prima del Buy Put para desbloquear la confirmación.")
 
                         if c_conf1.button("✅ Confirmar y Ejecutar Asignación", type="primary",
-                                          use_container_width=True, key="btn_confirm_wheel",
+                                          width="stretch", key="btn_confirm_wheel",
                                           disabled=confirmar_disabled):
                             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             total_comisiones_apertura = sum(
@@ -3390,7 +3462,7 @@ def render_active_portfolio(df):
                             )
                             st.rerun()
 
-                        if c_conf2.button("↩️ Atrás", key="btn_back_desglose", use_container_width=True):
+                        if c_conf2.button("↩️ Atrás", key="btn_back_desglose", width="stretch"):
                             del st.session_state[desglose_key]
                             st.rerun()
 
@@ -3455,7 +3527,7 @@ def render_active_portfolio(df):
                                      f"Se registrará la asignación del Covered Call, pero no se cerrarán acciones automáticamente.")
 
                         c_assign_btn2, c_assign_cancel2 = st.columns([2, 1])
-                        if c_assign_btn2.button("✅ Confirmar Asignación de CC", type="primary", use_container_width=True, key="btn_assign_cc_confirm"):
+                        if c_assign_btn2.button("✅ Confirmar Asignación de CC", type="primary", width="stretch", key="btn_assign_cc_confirm"):
                             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             
                             # 1. Marcar el Covered Call como Asignado
@@ -3526,7 +3598,7 @@ def render_active_portfolio(df):
                             st.success(f"Operación de Covered Call y posición de acciones actualizadas por asignación.")
                             st.rerun()
 
-                        if c_assign_cancel2.button("🚫 Cancelar", key="cancel_assign_btn2_cc", use_container_width=True):
+                        if c_assign_cancel2.button("🚫 Cancelar", key="cancel_assign_btn2_cc", width="stretch"):
                             del st.session_state["manage_chain_id"]
                             st.rerun()
                     else:
@@ -3544,7 +3616,7 @@ def render_active_portfolio(df):
                         st.info(f"Se te asignarán **{contratos_gen * 100} acciones** de **{ticker_assign}** a **${assign_price_gen:.2f}**.")
 
                         c_assign_btn2, c_assign_cancel2 = st.columns([2, 1])
-                        if c_assign_btn2.button("✅ Confirmar Asignación", type="primary", use_container_width=True, key="btn_assign_generic"):
+                        if c_assign_btn2.button("✅ Confirmar Asignación", type="primary", width="stretch", key="btn_assign_generic"):
                             total_comisiones_ap = sum(float(r.get("Comisiones", 0.0)) for _, r in target_group.iterrows())
                             now_str2 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             for idx_g, row_g in target_group.iterrows():
@@ -3587,7 +3659,7 @@ def render_active_portfolio(df):
                             st.success("Operación marcada como Asignada y acciones creadas.")
                             st.rerun()
 
-                        if c_assign_cancel2.button("🚫 Cancelar", key="cancel_assign_btn2", use_container_width=True):
+                        if c_assign_cancel2.button("🚫 Cancelar", key="cancel_assign_btn2", width="stretch"):
                             del st.session_state["manage_chain_id"]
                             st.rerun()
 
@@ -3643,7 +3715,7 @@ def render_express_0dte():
     notas_exp = st.text_input("📝 Notas (opcional)", placeholder="Ej: Apertura en mínimo de sesión, VIX alto...", key="exp_notas")
     
     # --- Botón ---
-    if st.button("⚡ Registrar Express", type="primary", use_container_width=True, key="exp_submit"):
+    if st.button("⚡ Registrar Express", type="primary", width="stretch", key="exp_submit"):
         if not ticker_exp:
             st.error("Debes indicar un Ticker.")
             return
@@ -3975,8 +4047,8 @@ def render_new_trade():
                     pop_val = c_be2.number_input("POP %", value=float(suggested_pop), step=0.1, key="pop_single")
             
             c_sub, c_canc = st.columns(2)
-            submitted = c_sub.form_submit_button("✅ Registrar Operación", type="primary", use_container_width=True)
-            canceled = c_canc.form_submit_button("🚫 Limpiar / Cancelar", use_container_width=True)
+            submitted = c_sub.form_submit_button("✅ Registrar Operación", type="primary", width="stretch")
+            canceled = c_canc.form_submit_button("🚫 Limpiar / Cancelar", width="stretch")
             
             if canceled:
                 st.rerun()
@@ -4482,8 +4554,8 @@ def render_inline_edit(trade_id):
         st.warning("⚠️ Revisa los cambios antes de guardar. Se creará un backup automático del CSV actual.")
         
         c_sub, c_canc = st.columns(2)
-        submit_btn = c_sub.form_submit_button("💾 Guardar Cambios", type="primary", use_container_width=True)
-        cancel_btn = c_canc.form_submit_button("🚫 Cancelar", use_container_width=True)
+        submit_btn = c_sub.form_submit_button("💾 Guardar Cambios", type="primary", width="stretch")
+        cancel_btn = c_canc.form_submit_button("🚫 Cancelar", width="stretch")
 
         if submit_btn:
             st.session_state.df.at[idx, "Ticker"] = n_ticker
@@ -4559,7 +4631,7 @@ def main():
     # Fix: Permite usar la coma del teclado como punto decimal
     # en todos los st.number_input de la aplicación.
     # -------------------------------------------------------
-    components.html(
+    st.html(
         """
         <script>
         (function() {
@@ -4593,8 +4665,7 @@ def main():
         })();
         </script>
         """,
-        height=0,
-        scrolling=False
+        unsafe_allow_javascript=True
     )
 
     if "df" not in st.session_state:

@@ -1472,7 +1472,7 @@ def render_active_portfolio(df):
         campaign_steps = get_campaign_steps(df, first_row["ID"])
         num_rolls = len(campaign_steps) - 1 # El actual no cuenta como roll
         
-        roll_label = f" 🔄 x{num_rolls}" if num_rolls > 0 else ""
+        roll_label = f" 🔄 {num_rolls} roll{'s' if num_rolls > 1 else ''}" if num_rolls > 0 else ""
 
         # Cálculos extendidos de la campaña (Rolls + Actual)
         hist_credits_dollars = 0.0
@@ -1580,10 +1580,11 @@ def render_active_portfolio(df):
         if div_txt: alerts_list.append(f"🚨 {div_txt} 🚨")
         
         alerts_str = "   ".join(alerts_list)
+        cnt_label = f"({int(qty_active)} contr.)"
         if alerts_str:
-            header_title = f"{ticker} {exp_str_title} {strikes_short} {strategy_display} {roll_label}   {alerts_str}"
+            header_title = f"{ticker} {exp_str_title} {strikes_short} {strategy_display} {cnt_label} {roll_label}   {alerts_str}"
         else:
-            header_title = f"{ticker} {exp_str_title} {strikes_short} {strategy_display} {roll_label}"
+            header_title = f"{ticker} {exp_str_title} {strikes_short} {strategy_display} {cnt_label} {roll_label}"
         
         # Layout de Tarjeta
         c_dte, c_card = st.columns([1, 10])
@@ -1617,7 +1618,7 @@ def render_active_portfolio(df):
                 st.markdown("---")
                 
                 # Métricas Clave
-                m1, m2, m3, m4 = st.columns(4)
+                m1, m2, m3, m4, m5 = st.columns(5)
                 m1.metric("Prima Total", formatted_net, help="Crédito neto total de la campaña (incluyendo rolls)")
                 if is_cc_rueda:
                     m2.metric(
@@ -1631,9 +1632,10 @@ def render_active_portfolio(df):
                     )
                     st.caption("🎯 BE real de la posición completa → ver **Panel La Rueda** ↓")
                 else:
-                    m2.metric("Break Evens", be_str, help="Puntos de equilibrio ajustados")
-                m3.metric("Capital Reservado", f"${total_bp:,.2f}")
-                m4.metric("PnL Realizado (Rolls)", f"${realized_pnl_chain:,.2f}", delta=f"${realized_pnl_chain:,.2f}" if realized_pnl_chain != 0 else None)
+                    m2.metric("BE Subyacente", be_str, help="Precio del subyacente al vencimiento para quedar a $0.00")
+                m3.metric("Cierre BE Opción", f"${net_credit_chain:,.2f}/acc", help="Precio máximo de la opción para recomprar hoy sin pérdidas en la campaña total")
+                m4.metric("Capital Reservado", f"${total_bp:,.2f}")
+                m5.metric("PnL Realizado (Rolls)", f"${realized_pnl_chain:,.2f}", delta=f"${realized_pnl_chain:,.2f}" if realized_pnl_chain != 0 else None)
             
                 # --- SECCIÓN DE HISTORIAL DE ROLLS (BFS Detallado) ---
                 if num_rolls > 0:
@@ -1957,14 +1959,22 @@ def render_active_portfolio(df):
                 # --- MINI PANEL DE CIERRE RÁPIDO ---
                 if st.session_state.get(f"quick_close_{chain_id}", False):
                     st.markdown("---")
-                    qc1, qc2, qc3, qc4 = st.columns([2, 2, 1, 1])
+                    q_total_contracts = int(first_row["Contratos"])
+                    
+                    if q_total_contracts > 1:
+                        qc0, qc1, qc2, qc3, qc4, qc5 = st.columns([1.2, 1.6, 1.8, 1.8, 1.2, 1.2])
+                        q_qty_close = qc0.number_input("Contratos", min_value=1, max_value=q_total_contracts, value=q_total_contracts, step=1, key=f"qcnt_{chain_id}")
+                    else:
+                        qc1, qc2, qc3, qc4, qc5 = st.columns([2, 2, 2, 1.2, 1.2])
+                        q_qty_close = 1
+                    
                     q_close_price = qc1.number_input("Cierre ($/acción)", value=0.0, step=0.01, key=f"qcp_{chain_id}")
                     
                     q_entry = group["PrimaRecibida"].sum()
-                    q_contracts = int(first_row["Contratos"])
-                    q_bp = group["BuyingPower"].sum()
-                    # Estimación de comisiones de cierre
-                    q_comisiones = sum(float(r.get("Comisiones", 0.0)) for _, r in group.iterrows())
+                    q_bp = (group["BuyingPower"].sum() / q_total_contracts) * q_qty_close
+                    
+                    # Estimación de comisiones de cierre y apertura proporcional
+                    apertura_comisiones = sum(float(r.get("Comisiones", 0.0)) for _, r in group.iterrows()) / q_total_contracts * q_qty_close
                     cierre_comisiones = 0.0
                     for _, r in group.iterrows():
                         if r.get("Side", "Sell") == "Sell" and q_close_price <= 0.05:
@@ -1972,41 +1982,100 @@ def render_active_portfolio(df):
                         else:
                             r_broker = r.get("Broker", "IB")
                             fee_rate = get_fee_rate(r_broker, r.get("Ticker", ""))
-                            cierre_comisiones += int(r.get("Contratos", 1)) * fee_rate
-                    q_comisiones += cierre_comisiones
+                            cierre_comisiones += q_qty_close * fee_rate
+                    comisiones_totales = apertura_comisiones + cierre_comisiones
 
-                    q_pnl, q_pct, _ = calculate_pnl_metrics(
-                        q_entry, q_close_price, q_contracts, strategy, q_bp, first_row["Side"], q_comisiones
+                    q_pnl_etapa, q_pct_etapa, _ = calculate_pnl_metrics(
+                        q_entry, q_close_price, q_qty_close, strategy, q_bp, first_row["Side"], comisiones_totales
                     )
-                    qc2.metric("PnL Est.", f"${q_pnl:,.2f}", delta=f"{q_pct:.0f}%")
                     
-                    if qc3.button("✅ Confirmar", key=f"qcc_{chain_id}", type="primary"):
-                        max_profit_usd = q_entry * q_contracts * 100
-                        q_profit_pct = (q_pnl / max_profit_usd * 100) if max_profit_usd > 0 else 0.0
+                    # PnL Global Campaña
+                    if first_row["Side"] == "Sell":
+                        q_pnl_global = (net_credit_chain - q_close_price) * 100 * q_qty_close - cierre_comisiones
+                    else:
+                        q_pnl_global = (q_close_price - net_credit_chain) * 100 * q_qty_close - cierre_comisiones
+
+                    lbl_qty = f" ({q_qty_close}/{q_total_contracts})" if q_total_contracts > 1 else ""
+                    qc2.metric(f"PnL Etapa Actual{lbl_qty}", f"${q_pnl_etapa:,.2f}", help="Resultado solo de la pata/roll actual desde el último ajuste")
+                    qc3.metric(f"PnL Global Campaña{lbl_qty}", f"${q_pnl_global:,.2f}", delta=f"${q_pnl_global:,.2f}", help=f"Resultado neto acumulado de toda la campaña (Prima BE: ${net_credit_chain:.2f}/acc)")
+                    
+                    # Alerta Inteligente de BE Global
+                    if first_row["Side"] == "Sell" and q_close_price > net_credit_chain:
+                        st.warning(
+                            f"⚠️ **Atención al Cierre:** Estás recomprando a **${q_close_price:.2f}/acción**, lo cual supera la prima neta acumulada de toda la campaña (**${net_credit_chain:.2f}/acción**).\n\n"
+                            f"• **Precio Cierre BE Global:** Deberías recomprar a **${net_credit_chain:.2f}/acción** o menos para salir a **$0.00** en el acumulado.\n"
+                            f"• **Resultado Global si cierras hoy:** **-${abs(q_pnl_global):,.2f} USD**."
+                        )
+                    elif first_row["Side"] == "Sell" and q_close_price <= net_credit_chain and q_close_price > 0:
+                        st.success(
+                            f"✅ **Cierre Ganador Global:** Estás recomprando a **${q_close_price:.2f}/acción** (por debajo de tu prima neta acumulada de **${net_credit_chain:.2f}/acción**). Beneficio acumulado global: **+${q_pnl_global:,.2f} USD**."
+                        )
+                    
+                    btn_confirm = qc4 if q_total_contracts > 1 else qc3
+                    btn_cancel = qc5 if q_total_contracts > 1 else qc4
+                    
+                    if btn_confirm.button("✅ Confirmar", key=f"qcc_{chain_id}", type="primary"):
+                        max_profit_usd = q_entry * q_qty_close * 100
+                        q_profit_pct = (q_pnl_etapa / max_profit_usd * 100) if max_profit_usd > 0 else 0.0
+                        is_partial_contracts = (q_qty_close < q_total_contracts)
                         
-                        for idx_q, row_q in group.iterrows():
-                            real_idx_q = df.index[df["ID"] == row_q["ID"]][0]
-                            df.at[real_idx_q, "Estado"] = "Cerrada"
-                            df.at[real_idx_q, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            if row_q["ID"] == first_row["ID"]:
-                                df.at[real_idx_q, "CostoCierre"] = q_close_price
-                                df.at[real_idx_q, "PnL_USD_Realizado"] = q_pnl
-                                df.at[real_idx_q, "ProfitPct"] = q_profit_pct
-                                df.at[real_idx_q, "PnL_Capital_Pct"] = (q_pnl / q_bp * 100) if q_bp > 0 else 0.0
-                                df.at[real_idx_q, "Comisiones"] = float(row_q.get("Comisiones", 0.0)) + cierre_comisiones
-                            else:
-                                df.at[real_idx_q, "CostoCierre"] = 0.0
-                                df.at[real_idx_q, "PnL_USD_Realizado"] = 0.0
-                                df.at[real_idx_q, "ProfitPct"] = 0.0
-                                df.at[real_idx_q, "PnL_Capital_Pct"] = 0.0
+                        if is_partial_contracts:
+                            first_leg_id = first_row["ID"]
+                            for idx_q, row_q in group.iterrows():
+                                real_idx_q = df.index[df["ID"] == row_q["ID"]][0]
+                                # 1. Reducir contratos en la posición original
+                                df.at[real_idx_q, "Contratos"] = q_total_contracts - q_qty_close
+                                df.at[real_idx_q, "Comisiones"] = float(row_q.get("Comisiones", 0.0)) / q_total_contracts * (q_total_contracts - q_qty_close)
+                                
+                                # 2. Crear nueva entrada CERRADA con la cantidad cerrada
+                                new_closed_row = row_q.copy()
+                                new_closed_row["ID"] = str(uuid4())[:8]
+                                new_closed_row["Contratos"] = q_qty_close
+                                new_closed_row["Estado"] = "Cerrada"
+                                new_closed_row["FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                new_closed_row["PrecioAccionCierre"] = 0.0
+                                
+                                r_broker = row_q.get("Broker", "IB")
+                                fee_rate = get_fee_rate(r_broker, row_q.get("Ticker", ""))
+                                leg_cierre_fee = q_qty_close * fee_rate if not (row_q.get("Side", "Sell") == "Sell" and q_close_price <= 0.05) else 0.0
+                                new_closed_row["Comisiones"] = (float(row_q.get("Comisiones", 0.0)) / q_total_contracts * q_qty_close) + leg_cierre_fee
+                                
+                                if row_q["ID"] == first_leg_id:
+                                    new_closed_row["CostoCierre"] = q_close_price
+                                    new_closed_row["PnL_USD_Realizado"] = q_pnl_etapa
+                                    new_closed_row["ProfitPct"] = q_profit_pct
+                                    new_closed_row["PnL_Capital_Pct"] = (q_pnl_etapa / q_bp * 100) if q_bp > 0 else 0.0
+                                else:
+                                    new_closed_row["CostoCierre"] = 0.0
+                                    new_closed_row["PnL_USD_Realizado"] = 0.0
+                                    new_closed_row["ProfitPct"] = 0.0
+                                    new_closed_row["PnL_Capital_Pct"] = 0.0
+                                    
+                                st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_closed_row])], ignore_index=True)
+                        else:
+                            for idx_q, row_q in group.iterrows():
+                                real_idx_q = df.index[df["ID"] == row_q["ID"]][0]
+                                df.at[real_idx_q, "Estado"] = "Cerrada"
+                                df.at[real_idx_q, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                if row_q["ID"] == first_row["ID"]:
+                                    df.at[real_idx_q, "CostoCierre"] = q_close_price
+                                    df.at[real_idx_q, "PnL_USD_Realizado"] = q_pnl_etapa
+                                    df.at[real_idx_q, "ProfitPct"] = q_profit_pct
+                                    df.at[real_idx_q, "PnL_Capital_Pct"] = (q_pnl_etapa / q_bp * 100) if q_bp > 0 else 0.0
+                                    df.at[real_idx_q, "Comisiones"] = float(row_q.get("Comisiones", 0.0)) + cierre_comisiones
+                                else:
+                                    df.at[real_idx_q, "CostoCierre"] = 0.0
+                                    df.at[real_idx_q, "PnL_USD_Realizado"] = 0.0
+                                    df.at[real_idx_q, "ProfitPct"] = 0.0
+                                    df.at[real_idx_q, "PnL_Capital_Pct"] = 0.0
                         
                         st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
-                        st.session_state["post_mortem"] = {"chain_id": chain_id, "ticker": ticker, "pnl": q_pnl}
+                        st.session_state["post_mortem"] = {"chain_id": chain_id, "ticker": ticker, "pnl": q_pnl_etapa}
                         del st.session_state[f"quick_close_{chain_id}"]
-                        st.success(f"✅ {ticker} cerrado: ${q_pnl:,.2f}")
+                        st.success(f"✅ {ticker} ({q_qty_close} contrato(s)) cerrado: ${q_pnl_etapa:,.2f}")
                         st.rerun()
 
-                    if qc4.button("🚫 Cancelar", key=f"qcc_cancel_{chain_id}"):
+                    if btn_cancel.button("🚫 Cancelar", key=f"qcc_cancel_{chain_id}"):
                         del st.session_state[f"quick_close_{chain_id}"]
                         st.rerun()
 

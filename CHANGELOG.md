@@ -4,7 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 ### Added
+- **Option BE Metric & Intelligent Closing Alerts**: 
+  - Added **`🏷️ Cierre BE Opción`** metric directly to active trade cards displaying the maximum option buyback price to achieve a $0.00 global PnL on the campaign.
+  - Upgraded **⚡ Cerrar Rápido** with dual PnL metrics (**PnL Etapa Actual** vs **PnL Global Campaña**) and an automatic warning box if a buyback price exceeds the campaign's accumulated net credit.
 - **Timezone-Aware Option Expiration**: Improved option expiration detection by utilizing `America/New_York` timezone and confirming the U.S. market close (16:00 EST/EDT) on the expiration day (DTE 0) before showing options as expired in the pending actions banner.
+- **Quick Close Partial Contracts**: Added a contract quantity selector (`Contratos`) directly to the **⚡ Cerrar Rápido** mini-panel when a position has multiple contracts (e.g. 2 contracts of NFLX). Users can now partially close specific contract quantities directly from Quick Close, leaving remaining contracts open.
 - **Multiple Active Covered Calls**: Upgraded the Covered Call management block on Wheel stock cards to support listing, tracking, and expiring multiple active Covered Calls simultaneously. It also allows adding a new Covered Call if the active CC contracts are less than the total stock contracts.
 - **Wheel Campaign Merger**: Added an interactive tool **🔗 Unificar Ciclos de La Rueda (Fusionar Posiciones)** in the active portfolio to merge multiple active stock positions of the same ticker, averaging their strikes, consolidating contracts, and automatically re-linking all child history entries.
 - **Selective Leg Closing**: Enhanced the "Cerrar" tab in the management panel with checkboxes, allowing users to select and close individual legs of a multi-leg strategy (like an Iron Condor or a Put Credit Spread) independently. The app dynamically recalculates net premiums, closing costs, and PnL exclusively for the selected legs, leaving the unselected legs open and manageable under the original `ChainID`.

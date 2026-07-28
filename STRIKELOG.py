@@ -1581,7 +1581,11 @@ def render_active_portfolio(df):
         
         alerts_str = "   ".join(alerts_list)
         cnt_label = f"({int(qty_active)} contr.)"
-        be_opt_label = f"| Cierre BE: ${net_credit_chain:.2f}"
+        if is_stock_position:
+            be_opt_label = f"| BE Venta Stock: ${calculated_be:.2f}"
+        else:
+            be_opt_label = f"| Cierre BE Opción: ${net_credit_chain:.2f}"
+            
         if alerts_str:
             header_title = f"{ticker} {exp_str_title} {strikes_short} {strategy_display} {cnt_label} {roll_label} {be_opt_label}   {alerts_str}"
         else:
@@ -1634,7 +1638,12 @@ def render_active_portfolio(df):
                     st.caption("🎯 BE real de la posición completa → ver **Panel La Rueda** ↓")
                 else:
                     m2.metric("BE Subyacente", be_str, help="Precio del subyacente al vencimiento para quedar a $0.00")
-                m3.metric("Cierre BE Opción", f"${net_credit_chain:,.2f}/acc", help="Precio máximo de la opción para recomprar hoy sin pérdidas en la campaña total")
+                
+                if is_stock_position:
+                    m3.metric("BE Venta Stock", f"${calculated_be:,.2f}", help="Precio por acción para vender las acciones y quedar en $0.00 PnL global")
+                else:
+                    m3.metric("Cierre BE Opción", f"${net_credit_chain:,.2f}/acc", help="Precio máximo de la opción para recomprar hoy sin pérdidas en la campaña total")
+                    
                 m4.metric("Capital Reservado", f"${total_bp:,.2f}")
                 m5.metric("PnL Realizado (Rolls)", f"${realized_pnl_chain:,.2f}", delta=f"${realized_pnl_chain:,.2f}" if realized_pnl_chain != 0 else None)
             

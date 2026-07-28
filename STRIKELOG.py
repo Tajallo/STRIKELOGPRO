@@ -1581,10 +1581,11 @@ def render_active_portfolio(df):
         
         alerts_str = "   ".join(alerts_list)
         cnt_label = f"({int(qty_active)} contr.)"
+        be_opt_label = f"| Cierre BE: ${net_credit_chain:.2f}"
         if alerts_str:
-            header_title = f"{ticker} {exp_str_title} {strikes_short} {strategy_display} {cnt_label} {roll_label}   {alerts_str}"
+            header_title = f"{ticker} {exp_str_title} {strikes_short} {strategy_display} {cnt_label} {roll_label} {be_opt_label}   {alerts_str}"
         else:
-            header_title = f"{ticker} {exp_str_title} {strikes_short} {strategy_display} {cnt_label} {roll_label}"
+            header_title = f"{ticker} {exp_str_title} {strikes_short} {strategy_display} {cnt_label} {roll_label} {be_opt_label}"
         
         # Layout de Tarjeta
         c_dte, c_card = st.columns([1, 10])

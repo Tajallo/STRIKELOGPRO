@@ -1645,8 +1645,25 @@ def render_active_portfolio(df):
                     m3.metric("Cierre BE Opción", f"${net_credit_chain:,.2f}/acc", help="Precio máximo de la opción para recomprar hoy sin pérdidas en la campaña total")
                     
                 m4.metric("Capital Reservado", f"${total_bp:,.2f}")
-                m5.metric("PnL Realizado (Rolls)", f"${realized_pnl_chain:,.2f}", delta=f"${realized_pnl_chain:,.2f}" if realized_pnl_chain != 0 else None)
-            
+                # --- GUÍA CONTEXTUAL DTE Y ESCENARIO DE ASIGNACIÓN ---
+                if not is_stock_position:
+                    if dte > 30:
+                        st.caption("🟢 **Fase Theta (DTE > 30d):** Destrucción gradual de tiempo. Mantén la posición tranquila; evalúa cerrar si alcanzas 50%-75% de beneficio máximo.")
+                    elif 21 < dte <= 30:
+                        st.caption("🟡 **Fase Dulce (21-30d):** Máxima aceleración de Theta. Zona óptima para asegurar beneficios o planificar roll si está comprometida.")
+                    elif 7 < dte <= 21:
+                        st.caption("🟠 **Fase de Gestión (7-21d):** Riesgo Gamma creciente. Se recomienda cerrar/rolar posiciones vendidas ITM para evitar asignación imprevista.")
+                    else:
+                        st.caption("🔴 **Fase Final (DTE ≤ 7d):** Alto riesgo de asignación y volatilidad. Considera liquidar o rolar hoy.")
+
+                    if first_row.get("OptionType") == "Put" and first_row.get("Side") == "Sell":
+                        short_strike = float(first_row.get("Strike", 0.0))
+                        costo_base_asignacion = short_strike - net_credit_chain
+                        st.info(
+                            f"🛡️ **Si te ejercen la opción hoy:** Comprarías **{int(qty_active * 100)} acciones** a **${short_strike:.2f}** "
+                            f"(${short_strike * qty_active * 100:,.2f} USD). Tras descontar tus primas acumuladas (**${net_credit_chain:.2f}/acc**), tu **Costo Base Real de las acciones** sería **${costo_base_asignacion:.2f}/acción**."
+                        )
+
                 # --- SECCIÓN DE HISTORIAL DE ROLLS (BFS Detallado) ---
                 if num_rolls > 0:
                     st.markdown("#### 🕒 Historial de esta posición")
@@ -3380,6 +3397,13 @@ def render_active_portfolio(df):
                     roll_bp = sum(float(l["BuyingPower"]) for l in legs_to_roll)
                     
                     qty_new_roll = st.number_input("Contratos (nuevo roll)", min_value=1, value=qty_roll, step=1)
+                    
+                    if qty_new_roll > qty_roll:
+                        st.warning(
+                            f"⚠️ **Alerta de Escalado de Riesgo:** Estás aumentando el tamaño de la posición de **{qty_roll} a {qty_new_roll} contratos**.\n\n"
+                            f"• Esto incrementa tu capital reservado (Buying Power) y tu compromiso en el broker.\n"
+                            f"• Verifica que dispones de suficiente margen libre antes de ejecutar."
+                        )
                     
                     # Dirección robusta basada en tipo de estrategia
                     dir_label = "Crédito" if is_roll_credit else "Débito"

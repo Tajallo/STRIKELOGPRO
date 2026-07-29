@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 ### Added
+- **For-Dummies Contextual Guidance & Safety Net Cards**:
+  - **Put Assignment Scenario Card**: Added an interactive summary card on active short Put positions showing exact worst-case assignment figures (*"If assigned today, you buy 100 shares at $75.00, and your real net cost base will be $71.06/share"*).
+  - **DTE Phase Guidance Banner**: Added color-coded DTE phase guidance banners (🟢 Theta Harvest >30d, 🟡 Sweet Spot 21-30d, 🟠 Management 7-21d, 🔴 Expiration Risk ≤7d) advising when to take 50%-75% profit vs when to manage/roll.
+  - **Roll Contract Scaling Risk Warning**: Added an automatic alert in the Roll configuration panel when increasing contract count (e.g. 1 to 2 contracts), warning users about increased Buying Power requirements and risk exposure.
 - **Option & Stock BE Metrics in Card Header & Metrics Bar**: 
   - Added **`🏷️ Cierre BE Opción`** metric directly to active option cards and headers displaying the maximum option buyback price to achieve a $0.00 global PnL.
   - Added **`🏷️ BE Venta Stock`** metric directly to assigned stock cards and headers displaying the exact selling price per share needed to achieve a $0.00 global PnL on Wheel campaigns (e.g., $22.71 for GAP stock).

@@ -55,7 +55,7 @@ SIDES = ["Sell", "Buy"]
 OPTION_TYPES = ["Put", "Call", "Stock"]
 
 # Estrategias que tienen dos Break Even (zona de beneficio entre dos strikes)
-DUAL_BE_STRATEGIES = ["Iron Condor", "Iron Fly", "Strangle", "Straddle", "Butterfly", "Broken Wing Butterfly (BWB)", "Flyagonal"]
+DUAL_BE_STRATEGIES = ["Iron Condor", "Iron Fly", "Iron Butterfly", "Strangle", "Straddle", "Butterfly", "Broken Wing Butterfly (BWB)", "Flyagonal"]
 
 # Estrategias complejas que típicamente usan patas con vencimientos independientes
 MULTI_EXPIRY_STRATEGIES = ["Calendar", "Diagonal", "Flyagonal"]
@@ -398,8 +398,8 @@ def suggest_breakeven(strategy, legs_data, total_premium):
                 return (strikes[1] - premium, strikes[2] + premium)
             return (0.0, 0.0)
         
-        # --- IRON FLY (4 patas): Short Straddle ATM + Long Strangle OTM ---
-        if strategy == "Iron Fly":
+        # --- IRON FLY / IRON BUTTERFLY (4 patas): Short Straddle ATM + Long Strangle OTM ---
+        if strategy in ["Iron Fly", "Iron Butterfly"]:
             short_strikes = []
             for leg in legs_data:
                 if leg.get("Side") == "Sell":
@@ -640,6 +640,19 @@ def detect_strategy_from_legs(legs):
     elif num_legs == 4:
         if sides.count("Sell") == 2 and sides.count("Buy") == 2:
             if types.count("Put") == 2 and types.count("Call") == 2:
+                # Si las dos patas vendidas (Short Put y Short Call) comparten el mismo strike -> Iron Fly / Iron Butterfly
+                sell_put_strike = None
+                sell_call_strike = None
+                for leg in legs:
+                    s = leg.get("Side")
+                    t = leg.get("Type", leg.get("OptionType"))
+                    strike = float(leg.get("Strike", 0))
+                    if s == "Sell" and t == "Put":
+                        sell_put_strike = strike
+                    elif s == "Sell" and t == "Call":
+                        sell_call_strike = strike
+                if sell_put_strike and sell_call_strike and sell_put_strike == sell_call_strike:
+                    return "Iron Fly"
                 return "Iron Condor"
                 
     return None
@@ -828,6 +841,21 @@ def render_dashboard(df):
         
         closed_trades = df_view[df_view["Estado"].isin(["Cerrada", "Rolada", "Asignada"])].copy()
         open_trades = df_view[df_view["Estado"] == "Abierta"].copy()
+        
+        # --- KPIs DE ALTO NIVEL ---
+        pnl_total = closed_trades["PnL_USD_Realizado"].sum() if not closed_trades.empty else 0.0
+        wins_df = closed_trades[closed_trades["PnL_USD_Realizado"] > 0] if not closed_trades.empty else pd.DataFrame()
+        losses_df = closed_trades[closed_trades["PnL_USD_Realizado"] < 0] if not closed_trades.empty else pd.DataFrame()
+        
+        wins = len(wins_df)
+        losses = len(losses_df)
+        total_closed = wins + losses
+        win_rate = (wins / total_closed * 100) if total_closed > 0 else 0.0
+        
+        capture_eff = wins_df["ProfitPct"].mean() if not wins_df.empty else 0.0
+        total_won = wins_df["PnL_USD_Realizado"].sum() if not wins_df.empty else 0.0
+        total_lost = abs(losses_df["PnL_USD_Realizado"].sum()) if not losses_df.empty else 0.0
+        profit_factor = (total_won / total_lost) if total_lost > 0 else (total_won if total_won > 0 else 0.0)
         
         total_comisiones = df_view["Comisiones"].sum() if "Comisiones" in df_view.columns else 0.0
         pnl_neto = pnl_total - total_comisiones
@@ -1580,34 +1608,54 @@ def render_active_portfolio(df):
         else:
             be_str = f"${calculated_be:,.2f}"
         
-        # Componentes del título expandido
+        # Componentes del título expandido con formato visual mejorado (negritas, viñetas y jerarquía)
         try:
             exp_date_obj = pd.to_datetime(first_row["Expiry"])
             exp_str_title = exp_date_obj.strftime("%d %b")
         except:
             exp_str_title = ""
             
-        strikes_short = " / ".join(f"{float(r['Strike']):g}" for _, r in group.iterrows())
+        strikes_list = [f"{float(r['Strike']):g}" for _, r in group.iterrows()]
+        strikes_short = f"**{' / '.join(strikes_list)}**" if strikes_list and not is_stock_position else ""
         
-        # Título de estrategia dinámico
-        strategy_display = f"{effective_strategy} (de {strategy})" if effective_strategy != strategy else strategy
+        # Título de estrategia dinámico (limpiar redundancia 'de Custom / Other')
+        if effective_strategy == strategy or strategy in ["Custom / Other", "Other", "Custom"]:
+            strategy_display = effective_strategy
+        else:
+            strategy_display = f"{effective_strategy}"
         
-        # Header del Expander Limpio + Earnings/Div Icon
+        # Etiqueta de Break Even según tipo de posición
+        if is_stock_position:
+            be_opt_label = f"📌 BE Venta Stock: **${calculated_be:.2f}**"
+        elif is_dual_be and calculated_be_upper > 0:
+            be_opt_label = f"🎯 BE Subyacente: **${calculated_be:.2f} – ${calculated_be_upper:.2f}**"
+        else:
+            be_opt_label = f"🎯 Cierre BE Opción: **${net_credit_chain:.2f}**"
+
+        # Construir partes del encabezado con viñetas limpias (•)
+        title_parts = [f"**{ticker}**"]
+        if exp_str_title:
+            title_parts.append(exp_str_title)
+        
+        if strikes_short:
+            title_parts.append(f"{strikes_short} {strategy_display}")
+        else:
+            title_parts.append(strategy_display)
+            
+        title_parts.append(f"({int(qty_active)} contr.)")
+        
+        if roll_label:
+            title_parts.append(roll_label)
+            
+        title_parts.append(be_opt_label)
+        
         alerts_list = []
         if earnings_txt: alerts_list.append(f"🚨 {earnings_txt} 🚨")
         if div_txt: alerts_list.append(f"🚨 {div_txt} 🚨")
-        
-        alerts_str = "   ".join(alerts_list)
-        cnt_label = f"({int(qty_active)} contr.)"
-        if is_stock_position:
-            be_opt_label = f"| BE Venta Stock: ${calculated_be:.2f}"
-        else:
-            be_opt_label = f"| Cierre BE Opción: ${net_credit_chain:.2f}"
+        if alerts_list:
+            title_parts.append(" ".join(alerts_list))
             
-        if alerts_str:
-            header_title = f"{ticker} {exp_str_title} {strikes_short} {strategy_display} {cnt_label} {roll_label} {be_opt_label}   {alerts_str}"
-        else:
-            header_title = f"{ticker} {exp_str_title} {strikes_short} {strategy_display} {cnt_label} {roll_label} {be_opt_label}"
+        header_title = " • ".join(title_parts)
         
         # Layout de Tarjeta
         c_dte, c_card = st.columns([1, 10])
@@ -2332,7 +2380,7 @@ def render_active_portfolio(df):
                 "<span class='cc-tag-no'>Covered Call: NO ⚠️</span>"
             )
             with st.expander(
-                f"🎡 {stock_ticker} — {acciones_st} acciones @ ${precio_compra:.2f}  |  BE: ${costo_base_dinamico:.2f}",
+                f"🎡 **{stock_ticker}** • {acciones_st} acciones @ **${precio_compra:.2f}** • 🎯 BE Base: **${costo_base_dinamico:.2f}**",
                 expanded=False
             ):
                 st.markdown(f"""

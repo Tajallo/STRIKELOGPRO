@@ -829,36 +829,53 @@ def render_dashboard(df):
         closed_trades = df_view[df_view["Estado"].isin(["Cerrada", "Rolada", "Asignada"])].copy()
         open_trades = df_view[df_view["Estado"] == "Abierta"].copy()
         
-        # --- KPIs DE ALTO NIVEL ---
-        pnl_total = closed_trades["PnL_USD_Realizado"].sum()
-        wins_df = closed_trades[closed_trades["PnL_USD_Realizado"] > 0]
-        losses_df = closed_trades[closed_trades["PnL_USD_Realizado"] < 0]
-        
-        wins = len(wins_df)
-        losses = len(losses_df)
-        total_closed = wins + losses
-        win_rate = (wins / total_closed * 100) if total_closed > 0 else 0
-        
-        capture_eff = wins_df["ProfitPct"].mean() if not wins_df.empty else 0
-        total_won = wins_df["PnL_USD_Realizado"].sum()
-        total_lost = abs(losses_df["PnL_USD_Realizado"].sum())
-        profit_factor = (total_won / total_lost) if total_lost > 0 else (total_won if total_won > 0 else 0.0)
-        
-        st.divider()
-        
-        # Fila 1: Métricas Principales con diseño mejorado
-        m1, m2, m3, m4, m5, m6 = st.columns(6)
-        # Formatear delta para asegurar color correcto (si empieza con $ y es negativo, Streamlit a veces lo pone verde)
-        pnl_delta_str = f"${pnl_total:,.2f}" if pnl_total >= 0 else f"-${abs(pnl_total):,.2f}"
-        m1.metric("PnL Realizado", f"${pnl_total:,.2f}", delta=pnl_delta_str if pnl_total != 0 else None)
-        
         total_comisiones = df_view["Comisiones"].sum() if "Comisiones" in df_view.columns else 0.0
-        m2.metric("Comisiones", f"${total_comisiones:,.2f}", help="Total de comisiones pagadas")
+        pnl_neto = pnl_total - total_comisiones
         
-        m3.metric("Win Rate", f"{win_rate:.1f}%", help="Porcentaje de operaciones positivas")
-        m4.metric("Profit Factor", f"{profit_factor:.2f}x", help="Ratio Ganancia Total / Pérdida Total")
-        m5.metric("Captura Media", f"{capture_eff:.1f}%", help="Promedio de beneficio sobre la prima recibida")
+        # Expectativa Matemática por Trade (Expectancy)
+        avg_win = wins_df["PnL_USD_Realizado"].mean() if not wins_df.empty else 0.0
+        avg_loss = abs(losses_df["PnL_USD_Realizado"].mean()) if not losses_df.empty else 0.0
+        win_prob = win_rate / 100.0
+        loss_prob = (100.0 - win_rate) / 100.0
+        expectancy_trade = (win_prob * avg_win) - (loss_prob * avg_loss) if total_closed > 0 else 0.0
+
+        # --- MINI-RESUMEN DE CARTERA ACTIVA HOY ---
+        open_positions_count = len(open_trades["ChainID"].unique()) if not open_trades.empty else 0
+        open_primas_pending = sum(
+            float(r.get("PrimaRecibida", 0.0) or 0.0) * float(r.get("Contratos", 1.0) or 1.0) * 100
+            for _, r in open_trades.iterrows()
+            if r.get("Side", "Sell") == "Sell"
+        ) if not open_trades.empty else 0.0
+        open_bp_total = open_trades["BuyingPower"].sum() if not open_trades.empty else 0.0
+
+        st.markdown("#### 🚀 Resumen Ejecutivo: Cartera Activa Hoy")
+        ca1, ca2, ca3 = st.columns(3)
+        ca1.metric("📦 Posiciones Abiertas", f"{open_positions_count} trade{'s' if open_positions_count != 1 else ''}", help="Operaciones que tienes actualmente en mercado")
+        ca2.metric("💵 Crédito Pendiente (Primas)", f"${open_primas_pending:,.2f}", help="Prima acumulada recibida en las posiciones que siguen abiertas")
+        ca3.metric("🔒 Capital Reservado (BP)", f"${open_bp_total:,.2f}", help="Garantías y margen retenidos por tu broker")
+
+        st.divider()
+        st.markdown("#### 📊 Rendimiento del Historial")
         
+        # Fila 1: Métricas Principales con PnL Neto, Expectancy y Diagnósticos "For Dummies"
+        m1, m2, m3, m4, m5, m6, m7 = st.columns(7)
+        
+        m1.metric("PnL Bruto", f"${pnl_total:,.2f}", delta=f"${pnl_total:,.2f}" if pnl_total != 0 else None, help="Ganancia/Pérdida antes de comisiones")
+        m2.metric("Comisiones", f"${total_comisiones:,.2f}", help="Total pagado al broker")
+        
+        net_delta_str = f"${pnl_neto:,.2f}" if pnl_neto >= 0 else f"-${abs(pnl_neto):,.2f}"
+        m3.metric("💰 PnL Neto Real", f"${pnl_neto:,.2f}", delta=net_delta_str if pnl_neto != 0 else None, help="Dinero real en tu bolsillo tras restar comisiones")
+
+        # Semáforos For Dummies
+        wr_status = "🟢 Saludable" if win_rate >= 60 else ("🟡 Moderado" if win_rate >= 50 else "🔴 Riesgo")
+        m4.metric("Win Rate", f"{win_rate:.1f}%", delta=wr_status, help="Porcentaje de operaciones ganadoras")
+
+        pf_status = "🟢 Excelente" if profit_factor >= 1.5 else ("🟡 Aceptable" if profit_factor >= 1.0 else "🔴 Pérdida")
+        m5.metric("Profit Factor", f"{profit_factor:.2f}x", delta=pf_status, help="Ratio Ganancia Total / Pérdida Total")
+
+        exp_status = "🟢 Sistema Ganador" if expectancy_trade > 0 else ("🔴 Pérdida" if expectancy_trade < 0 else "⚪ Neutro")
+        m6.metric("Expectativa/Trade", f"${expectancy_trade:+,.2f}", delta=exp_status, help="Esperanza matemática promedio ganada/perdida por cada operación que abres")
+
         # Drawdown máximo
         if not closed_trades.empty:
             sorted_closed = closed_trades.sort_values("FechaCierre")
@@ -868,11 +885,12 @@ def render_dashboard(df):
             max_dd = drawdown.max()
         else:
             max_dd = 0.0
-        m6.metric("Max Drawdown", f"-${max_dd:,.2f}", help="Mayor caída desde un pico de equidad")
+        m7.metric("Max Drawdown", f"-${max_dd:,.2f}", help="Mayor caída acumulada desde un pico de equidad")
         
-        # --- NUEVA MÉTRICA: Comisiones 0DTE ---
+        # --- MÉTRICA: Comisiones 0DTE ---
         comisiones_0dte = df_view[df_view["__is_0dte"] == True]["Comisiones"].sum()
-        st.info(f"⚡ **Comisiones acumuladas en 0DTE:** ${comisiones_0dte:,.2f}")
+        if comisiones_0dte > 0:
+            st.info(f"⚡ **Comisiones acumuladas en 0DTE:** ${comisiones_0dte:,.2f}")
         
         # Racha actual (Streak)
         if not closed_trades.empty:

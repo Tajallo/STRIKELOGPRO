@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 ### Added
+- **Main Dashboard UX & Statistics Enhancements**:
+  - **🚀 Cartera Activa Executive Summary Banner**: Added a top-level summary banner to the main Dashboard displaying active trade count, total pending unearned premium credit, and reserved Buying Power.
+  - **💰 PnL Neto Real Metric**: Added **`💰 PnL Neto Real`** metric calculating true net profits after broker commissions ($PnL_{Net} = PnL_{Gross} - Commissions$).
+  - **⚖️ Expectativa Matemática por Trade (Expectancy)**: Added mathematical expectancy per trade calculation ($\text{Expectancy} = (\text{WinRate} \times \text{AvgWin}) - (\text{LossRate} \times \text{AvgLoss})$) indicating expected average gain/loss per new trade.
+  - **🚦 Health Status Semaphores**: Added color-coded health status badges to KPIs (🟢 Saludable / 🟢 Excelente / 🟢 Sistema Ganador) so traders instantly recognize healthy vs risky performance metrics.
 - **For-Dummies Contextual Guidance & Safety Net Cards**:
   - **Put Assignment Scenario Card**: Added an interactive summary card on active short Put positions showing exact worst-case assignment figures (*"If assigned today, you buy 100 shares at $75.00, and your real net cost base will be $71.06/share"*).
   - **DTE Phase Guidance Banner**: Added color-coded DTE phase guidance banners (🟢 Theta Harvest >30d, 🟡 Sweet Spot 21-30d, 🟠 Management 7-21d, 🔴 Expiration Risk ≤7d) advising when to take 50%-75% profit vs when to manage/roll.

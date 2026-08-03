@@ -21,7 +21,7 @@ call env_strikelog\Scripts\activate
 echo [INFO] Abriendo STRIKELOG Pro...
 echo (Puedes minimizar esta ventana negra, pero NO la cierres)
 echo.
-streamlit run STRIKELOG.py --browser.gatherUsageStats false
+streamlit run STRIKELOG.py --server.port 8502 --browser.gatherUsageStats false
 if %errorlevel% neq 0 goto :APP_ERROR
 goto :END
 

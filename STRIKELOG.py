@@ -4216,7 +4216,11 @@ def render_express_0dte():
             })
         
         new_df_exp = pd.DataFrame(new_rows_exp)
-        st.session_state.df = pd.concat([st.session_state.df, new_df_exp], ignore_index=True)
+        if st.session_state.df.empty:
+            st.session_state.df = new_df_exp.copy()
+        else:
+            dfs_to_concat = [df.dropna(how='all', axis=1) for df in [st.session_state.df, new_df_exp]]
+            st.session_state.df = pd.concat(dfs_to_concat, ignore_index=True)
         st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
         estado_txt = "cerrada" if ya_cerro else "abierta"
         pnl_txt = f" | PnL: ${pnl_usd:,.2f}" if ya_cerro else ""
@@ -4548,7 +4552,11 @@ def render_new_trade():
                 
                 if new_rows:
                     new_df = pd.DataFrame(new_rows)
-                    st.session_state.df = pd.concat([st.session_state.df, new_df], ignore_index=True)
+                    if st.session_state.df.empty:
+                        st.session_state.df = new_df.copy()
+                    else:
+                        dfs_to_concat = [df.dropna(how='all', axis=1) for df in [st.session_state.df, new_df]]
+                        st.session_state.df = pd.concat(dfs_to_concat, ignore_index=True)
                     
                     # --- ACTUALIZACIÓN DE LA POSICIÓN DE ACCIONES (si corresponde) ---
                     if selected_chain_id:

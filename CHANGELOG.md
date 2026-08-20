@@ -5,8 +5,10 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 ### Added
 - **NKE Option Roll**: Registered the Nike (NKE) roll from the Aug 21, 2026 $45.00 Put (rebought at $4.81) to the Sep 4, 2026 $45.00 Put (sold at $5.19) for a net credit of $0.38, matching actual broker fills.
+- **Roll Panel Net Credit/Debit Preview**: Added a dynamic green/orange informational alert box in the Roll panel showing the exact Net Credit (e.g. +$0.38) or Net Debit of the roll in real time as user updates the close and new premium inputs.
 ### Fixed
 - **NFLX Campaign PnL Audit**: Corrected the NFLX October $75.00 Put position entries in the database to align with gross option premiums ($6.87) and buyback prices ($1.92 and $5.55). Set the final campaign card PnL to display exactly **+$40.00 USD** in green, resolving a PnL discrepancy and ensuring perfect synchronization between the app and the broker.
+
 
 - **Main Dashboard UX & Statistics Enhancements**:
   - **🚀 Cartera Activa Executive Summary Banner**: Added a top-level summary banner to the main Dashboard displaying active trade count, total pending unearned premium credit, and reserved Buying Power.

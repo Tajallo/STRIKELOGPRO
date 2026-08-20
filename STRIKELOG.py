@@ -3562,10 +3562,20 @@ def render_active_portfolio(df):
                     roll_be_lower, roll_be_upper = suggest_breakeven(effective_roll_strategy, new_legs_data, total_net_credit_for_be)
                     is_roll_dual = effective_roll_strategy in DUAL_BE_STRATEGIES
                     
+                    # Calcular el crédito o débito neto de este roll específico
+                    net_diff = new_net_premium - roll_close_cost
+                    net_diff_total = net_diff * qty_new_roll * 100
+                    
+                    if net_diff > 0:
+                        st.success(f"💰 **Crédito Neto de este Roll:** `${net_diff:.2f}` por acción (`${net_diff_total:.2f}` total)")
+                    elif net_diff < 0:
+                        st.warning(f"💸 **Débito Neto de este Roll (Costo):** `${abs(net_diff):.2f}` por acción (`${abs(net_diff_total):.2f}` total)")
+
                     if is_roll_dual and roll_be_upper > 0:
                          st.info(f"📊 **Nuevo Break Even Estimado:** `${roll_be_lower:.2f}` / `${roll_be_upper:.2f}` (Crédito Neto Acumulado: `${total_net_credit_for_be:.2f}`)")
                     else:
                          st.info(f"📊 **Nuevo Break Even Estimado:** `${roll_be_lower:.2f}` (Crédito Neto Acumulado: `${total_net_credit_for_be:.2f}`)")
+
 
                     c_btn1, c_btn2 = st.columns([2, 1])
                     if c_btn1.button("🚀 Ejecutar Ajuste", type="primary", width="stretch"):

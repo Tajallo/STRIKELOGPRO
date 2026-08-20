@@ -5128,6 +5128,13 @@ def main():
     
     page = st.sidebar.radio("Navegación", nav_options, index=default_nav_idx)
     
+    st.sidebar.divider()
+    if st.sidebar.button("🔄 Recargar desde Disco"):
+        st.session_state.df = JournalManager.load_data()
+        st.toast("📝 ¡Datos recargados desde el archivo CSV!")
+        st.rerun()
+
+    
     if page == "Dashboard": render_dashboard(st.session_state.df)
     elif page == "Nueva Operación": render_new_trade()
     elif page == "Cartera Activa": render_active_portfolio(st.session_state.df)

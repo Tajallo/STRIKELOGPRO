@@ -3570,6 +3570,9 @@ def render_active_portfolio(df):
                         st.success(f"💰 **Crédito Neto de este Roll:** `${net_diff:.2f}` por acción (`${net_diff_total:.2f}` total)")
                     elif net_diff < 0:
                         st.warning(f"💸 **Débito Neto de este Roll (Costo):** `${abs(net_diff):.2f}` por acción (`${abs(net_diff_total):.2f}` total)")
+                    else:
+                        st.info("⚖️ **Roll Neto:** Sin Crédito / Débito adicional ($0.00)")
+
 
                     if is_roll_dual and roll_be_upper > 0:
                          st.info(f"📊 **Nuevo Break Even Estimado:** `${roll_be_lower:.2f}` / `${roll_be_upper:.2f}` (Crédito Neto Acumulado: `${total_net_credit_for_be:.2f}`)")

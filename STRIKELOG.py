@@ -3456,7 +3456,7 @@ def render_active_portfolio(df):
                     
                     # Estimación de PnL basada en input
                     c_r1, c_r2 = st.columns(2)
-                    roll_close_cost = c_r1.number_input("Cierre ($/acción)", value=0.0, step=0.01)
+                    roll_close_cost = c_r1.number_input("Costo de Recompra (Buy to Close) ($/acción)", value=0.0, step=0.01)
                     
                     total_entry_to_roll = sum(float(l["PrimaRecibida"]) for l in legs_to_roll)
                     qty_roll = int(legs_to_roll[0]["Contratos"]) if legs_to_roll else 1
@@ -3514,7 +3514,7 @@ def render_active_portfolio(df):
                          if current_exp >= date.today(): default_date = current_exp + timedelta(days=7)
                     
                     new_expiry = c_n1.date_input("Nuevo Vencimiento", value=default_date)
-                    new_net_premium = c_n2.number_input("Nueva Prima ($/acción)", value=0.0, step=0.01)
+                    new_net_premium = c_n2.number_input("Nueva Prima Recibida (Sell to Open) ($/acción)", value=0.0, step=0.01)
                     
                     if new_expiry < date.today():
                         st.error("⚠️ Error: La nueva fecha de vencimiento es en el pasado.")

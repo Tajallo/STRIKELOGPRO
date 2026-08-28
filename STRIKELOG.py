@@ -104,30 +104,49 @@ def get_fee_rate(broker: str, ticker: str) -> float:
 # ----------------------------
 class JournalManager:
     @staticmethod
+    def get_campaign_rows_for_stock(df: pd.DataFrame, stock_row: pd.Series) -> pd.DataFrame:
+        stock_id = stock_row["ID"]
+        stock_chain = stock_row["ChainID"]
+        stock_parent_id = stock_row.get("ParentID")
+        wheel_parent_chain = stock_row.get("WheelParentChainID")
+
+        related_ids = set([stock_id])
+        added = True
+        while added:
+            old_len = len(related_ids)
+            children = df[df["ParentID"].isin(related_ids)]["ID"].dropna().tolist()
+            parents = df[df["ID"].isin(related_ids)]["ParentID"].dropna().tolist()
+            parents = [p for p in parents if p and str(p) != 'nan']
+            chains = df[df["ID"].isin(related_ids)]["ChainID"].dropna().tolist()
+            wheel_chains = df[df["ID"].isin(related_ids)]["WheelParentChainID"].dropna().tolist()
+            
+            filter_chains = list(set(
+                chains + wheel_chains +
+                ([stock_chain] if pd.notna(stock_chain) and str(stock_chain) != 'nan' else []) +
+                ([wheel_parent_chain] if pd.notna(wheel_parent_chain) and str(wheel_parent_chain) != 'nan' else []) +
+                ([stock_parent_id] if pd.notna(stock_parent_id) and str(stock_parent_id) != 'nan' else [])
+            ))
+            
+            same_chain = df[df["ChainID"].isin(filter_chains)]["ID"].dropna().tolist()
+            same_wheel = df[df["WheelParentChainID"].isin(filter_chains)]["ID"].dropna().tolist()
+            
+            related_ids.update(children + parents + same_chain + same_wheel)
+            if len(related_ids) == old_len:
+                added = False
+
+        return df[df["ID"].isin(related_ids)].drop_duplicates(subset=["ID"])
+
+    @staticmethod
     def calculate_stock_dynamic_be(df: pd.DataFrame, stock_row: pd.Series) -> float:
         stock_id = stock_row["ID"]
         stock_ticker = stock_row["Ticker"]
-        stock_chain = stock_row["ChainID"]
         precio_compra = float(stock_row.get("Strike", 0.0))
         contratos_st = int(stock_row.get("Contratos", 1))
         acciones_st = contratos_st * 100
         cc_prima_acum = float(stock_row.get("CoveredCallPrima", 0.0))
-        wheel_parent_chain = stock_row.get("WheelParentChainID")
-        stock_parent_id = stock_row.get("ParentID")
 
-        # Buscar comisiones y primas extras de toda la campaña de La Rueda (original PCS, Buy Put, CCs, Stock, Spreads)
-        campaign_mask = (
-            (df["ID"] == stock_id) |
-            (df["ParentID"] == stock_id) |
-            (df["ChainID"] == stock_chain) |
-            (df["WheelParentChainID"] == stock_chain)
-        )
-        if pd.notna(stock_parent_id) and str(stock_parent_id) != "nan" and stock_parent_id != "":
-            campaign_mask = campaign_mask | (df["ChainID"] == stock_parent_id) | (df["ParentID"] == stock_parent_id) | (df["WheelParentChainID"] == stock_parent_id)
-        if pd.notna(wheel_parent_chain) and str(wheel_parent_chain) != "nan" and wheel_parent_chain != "":
-            campaign_mask = campaign_mask | (df["ChainID"] == wheel_parent_chain) | (df["WheelParentChainID"] == wheel_parent_chain) | (df["ParentID"] == wheel_parent_chain)
-
-        campaign_rows = df[campaign_mask].drop_duplicates(subset=["ID"])
+        # Buscar comisiones y primas extras de toda la campaña de La Rueda (original PCS, Buy Put, CCs, Stock, Spreads y sus Rolls)
+        campaign_rows = JournalManager.get_campaign_rows_for_stock(df, stock_row)
         total_comisiones_campana = sum(float(r.get("Comisiones", 0.0)) for _, r in campaign_rows.iterrows() if pd.notna(r.get("Comisiones")))
 
         # 1. prima_neta_pcs (Si es 0.0 en el stock row, la recuperamos dinámicamente de los registros del PCS original)
@@ -150,13 +169,12 @@ class JournalManager:
         cc_pnl = 0.0
         pds_pnl = 0.0
         extra_campana_pnl = 0.0
+        has_cc_rows = False
 
         for _, r in campaign_rows.iterrows():
             if r["ID"] == stock_id or r.get("internal_type") == "long_stock":
                 continue
-            if pd.notna(r.get("WheelLeg")) and r.get("WheelLeg") == "sell_put":
-                continue
-            if pd.notna(r.get("WheelLeg")) and r.get("WheelLeg") == "buy_put_open":
+            if pd.notna(r.get("WheelLeg")) and str(r.get("WheelLeg")) in ["sell_put", "buy_put_open"]:
                 continue
             if r["Estrategia"] in ["Long Stock (Asignación)", "Long Stock"]:
                 continue
@@ -170,6 +188,7 @@ class JournalManager:
             
             if "covered call" in estr_lower or "cc" == estr_lower or "cc (" in estr_lower:
                 cc_pnl += r_pnl
+                has_cc_rows = True
             elif "put debit spread" in estr_lower or "pds" in estr_lower:
                 pds_pnl += r_pnl
             else:
@@ -181,7 +200,7 @@ class JournalManager:
         extra_campana_pnl_per_share = extra_campana_pnl / acciones_st
         
         # Combinar el acumulado manual con el detectado en CSV
-        cc_acumulado_final = max(abs(cc_prima_acum), cc_pnl_per_share)
+        cc_acumulado_final = cc_pnl_per_share if has_cc_rows else abs(cc_prima_acum)
         
         # Primas totales por acción que reducen el costo base
         total_primas = abs(prima_neta_pcs) + cc_acumulado_final + pds_pnl_per_share + extra_campana_pnl_per_share + abs(buy_put_prima_extra)
@@ -2294,23 +2313,14 @@ def render_active_portfolio(df):
 
             cc_prima_acum     = float(stock_row.get("CoveredCallPrima", 0))
             cc_chain_id       = stock_row.get("CoveredCallChainID")
-            tiene_cc          = pd.notna(cc_chain_id) and str(cc_chain_id) != "nan"
             wheel_parent_chain = stock_row.get("WheelParentChainID")
 
-            # Buscar comisiones y primas extras de toda la campaña de La Rueda (original PCS, Buy Put, CCs, Stock, Spreads)
-            stock_parent_id = stock_row.get("ParentID")
-            campaign_mask = (
-                (df["ID"] == stock_id) |
-                (df["ParentID"] == stock_id) |
-                (df["ChainID"] == stock_chain) |
-                (df["WheelParentChainID"] == stock_chain)
+            # Buscar comisiones y primas extras de toda la campaña de La Rueda (original PCS, Buy Put, CCs, Stock, Spreads y sus Rolls)
+            campaign_rows = JournalManager.get_campaign_rows_for_stock(df, stock_row)
+            tiene_cc = (pd.notna(cc_chain_id) and str(cc_chain_id) != "nan") or any(
+                ("covered call" in str(r.get("Estrategia", "")).lower() or "cc" in str(r.get("Estrategia", "")).lower()) and r.get("Estado") == "Abierta"
+                for _, r in campaign_rows.iterrows()
             )
-            if pd.notna(stock_parent_id) and str(stock_parent_id) != "nan" and stock_parent_id != "":
-                campaign_mask = campaign_mask | (df["ChainID"] == stock_parent_id) | (df["ParentID"] == stock_parent_id) | (df["WheelParentChainID"] == stock_parent_id)
-            if pd.notna(wheel_parent_chain) and str(wheel_parent_chain) != "nan" and wheel_parent_chain != "":
-                campaign_mask = campaign_mask | (df["ChainID"] == wheel_parent_chain) | (df["WheelParentChainID"] == wheel_parent_chain) | (df["ParentID"] == wheel_parent_chain)
-            
-            campaign_rows = df[campaign_mask].drop_duplicates(subset=["ID"])
             total_comisiones_campana = sum(float(r.get("Comisiones", 0.0)) for _, r in campaign_rows.iterrows() if pd.notna(r.get("Comisiones")))
 
             # 1. prima_neta_pcs (Si es 0.0 en el stock row, la recuperamos dinámicamente de los registros del PCS original)
@@ -2335,13 +2345,12 @@ def render_active_portfolio(df):
             cc_pnl = 0.0
             pds_pnl = 0.0
             extra_campana_pnl = 0.0
+            has_cc_rows = False
             
             for _, r in campaign_rows.iterrows():
                 if r["ID"] == stock_id or r.get("internal_type") == "long_stock":
                     continue
-                if pd.notna(r.get("WheelLeg")) and r.get("WheelLeg") == "sell_put":
-                    continue
-                if pd.notna(r.get("WheelLeg")) and r.get("WheelLeg") == "buy_put_open":
+                if pd.notna(r.get("WheelLeg")) and str(r.get("WheelLeg")) in ["sell_put", "buy_put_open"]:
                     continue
                 if r["Estrategia"] in ["Long Stock (Asignación)", "Long Stock"]:
                     continue
@@ -2355,6 +2364,7 @@ def render_active_portfolio(df):
                 
                 if "covered call" in estr_lower or "cc" == estr_lower or "cc (" in estr_lower:
                     cc_pnl += r_pnl
+                    has_cc_rows = True
                 elif "put debit spread" in estr_lower or "pds" in estr_lower:
                     pds_pnl += r_pnl
                 else:
@@ -2366,7 +2376,7 @@ def render_active_portfolio(df):
             extra_campana_pnl_per_share = extra_campana_pnl / acciones_st
             
             # Combinar el acumulado manual con el detectado en CSV
-            cc_acumulado_final = max(abs(cc_prima_acum), cc_pnl_per_share)
+            cc_acumulado_final = cc_pnl_per_share if has_cc_rows else abs(cc_prima_acum)
             
             # Primas totales por acción que reducen el costo base
             total_primas = abs(prima_neta_pcs) + cc_acumulado_final + pds_pnl_per_share + extra_campana_pnl_per_share + abs(buy_put_prima_extra)
@@ -3629,7 +3639,9 @@ def render_active_portfolio(df):
                                     "Comisiones": n_leg["Contratos"] * get_fee_rate(n_leg["Broker"], n_leg["Ticker"]),
                                     "Broker": n_leg["Broker"],
                                     "EarningsDate": target_group.iloc[0].get("EarningsDate", pd.NA), # Mantener EarningsDate del original
-                                    "DividendosDate": target_group.iloc[0].get("DividendosDate", pd.NA) # Mantener DividendosDate
+                                    "DividendosDate": target_group.iloc[0].get("DividendosDate", pd.NA), # Mantener DividendosDate
+                                    "WheelParentChainID": target_group.iloc[0].get("WheelParentChainID", pd.NA),
+                                    "WheelLeg": target_group.iloc[0].get("WheelLeg", pd.NA)
                                 })
                             
                             if new_rows:

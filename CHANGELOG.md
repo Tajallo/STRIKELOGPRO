@@ -3,7 +3,9 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
-### Added
+- **GAP Covered Call Roll Up & Out**: Registered the GAP Covered Call roll from the Aug 28, 2026 $23.00 Call (bought to close at $1.06) to the Sep 4, 2026 $24.00 Call (sold to open at $0.52) for a net debit of $0.54, raising the strike by $1.00 and updating the campaign break-even.
+- **Recursive Wheel Campaign Dynamic BE Tracking**: Upgraded `calculate_stock_dynamic_be` and La Rueda panel with full recursive traversal of campaign parent/child/roll relationships. The system now accurately factors in multi-generation Covered Call rolls and debits/credits into the true net Cost Basis (`CostBaseReal`) and active stock Break-Even.
+- **Wheel Campaign Metadata Propagation on Rolls**: Updated roll execution in `STRIKELOG.py` to preserve `WheelParentChainID` and `WheelLeg` on newly created rolled legs.
 - **NKE Option Roll**: Registered the Nike (NKE) roll from the Aug 21, 2026 $45.00 Put (rebought at $4.81) to the Sep 4, 2026 $45.00 Put (sold at $5.19) for a net credit of $0.38, matching actual broker fills.
 - **Roll Panel Net Credit/Debit Preview**: Added a dynamic green/orange/blue informational alert box in the Roll panel showing the exact Net Credit (e.g. +$0.38), Net Debit, or neutral/zero state of the roll in real time as user updates the close and new premium inputs.
 - **Roll Panel Label Clarifications**: Renamed inputs in the roll panel to make them explicitly clear: `"Cierre ($/acción)"` became `"Costo de Recompra (Buy to Close) ($/acción)"` and `"Nueva Prima ($/acción)"` became `"Nueva Prima Recibida (Sell to Open) ($/acción)"`.

@@ -3,6 +3,9 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+- **NKE Option Assignment & Wheel Base Recalculation**: Registered the assignment of 100 shares of Nike (NKE) at strike $45.00 from the CSP sequence with the real dynamic Break-Even of $43.05, factoring in net PnL from previous spread rolls.
+- **Fixed Wheel Dynamic BE Double-Counting Bug**: Fixed an issue in `JournalManager.calculate_stock_dynamic_be` and the Wheel rendering loop where assigned options (`Estado == 'Asignada'` or matching `ParentID`) had their PnL added twice (once as `PrimaRecibida` of the stock and once again in `extra_campana_pnl`), which previously distorted the dynamic Break-Even calculation.
+- **Fixed LaTeX Math Formatting Glitch in Expander Titles**: Escaped raw dollar signs (`\$`) in Streamlit expander headers across La Rueda cards to prevent text (e.g. `* * • 🎯 BEBase`) from unintentionally rendering as LaTeX math formulas.
 - **GAP Covered Call Roll Up & Out**: Registered the GAP Covered Call roll from the Aug 28, 2026 $23.00 Call (bought to close at $1.06) to the Sep 4, 2026 $24.00 Call (sold to open at $0.52) for a net debit of $0.54, raising the strike by $1.00 and updating the campaign break-even.
 - **Recursive Wheel Campaign Dynamic BE Tracking**: Upgraded `calculate_stock_dynamic_be` and La Rueda panel with full recursive traversal of campaign parent/child/roll relationships. The system now accurately factors in multi-generation Covered Call rolls and debits/credits into the true net Cost Basis (`CostBaseReal`) and active stock Break-Even.
 - **Wheel Campaign Metadata Propagation on Rolls**: Updated roll execution in `STRIKELOG.py` to preserve `WheelParentChainID` and `WheelLeg` on newly created rolled legs.

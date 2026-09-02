@@ -144,6 +144,7 @@ class JournalManager:
         contratos_st = int(stock_row.get("Contratos", 1))
         acciones_st = contratos_st * 100
         cc_prima_acum = float(stock_row.get("CoveredCallPrima", 0.0))
+        stock_parent_id = stock_row.get("ParentID")
 
         # Buscar comisiones y primas extras de toda la campaña de La Rueda (original PCS, Buy Put, CCs, Stock, Spreads y sus Rolls)
         campaign_rows = JournalManager.get_campaign_rows_for_stock(df, stock_row)
@@ -177,6 +178,8 @@ class JournalManager:
             if pd.notna(r.get("WheelLeg")) and str(r.get("WheelLeg")) in ["sell_put", "buy_put_open"]:
                 continue
             if r["Estrategia"] in ["Long Stock (Asignación)", "Long Stock"]:
+                continue
+            if r.get("Estado") == "Asignada" or (pd.notna(stock_parent_id) and r["ID"] == stock_parent_id):
                 continue
                 
             estr_lower = str(r.get("Estrategia", "")).lower()
@@ -2314,6 +2317,7 @@ def render_active_portfolio(df):
             cc_prima_acum     = float(stock_row.get("CoveredCallPrima", 0))
             cc_chain_id       = stock_row.get("CoveredCallChainID")
             wheel_parent_chain = stock_row.get("WheelParentChainID")
+            stock_parent_id   = stock_row.get("ParentID")
 
             # Buscar comisiones y primas extras de toda la campaña de La Rueda (original PCS, Buy Put, CCs, Stock, Spreads y sus Rolls)
             campaign_rows = JournalManager.get_campaign_rows_for_stock(df, stock_row)
@@ -2354,6 +2358,8 @@ def render_active_portfolio(df):
                     continue
                 if r["Estrategia"] in ["Long Stock (Asignación)", "Long Stock"]:
                     continue
+                if r.get("Estado") == "Asignada" or (pd.notna(stock_parent_id) and r["ID"] == stock_parent_id):
+                    continue
                     
                 estr_lower = str(r.get("Estrategia", "")).lower()
                 r_pnl = float(r.get("PnL_USD_Realizado", 0.0))
@@ -2390,7 +2396,7 @@ def render_active_portfolio(df):
                 "<span class='cc-tag-no'>Covered Call: NO ⚠️</span>"
             )
             with st.expander(
-                f"🎡 **{stock_ticker}** • {acciones_st} acciones @ **${precio_compra:.2f}** • 🎯 BE Base: **${costo_base_dinamico:.2f}**",
+                f"🎡 **{stock_ticker}** • {acciones_st} acciones @ **\\${precio_compra:.2f}** • 🎯 BE Base: **\\${costo_base_dinamico:.2f}**",
                 expanded=False
             ):
                 st.markdown(f"""

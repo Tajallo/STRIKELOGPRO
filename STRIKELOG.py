@@ -35,49 +35,86 @@ COLUMNS = [
     "WheelLeg",            # 'sell_put' | 'buy_put_open' | 'long_stock' | 'covered_call'
 ]
 
-SETUPS = ["Earnings", "Soporte/Resistencia", "VIX alto", "Tendencial", "Reversión", "Inversión Largo Plazo", "Otro"]
+SETUPS = [
+    "La Rueda (The Wheel)",
+    "Earnings",
+    "Soporte/Resistencia",
+    "Tendencial",
+    "Reversión",
+    "VIX alto / IV Crush",
+    "Ruptura (Breakout)",
+    "Rango Lateral",
+    "Sobrecompra / Sobreventa (RSI)",
+    "0DTE / Intradía",
+    "Cobertura / Hedging",
+    "Inversión Largo Plazo",
+    "Dividendo",
+    "Otro"
+]
 
 ESTADOS = ["Abierta", "Cerrada", "Rolada", "Asignada"]
 ESTRATEGIAS = [
-    "CSP (Cash Secured Put)", "CC (Covered Call)", "Collar",
+    "La Rueda (The Wheel)",
+    "CSP (Cash Secured Put)", "CC (Covered Call)", "PMCC (Poor Man's Covered Call)",
+    "Collar",
     "Put Credit Spread", "Call Credit Spread", 
     "Put Debit Spread", "Call Debit Spread",
     "Iron Condor", "Iron Fly",
+    "Jade Lizard", "Big Lizard",
     "Butterfly", "Broken Wing Butterfly (BWB)", "Flyagonal",
     "Strangle", "Straddle",
+    "Long Strangle", "Long Straddle",
     "Calendar", "Diagonal",
     "Ratio Spread", "Backspread", 
+    "Covered Put",
+    "Short Put (Naked)", "Short Call (Naked)",
     "Long Call", "Long Put",
-    "Long Stock (Asignación)",
+    "Long Stock", "Long Stock (Asignación)",
     "Custom / Other"
 ]
 SIDES = ["Sell", "Buy"]
 OPTION_TYPES = ["Put", "Call", "Stock"]
 
 # Estrategias que tienen dos Break Even (zona de beneficio entre dos strikes)
-DUAL_BE_STRATEGIES = ["Iron Condor", "Iron Fly", "Iron Butterfly", "Strangle", "Straddle", "Butterfly", "Broken Wing Butterfly (BWB)", "Flyagonal"]
+DUAL_BE_STRATEGIES = [
+    "Iron Condor", "Iron Fly", "Iron Butterfly", 
+    "Strangle", "Straddle", "Long Strangle", "Long Straddle",
+    "Jade Lizard", "Big Lizard",
+    "Butterfly", "Broken Wing Butterfly (BWB)", "Flyagonal"
+]
 
 # Estrategias complejas que típicamente usan patas con vencimientos independientes
-MULTI_EXPIRY_STRATEGIES = ["Calendar", "Diagonal", "Flyagonal"]
+MULTI_EXPIRY_STRATEGIES = ["Calendar", "Diagonal", "PMCC (Poor Man's Covered Call)", "Flyagonal"]
 
 # Auto-populate de patas según estrategia (Side, OptionType por pata)
 LEG_DEFAULTS = {
+    "La Rueda (The Wheel)": [("Sell", "Put")],
     "CSP (Cash Secured Put)": [("Sell", "Put")],
     "CC (Covered Call)": [("Sell", "Call")],
+    "PMCC (Poor Man's Covered Call)": [("Buy", "Call"), ("Sell", "Call")],
     "Put Credit Spread": [("Sell", "Put"), ("Buy", "Put")],
     "Call Credit Spread": [("Sell", "Call"), ("Buy", "Call")],
     "Put Debit Spread": [("Buy", "Put"), ("Sell", "Put")],
     "Call Debit Spread": [("Buy", "Call"), ("Sell", "Call")],
     "Iron Condor": [("Sell", "Put"), ("Buy", "Put"), ("Sell", "Call"), ("Buy", "Call")],
     "Iron Fly": [("Sell", "Put"), ("Buy", "Put"), ("Sell", "Call"), ("Buy", "Call")],
+    "Jade Lizard": [("Sell", "Put"), ("Sell", "Call"), ("Buy", "Call")],
+    "Big Lizard": [("Sell", "Put"), ("Sell", "Call"), ("Buy", "Call")],
     "Butterfly": [("Buy", "Call"), ("Sell", "Call"), ("Buy", "Call")],
     "Broken Wing Butterfly (BWB)": [("Buy", "Put"), ("Sell", "Put"), ("Buy", "Put")],
     "Flyagonal": [("Buy", "Call"), ("Sell", "Call"), ("Sell", "Call"), ("Buy", "Call"), ("Sell", "Put"), ("Buy", "Put")],
     "Strangle": [("Sell", "Put"), ("Sell", "Call")],
     "Straddle": [("Sell", "Put"), ("Sell", "Call")],
+    "Long Strangle": [("Buy", "Put"), ("Buy", "Call")],
+    "Long Straddle": [("Buy", "Put"), ("Buy", "Call")],
     "Collar": [("Sell", "Call"), ("Buy", "Put")],
+    "Covered Put": [("Sell", "Put")],
+    "Short Put (Naked)": [("Sell", "Put")],
+    "Short Call (Naked)": [("Sell", "Call")],
     "Long Call": [("Buy", "Call")],
     "Long Put": [("Buy", "Put")],
+    "Long Stock": [("Buy", "Stock")],
+    "Long Stock (Asignación)": [("Buy", "Stock")],
     "Calendar": [("Sell", "Put"), ("Buy", "Put")],
     "Diagonal": [("Sell", "Put"), ("Buy", "Put")],
     "Ratio Spread": [("Sell", "Put"), ("Buy", "Put")],
@@ -309,10 +346,14 @@ class JournalManager:
 
 # Estrategias cuya prima neta es un CRÉDITO recibido (estrategias vendedoras / neutrales)
 CREDIT_STRATEGIES = [
+    "La Rueda (The Wheel)",
     "CSP (Cash Secured Put)", "CC (Covered Call)", "Collar",
     "Put Credit Spread", "Call Credit Spread",
     "Iron Condor", "Iron Fly",
+    "Jade Lizard", "Big Lizard",
     "Strangle", "Straddle",
+    "Covered Put",
+    "Short Put (Naked)", "Short Call (Naked)",
     "Ratio Spread",
 ]
 
@@ -440,8 +481,8 @@ def suggest_breakeven(strategy, legs_data, total_premium):
                 return (strikes[0] + premium, strikes[-1] - premium)
             return (0.0, 0.0)
         
-        # --- STRANGLE (2 patas): Put + Call a diferentes strikes ---
-        if strategy == "Strangle":
+        # --- STRANGLE / LONG STRANGLE (2 patas): Put + Call a diferentes strikes ---
+        if "Strangle" in strategy:
             put_strike = None
             call_strike = None
             for leg in legs_data:
@@ -452,18 +493,30 @@ def suggest_breakeven(strategy, legs_data, total_premium):
                 elif t == "Call" and strike > 0:
                     call_strike = strike
             if put_strike and call_strike:
-                main_side = legs_data[0].get("Side", "Sell")
-                if main_side == "Sell":
-                    return (put_strike - premium, call_strike + premium)
-                else:
-                    return (put_strike - premium, call_strike + premium)
+                return (put_strike - premium, call_strike + premium)
             return (0.0, 0.0)
         
-        # --- STRADDLE (2 patas): Put + Call al mismo strike ---
-        if strategy == "Straddle":
+        # --- STRADDLE / LONG STRADDLE (2 patas): Put + Call al mismo strike ---
+        if "Straddle" in strategy:
             strike = float(legs_data[0].get("Strike", 0))
             if strike > 0:
                 return (strike - premium, strike + premium)
+            return (0.0, 0.0)
+            
+        # --- JADE LIZARD / BIG LIZARD (3 patas): Short Put OTM + Short Call Spread OTM ---
+        if "Lizard" in strategy:
+            sell_put_strike = None
+            sell_call_strike = None
+            for leg in legs_data:
+                s = leg.get("Side", "")
+                t = leg.get("Type", leg.get("OptionType", ""))
+                strike = float(leg.get("Strike", 0))
+                if s == "Sell" and t == "Put" and strike > 0:
+                    sell_put_strike = strike
+                elif s == "Sell" and t == "Call" and strike > 0:
+                    sell_call_strike = strike
+            if sell_put_strike and sell_call_strike:
+                return (sell_put_strike - premium, sell_call_strike + premium)
             return (0.0, 0.0)
         
         # --- COLLAR (2 patas): Sell Call + Buy Put (o viceversa) ---
@@ -484,8 +537,8 @@ def suggest_breakeven(strategy, legs_data, total_premium):
         # --- ESTRATEGIAS SIMPLES (1 BE) ---
         main_strike = float(legs_data[0].get("Strike", 0))
         
-        # Put Credit Spread / CSP
-        if "Put Credit Spread" in strategy or "CSP" in strategy:
+        # Put Credit Spread / CSP / La Rueda / Short Put / Covered Put
+        if any(k in strategy for k in ["Put Credit Spread", "CSP", "La Rueda", "Short Put", "Covered Put"]):
             # Buscar el Short Put strike específicamente
             for leg in legs_data:
                 if leg.get("Side") == "Sell":
@@ -493,8 +546,8 @@ def suggest_breakeven(strategy, legs_data, total_premium):
                     break
             return (main_strike - premium, 0.0)
         
-        # Call Credit Spread / CC
-        if "Call Credit Spread" in strategy or "CC" in strategy:
+        # Call Credit Spread / CC / Short Call / PMCC
+        if any(k in strategy for k in ["Call Credit Spread", "CC", "Short Call", "PMCC"]):
             for leg in legs_data:
                 if leg.get("Side") == "Sell":
                     main_strike = float(leg.get("Strike", main_strike))

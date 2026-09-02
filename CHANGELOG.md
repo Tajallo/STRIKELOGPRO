@@ -3,6 +3,9 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+- **Expanded Strategy & Setup / Motivo Catalogs**: Added new popular option strategies and entry reasons across the entire application:
+  - **New Strategies**: *"La Rueda (The Wheel)"*, *"PMCC (Poor Man's Covered Call)"*, *"Jade Lizard"*, *"Big Lizard"*, *"Long Straddle"*, *"Long Strangle"*, *"Covered Put"*, *"Short Put (Naked)"*, *"Short Call (Naked)"*, and *"Long Stock"*, complete with automatic default leg population, credit/debit direction tagging, and Break-Even formulas.
+  - **New Setups / Motivos**: Added *"La Rueda (The Wheel)"*, *"VIX alto / IV Crush"*, *"Ruptura (Breakout)"*, *"Rango Lateral"*, *"Sobrecompra / Sobreventa (RSI)"*, *"0DTE / Intradía"*, *"Cobertura / Hedging"*, and *"Dividendo"*.
 - **NKE Option Assignment & Wheel Base Recalculation**: Registered the assignment of 100 shares of Nike (NKE) at strike $45.00 from the CSP sequence with the real dynamic Break-Even of $43.05, factoring in net PnL from previous spread rolls.
 - **Fixed Wheel Dynamic BE Double-Counting Bug**: Fixed an issue in `JournalManager.calculate_stock_dynamic_be` and the Wheel rendering loop where assigned options (`Estado == 'Asignada'` or matching `ParentID`) had their PnL added twice (once as `PrimaRecibida` of the stock and once again in `extra_campana_pnl`), which previously distorted the dynamic Break-Even calculation.
 - **Fixed LaTeX Math Formatting Glitch in Expander Titles**: Escaped raw dollar signs (`\$`) in Streamlit expander headers across La Rueda cards to prevent text (e.g. `* * • 🎯 BEBase`) from unintentionally rendering as LaTeX math formulas.

@@ -4179,14 +4179,14 @@ def render_active_portfolio(df):
                             st.rerun()
 
 def render_express_0dte():
-    """Formulario simplificado para operaciones 0DTE (especialmente SPX)."""
-    st.markdown("### ⚡ Registro Express 0DTE")
-    st.caption("Diseñado para registrar operaciones 0DTE de SPX rápidamente. Solo los campos esenciales.")
+    """Formulario simplificado para operaciones 0DTE y 1DTE Express (especialmente SPX/NDX)."""
+    st.markdown("### ⚡ Registro Express (0DTE / 1DTE)")
+    st.caption("Diseñado para registrar operaciones de vencimiento corto (0DTE, 1DTE) rápidamente. Solo los campos esenciales.")
     
     # Verificar si viene de un 'Duplicar'
     dup_defaults = st.session_state.pop("express_dup_defaults", None)
 
-    # --- Estrategias más comunes en 0DTE ---
+    # --- Estrategias más comunes en 0DTE / 1DTE ---
     express_strategies = [
         "Iron Condor", "Put Credit Spread", "Call Credit Spread",
         "Iron Fly", "Strangle", "Put Debit Spread", "Call Debit Spread",
@@ -4204,17 +4204,19 @@ def render_express_0dte():
     contratos_exp = col_c.number_input("Contratos", min_value=1, value=default_contratos, key="exp_contratos")
     broker_exp = col_b.selectbox("Broker", ["Tradier", "IB"], key="exp_broker")
     
-    # La fecha de apertura y vencimiento son HOY (0DTE)
+    # Fecha de apertura y vencimiento
     hoy = date.today()
-    col_p, col_bp, col_fee = st.columns(3)
+    col_fa, col_fv, col_p, col_bp, col_fee = st.columns(5)
     default_prima = float(dup_defaults.get("prima", 0.0)) if dup_defaults else 0.0
     default_bp = float(dup_defaults.get("buying_power", 0.0)) if dup_defaults else 0.0
     
     default_comision_exp = contratos_exp * get_fee_rate(broker_exp, ticker_exp)
     
+    fecha_apertura_exp = col_fa.date_input("Fecha Apertura", value=hoy, key="exp_fecha_apertura")
+    fecha_vencimiento_exp = col_fv.date_input("Fecha Vencimiento", value=fecha_apertura_exp, key="exp_fecha_vencimiento", help="Para 0DTE coincide con apertura. Para 1DTE selecciona el día siguiente.")
     prima_exp = col_p.number_input("💰 Prima recibida ($/acción)", value=default_prima, step=0.01, key="exp_prima")
     bp_exp = col_bp.number_input("🏦 Capital Reservado ($)", value=default_bp, step=100.0, key="exp_bp", help="Buying Power que reserva tu broker")
-    comision_exp = col_fee.number_input("Comisiones ($)", value=float(default_comision_exp), step=0.05, key=f"exp_comision_{broker_exp}_{ticker_exp}", help="Comisiones por pata de la estrategia.")
+    comision_exp = col_fee.number_input("Comisiones ($)", value=float(default_comision_exp), step=0.05, key=f"exp_comision_{broker_exp}_{ticker_exp}", help="Comisión de apertura por pata de la estrategia.")
     
     # --- Cierre (opcional, si ya cerró la operación) ---
     st.markdown("---")
@@ -4222,10 +4224,23 @@ def render_express_0dte():
     ya_cerro = col_cierre.checkbox("✅ La operación ya está cerrada", value=False, key="exp_cerrada")
     
     cierre_exp = 0.0
-    fecha_cierre_exp = hoy
+    fecha_cierre_exp = fecha_vencimiento_exp
+    expirada_exp = False
+    
     if ya_cerro:
-        cierre_exp = col_cierre.number_input("Precio Cierre ($/acción)", value=0.0, step=0.01, key="exp_cierre")
-        fecha_cierre_exp = col_estado.date_input("Fecha Cierre", value=hoy, key="exp_fecha_cierre")
+        expirada_exp = col_cierre.checkbox(
+            "⌛ Operación Expirada OTM ($0.00 al cierre / Sin comisión de cierre)", 
+            value=False, 
+            key="exp_expirada",
+            help="Marca esta opción si la operación expiró sin valor ($0.00). No se aplicarán comisiones de cierre."
+        )
+        if expirada_exp:
+            cierre_exp = 0.0
+            col_cierre.caption("💡 *Al estar expirada OTM, el precio de cierre es $0.00 y no se cobran comisiones de cierre.*")
+        else:
+            cierre_exp = col_cierre.number_input("Precio Cierre ($/acción)", value=0.0, step=0.01, key="exp_cierre")
+        
+        fecha_cierre_exp = col_estado.date_input("Fecha Cierre", value=fecha_vencimiento_exp, key="exp_fecha_cierre")
     
     notas_exp = st.text_input("📝 Notas (opcional)", placeholder="Ej: Apertura en mínimo de sesión, VIX alto...", key="exp_notas")
     
@@ -4247,10 +4262,23 @@ def render_express_0dte():
         profit_pct = 0.0
         estado_final = "Abierta"
         fecha_cierre_str = pd.NA
+        fecha_apertura_str = fecha_apertura_exp.strftime("%Y-%m-%d")
+        fecha_vencimiento_str = fecha_vencimiento_exp.strftime("%Y-%m-%d")
+        
+        # Tags según si es 0DTE o 1DTE
+        express_tag = "0dte,express" if fecha_vencimiento_str == fecha_apertura_str else "1dte,express"
         
         if ya_cerro:
             total_legs_count = len(leg_defs)
-            total_comisiones_exp = comision_exp * total_legs_count
+            if expirada_exp:
+                # Expirada OTM: cierre = 0.0, comisiones totales = apertura únicamente
+                comision_por_pata_guardar = comision_exp
+                total_comisiones_exp = comision_exp * total_legs_count
+            else:
+                # Cerrada manualmente: comisiones = apertura + cierre
+                comision_por_pata_guardar = comision_exp * 2
+                total_comisiones_exp = (comision_exp * 2) * total_legs_count
+                
             pnl_usd, profit_pct, _ = calculate_pnl_metrics(
                 prima_neta=prima_exp, 
                 costo_cierre_neto=cierre_exp, 
@@ -4261,6 +4289,8 @@ def render_express_0dte():
             )
             estado_final = "Cerrada"
             fecha_cierre_str = fecha_cierre_exp.strftime("%Y-%m-%d")
+        else:
+            comision_por_pata_guardar = comision_exp
         
         for i_leg, (l_side, l_type) in enumerate(leg_defs):
             new_rows_exp.append({
@@ -4268,11 +4298,11 @@ def render_express_0dte():
                 "ChainID": chain_id,
                 "ParentID": pd.NA,
                 "Ticker": ticker_exp,
-                "FechaApertura": hoy.strftime("%Y-%m-%d"),
-                "Expiry": hoy.strftime("%Y-%m-%d"),  # 0DTE = vence hoy
+                "FechaApertura": fecha_apertura_str,
+                "Expiry": fecha_vencimiento_str,
                 "Estrategia": estrategia_exp,
                 "Setup": "Otro",
-                "Tags": "0dte,express",
+                "Tags": express_tag,
                 "Side": l_side,
                 "OptionType": l_type,
                 "Strike": 0.0,
@@ -4285,7 +4315,7 @@ def render_express_0dte():
                 "BreakEven_Upper": 0.0,
                 "POP": 0.0,
                 "Estado": estado_final,
-                "Notas": notas_exp or f"Express 0DTE – {estrategia_exp}",
+                "Notas": notas_exp or f"Express – {estrategia_exp}",
                 "UpdatedAt": datetime.now().isoformat(),
                 "FechaCierre": fecha_cierre_str,
                 "MaxProfitUSD": (prima_exp * contratos_exp * 100) if i_leg == 0 else 0.0,
@@ -4293,7 +4323,7 @@ def render_express_0dte():
                 "PnL_Capital_Pct": (pnl_usd / bp_exp * 100) if (bp_exp > 0 and i_leg == 0 and ya_cerro) else 0.0,
                 "PrecioAccionCierre": 0.0,
                 "PnL_USD_Realizado": pnl_usd if (i_leg == 0 and ya_cerro) else 0.0,
-                "Comisiones": comision_exp,
+                "Comisiones": comision_por_pata_guardar,
                 "Broker": broker_exp,
                 "EarningsDate": pd.NA,
                 "DividendosDate": pd.NA,
@@ -4306,11 +4336,11 @@ def render_express_0dte():
             dfs_to_concat = [df.dropna(how='all', axis=1) for df in [st.session_state.df, new_df_exp]]
             st.session_state.df = pd.concat(dfs_to_concat, ignore_index=True)
         st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
-        estado_txt = "cerrada" if ya_cerro else "abierta"
+        estado_txt = "cerrada (expirada)" if (ya_cerro and expirada_exp) else ("cerrada" if ya_cerro else "abierta")
         pnl_txt = f" | PnL: ${pnl_usd:,.2f}" if ya_cerro else ""
         st.toast(f"⚡ {ticker_exp} {estrategia_exp} registrada ({estado_txt}){pnl_txt}", icon="🚀")
         # Limpiar claves del formulario express
-        for _k in ["exp_ticker", "exp_prima", "exp_cierre", "exp_notas", "exp_bp", "exp_contratos", "exp_estrategia", "exp_cerrada", "exp_fecha_cierre", "exp_broker"]:
+        for _k in ["exp_ticker", "exp_fecha_apertura", "exp_fecha_vencimiento", "exp_prima", "exp_cierre", "exp_notas", "exp_bp", "exp_contratos", "exp_estrategia", "exp_cerrada", "exp_expirada", "exp_fecha_cierre", "exp_broker"]:
             if _k in st.session_state:
                 del st.session_state[_k]
         dynamic_exp_key = f"exp_comision_{broker_exp}_{ticker_exp}"

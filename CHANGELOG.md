@@ -3,6 +3,7 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+- **0DTE & 1DTE Express Form Enhancements**: Added explicit `Fecha Apertura` and `Fecha Vencimiento` date selectors alongside the `⌛ Operación Expirada OTM` sub-checkbox. This provides full support for both 0DTE and 1DTE short-term express trades while ensuring exact PnL and fee accounting.
 - **Expanded Strategy & Setup / Motivo Catalogs**: Added new popular option strategies and entry reasons across the entire application:
   - **New Strategies**: *"La Rueda (The Wheel)"*, *"PMCC (Poor Man's Covered Call)"*, *"Jade Lizard"*, *"Big Lizard"*, *"Long Straddle"*, *"Long Strangle"*, *"Covered Put"*, *"Short Put (Naked)"*, *"Short Call (Naked)"*, and *"Long Stock"*, complete with automatic default leg population, credit/debit direction tagging, and Break-Even formulas.
   - **New Setups / Motivos**: Added *"La Rueda (The Wheel)"*, *"VIX alto / IV Crush"*, *"Ruptura (Breakout)"*, *"Rango Lateral"*, *"Sobrecompra / Sobreventa (RSI)"*, *"0DTE / Intradía"*, *"Cobertura / Hedging"*, and *"Dividendo"*.

@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+- **Tradier Pro Fee Schedule Update ($10/mo Plan)**: Updated `get_fee_rate` for Tradier accounts under the $10/mo flat-fee plan. Standard equities and ETFs remain at `$0.00`, while `SPX` defaults to `$0.97/contract` ($0.35 Tradier commission + $0.60 CBOE proprietary index exchange fee + ~$0.02 OCC/regulatory pass-through) and other major indices default to `$0.95/contract`.
 - **0DTE & 1DTE Express Form Enhancements**: Added explicit `Fecha Apertura` and `Fecha Vencimiento` date selectors alongside the `⌛ Operación Expirada OTM` sub-checkbox. This provides full support for both 0DTE and 1DTE short-term express trades while ensuring exact PnL and fee accounting.
 - **Expanded Strategy & Setup / Motivo Catalogs**: Added new popular option strategies and entry reasons across the entire application:
   - **New Strategies**: *"La Rueda (The Wheel)"*, *"PMCC (Poor Man's Covered Call)"*, *"Jade Lizard"*, *"Big Lizard"*, *"Long Straddle"*, *"Long Strangle"*, *"Covered Put"*, *"Short Put (Naked)"*, *"Short Call (Naked)"*, and *"Long Stock"*, complete with automatic default leg population, credit/debit direction tagging, and Break-Even formulas.

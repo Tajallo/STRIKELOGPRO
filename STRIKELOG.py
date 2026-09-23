@@ -1231,13 +1231,23 @@ def sync_active_portfolio_calendars(active_df):
             
     st.rerun()
 
+def _log_debug(msg):
+    try:
+        with open("debug_actions.log", "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now()}: {msg}\n")
+    except:
+        pass
+
 def _cb_set_edit_trade(trade_id):
+    _log_debug(f"CALLBACK _cb_set_edit_trade CALLED with trade_id={trade_id}")
     st.session_state["edit_trade_id"] = trade_id
 
 def _cb_cancel_edit_trade():
+    _log_debug("CALLBACK _cb_cancel_edit_trade CALLED")
     st.session_state.pop("edit_trade_id", None)
 
 def _cb_set_delete_chain(chain_id, ticker, strategy):
+    _log_debug(f"CALLBACK _cb_set_delete_chain CALLED with chain_id={chain_id}, ticker={ticker}")
     st.session_state["delete_chain_info"] = {
         "chain_id": chain_id,
         "ticker": ticker,
@@ -4759,6 +4769,7 @@ def render_new_trade():
 
 
 def render_history(df):
+    _log_debug(f"render_history called. Keys in session_state: {list(st.session_state.keys())}")
     # Panel de confirmación de eliminación activa en Historial
     if "delete_chain_info" in st.session_state:
         del_info = st.session_state["delete_chain_info"]
@@ -4998,6 +5009,31 @@ def render_history(df):
     comisiones_0dte_h = hist_df[hist_df["__is_0dte"] == True]["Comisiones"].sum()
     st.info(f"⚡ **Comisiones acumuladas en 0DTE (en este filtro):** ${comisiones_0dte_h:,.2f}")
     st.divider()
+
+    # =========================================================
+    # --- BARRA DE GESTIÓN DIRECTA (EDITAR / ELIMINAR) ---
+    # =========================================================
+    with st.container(border=True):
+        st.markdown("#### 🛠️ Gestión Directa: Editar o Eliminar Operación")
+        st.caption("Selecciona cualquier operación del historial para editarla o eliminarla de forma inmediata:")
+        op_options = {}
+        for c in chain_summaries:
+            f_date = str(c["FechaCierre"])[:10] if pd.notna(c["FechaCierre"]) else "Sin fecha"
+            op_label = f"{c['Ticker']} - {c['Estrategia']} | 📅 {f_date} | 💵 ${c['PnL_Total']:,.2f} (ChainID: {str(c['ChainID'])[:8]})"
+            op_options[op_label] = c
+            
+        if op_options:
+            c_sel, c_act1, c_act2 = st.columns([3, 1.2, 1.2])
+            sel_op_label = c_sel.selectbox("Operación a gestionar:", list(op_options.keys()), key="hist_direct_sel_op", label_visibility="collapsed")
+            sel_c_data = op_options[sel_op_label]
+            sel_first_leg = sel_c_data["_group"].iloc[0]["ID"]
+            
+            if c_act1.button("✏️ Editar", key="btn_direct_edit_hist", type="secondary", use_container_width=True, on_click=_cb_set_edit_trade, args=(sel_first_leg,)):
+                st.session_state["edit_trade_id"] = sel_first_leg
+                st.rerun()
+            if c_act2.button("🗑️ Eliminar", key="btn_direct_del_hist", type="primary", use_container_width=True, on_click=_cb_set_delete_chain, args=(sel_c_data["ChainID"], sel_c_data["Ticker"], sel_c_data["Estrategia"])):
+                st.session_state["delete_chain_info"] = {"chain_id": sel_c_data["ChainID"], "ticker": sel_c_data["Ticker"], "strategy": sel_c_data["Estrategia"]}
+                st.rerun()
 
     # =========================================================
     # --- LISTA DE OPERACIONES (acordeón agrupado) ---

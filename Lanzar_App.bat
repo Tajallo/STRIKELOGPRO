@@ -16,12 +16,13 @@ if %errorlevel% neq 0 goto :NO_PYTHON
 if not exist "env_strikelog" goto :SETUP_ENV
 
 :START_APP
-echo [INFO] Entorno detectado. Iniciando...
-call env_strikelog\Scripts\activate
-echo [INFO] Abriendo STRIKELOG Pro...
+echo [INFO] Iniciando STRIKELOG Pro...
 echo (Puedes minimizar esta ventana negra, pero NO la cierres)
 echo.
-streamlit run STRIKELOG.py --server.port 8502 --browser.gatherUsageStats false
+if exist "env_strikelog\Scripts\activate.bat" (
+    call env_strikelog\Scripts\activate.bat 2>nul
+)
+python -m streamlit run STRIKELOG.py --server.port 8502 --browser.gatherUsageStats false
 if %errorlevel% neq 0 goto :APP_ERROR
 goto :END
 

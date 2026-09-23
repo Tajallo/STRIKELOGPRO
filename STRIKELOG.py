@@ -2143,7 +2143,25 @@ def render_active_portfolio(df):
                         exp_str = str(leg.get("Expiry", "-"))
                     l_c7.write(exp_str)
                     
-                    l_c8.button("✏️", key=f"edit_leg_{leg['ID']}", help="Editar esta pata", on_click=_cb_set_edit_trade, args=(leg["ID"],))
+                    with l_c8.popover("✏️", help="Editar esta pata"):
+                        leg_idx_list = df.index[df["ID"] == leg["ID"]]
+                        if len(leg_idx_list) > 0:
+                            l_idx = leg_idx_list[0]
+                            r_leg = df.iloc[l_idx]
+                            with st.form(f"form_act_leg_{leg['ID']}"):
+                                st.markdown(f"**Pata: {r_leg['Side']} {r_leg['OptionType']} @ {r_leg['Strike']}**")
+                                p_strike = st.number_input("Strike", value=float(r_leg["Strike"]))
+                                p_delta = st.number_input("Delta", value=float(r_leg["Delta"]), step=0.01)
+                                p_prima = st.number_input("Prima Recibida", value=float(r_leg["PrimaRecibida"]))
+                                p_contracts = st.number_input("Contratos", value=int(r_leg["Contratos"]), min_value=1)
+                                if st.form_submit_button("💾 Guardar Pata", type="primary", use_container_width=True):
+                                    st.session_state.df.at[l_idx, "Strike"] = p_strike
+                                    st.session_state.df.at[l_idx, "Delta"] = p_delta
+                                    st.session_state.df.at[l_idx, "PrimaRecibida"] = p_prima
+                                    st.session_state.df.at[l_idx, "Contratos"] = p_contracts
+                                    st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+                                    st.toast("💾 Pata actualizada con éxito.", icon="✅")
+                                    st.rerun()
                 
                 st.markdown("---")
                 
@@ -2194,8 +2212,37 @@ def render_active_portfolio(df):
                     st.rerun()
 
                 first_leg_id = first_row["ID"]
-                c_btn_edit.button(f"✏️ Editar", key=f"btn_edit_active_{chain_id}", help="Editar todos los campos de esta operación", use_container_width=True, on_click=_cb_set_edit_trade, args=(first_leg_id,))
-                c_btn_del.button(f"🗑️ Eliminar", key=f"btn_del_active_{chain_id}", help="Eliminar la operación completa de la base de datos", use_container_width=True, on_click=_cb_set_delete_chain, args=(chain_id, ticker, strategy))
+                with c_btn_edit.popover("✏️ Editar", help="Editar campos de esta operación", use_container_width=True):
+                    st.markdown(f"#### ✏️ Editar {ticker} ({strategy})")
+                    idx_first = st.session_state.df.index[st.session_state.df["ID"] == first_leg_id]
+                    if len(idx_first) > 0:
+                        r_edit = st.session_state.df.iloc[idx_first[0]]
+                        with st.form(f"pop_edit_act_{chain_id}"):
+                            pe_ticker = st.text_input("Ticker", r_edit["Ticker"])
+                            pe_strat = st.selectbox("Estrategia", ESTRATEGIAS, index=ESTRATEGIAS.index(r_edit["Estrategia"]) if r_edit["Estrategia"] in ESTRATEGIAS else 0)
+                            pe_setup = st.selectbox("Setup", SETUPS, index=SETUPS.index(r_edit["Setup"]) if "Setup" in r_edit and r_edit["Setup"] in SETUPS else 0)
+                            pe_tags = st.text_input("Tags", value=str(r_edit.get("Tags", "") or ""))
+                            pe_notas = st.text_area("Notas", str(r_edit.get("Notas", "") or ""))
+                            if st.form_submit_button("💾 Guardar Cambios", type="primary", use_container_width=True):
+                                for g_idx, g_row in group.iterrows():
+                                    real_i = st.session_state.df.index[st.session_state.df["ID"] == g_row["ID"]][0]
+                                    st.session_state.df.at[real_i, "Ticker"] = pe_ticker
+                                    st.session_state.df.at[real_i, "Estrategia"] = pe_strat
+                                    st.session_state.df.at[real_i, "Setup"] = pe_setup
+                                    st.session_state.df.at[real_i, "Tags"] = pe_tags.strip()
+                                    st.session_state.df.at[real_i, "Notas"] = pe_notas
+                                st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+                                st.toast("💾 Operación actualizada.", icon="✅")
+                                st.rerun()
+
+                with c_btn_del.popover("🗑️ Eliminar", help="Eliminar la operación completa", use_container_width=True):
+                    st.error(f"⚠️ ¿Eliminar permanentemente **{ticker} ({strategy})**?")
+                    st.markdown("Se eliminarán todas las patas de esta operación de la base de datos.")
+                    if st.button("🗑️ Sí, eliminar permanentemente", type="primary", key=f"pop_del_act_{chain_id}", use_container_width=True):
+                        st.session_state.df = st.session_state.df[st.session_state.df["ChainID"] != chain_id].reset_index(drop=True)
+                        st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+                        st.toast(f"🗑️ Operación {ticker} eliminada.", icon="✅")
+                        st.rerun()
                 
                 # --- MINI PANEL DE CIERRE RÁPIDO ---
                 if st.session_state.get(f"quick_close_{chain_id}", False):
@@ -4790,6 +4837,8 @@ def render_history(df):
         st.stop()
 
     st.header("📜 Historial de Operaciones")
+    if "hist_success_msg" in st.session_state:
+        st.success(st.session_state.pop("hist_success_msg"), icon="✅")
     
     # --- Datos de base ---
     hist_df = df[df["Estado"] != "Abierta"].copy()
@@ -5011,31 +5060,6 @@ def render_history(df):
     st.divider()
 
     # =========================================================
-    # --- BARRA DE GESTIÓN DIRECTA (EDITAR / ELIMINAR) ---
-    # =========================================================
-    with st.container(border=True):
-        st.markdown("#### 🛠️ Gestión Directa: Editar o Eliminar Operación")
-        st.caption("Selecciona cualquier operación del historial para editarla o eliminarla de forma inmediata:")
-        op_options = {}
-        for c in chain_summaries:
-            f_date = str(c["FechaCierre"])[:10] if pd.notna(c["FechaCierre"]) else "Sin fecha"
-            op_label = f"{c['Ticker']} - {c['Estrategia']} | 📅 {f_date} | 💵 ${c['PnL_Total']:,.2f} (ChainID: {str(c['ChainID'])[:8]})"
-            op_options[op_label] = c
-            
-        if op_options:
-            c_sel, c_act1, c_act2 = st.columns([3, 1.2, 1.2])
-            sel_op_label = c_sel.selectbox("Operación a gestionar:", list(op_options.keys()), key="hist_direct_sel_op", label_visibility="collapsed")
-            sel_c_data = op_options[sel_op_label]
-            sel_first_leg = sel_c_data["_group"].iloc[0]["ID"]
-            
-            if c_act1.button("✏️ Editar", key="btn_direct_edit_hist", type="secondary", use_container_width=True, on_click=_cb_set_edit_trade, args=(sel_first_leg,)):
-                st.session_state["edit_trade_id"] = sel_first_leg
-                st.rerun()
-            if c_act2.button("🗑️ Eliminar", key="btn_direct_del_hist", type="primary", use_container_width=True, on_click=_cb_set_delete_chain, args=(sel_c_data["ChainID"], sel_c_data["Ticker"], sel_c_data["Estrategia"])):
-                st.session_state["delete_chain_info"] = {"chain_id": sel_c_data["ChainID"], "ticker": sel_c_data["Ticker"], "strategy": sel_c_data["Estrategia"]}
-                st.rerun()
-
-    # =========================================================
     # --- LISTA DE OPERACIONES (acordeón agrupado) ---
     # =========================================================
     st.markdown(f"### 📋 Operaciones ({total_ops})")
@@ -5115,14 +5139,78 @@ def render_history(df):
                     exp_str = str(leg.get("Expiry", "-"))
                 l_c7.write(exp_str)
                 
-                l_c8.button("✏️", key=f"hist_edit_{leg['ID']}", help="Editar esta pata", on_click=_cb_set_edit_trade, args=(leg['ID'],))
+                with l_c8.popover("✏️", help="Editar esta pata"):
+                    leg_idx_list = st.session_state.df.index[st.session_state.df["ID"] == leg["ID"]]
+                    if len(leg_idx_list) > 0:
+                        l_idx = leg_idx_list[0]
+                        r_leg = st.session_state.df.iloc[l_idx]
+                        with st.form(f"form_leg_{leg['ID']}"):
+                            st.markdown(f"**Pata: {r_leg['Side']} {r_leg['OptionType']} @ {r_leg['Strike']}**")
+                            p_strike = st.number_input("Strike", value=float(r_leg["Strike"]))
+                            p_prima = st.number_input("Prima Recibida", value=float(r_leg["PrimaRecibida"]))
+                            p_cierre = st.number_input("Costo Cierre", value=float(r_leg["CostoCierre"]))
+                            p_pnl = st.number_input("PnL USD", value=float(r_leg["PnL_USD_Realizado"]))
+                            if st.form_submit_button("💾 Guardar Pata", type="primary", use_container_width=True):
+                                st.session_state.df.at[l_idx, "Strike"] = p_strike
+                                st.session_state.df.at[l_idx, "PrimaRecibida"] = p_prima
+                                st.session_state.df.at[l_idx, "CostoCierre"] = p_cierre
+                                st.session_state.df.at[l_idx, "PnL_USD_Realizado"] = p_pnl
+                                st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+                                st.session_state["hist_success_msg"] = f"¡Pata {r_leg['Side']} {r_leg['OptionType']} actualizada con éxito!"
+                                st.toast("💾 Pata actualizada con éxito.", icon="✅")
+                                st.rerun()
 
             # Botones de Acción Global para la Operación en Historial
             st.markdown("---")
             c_hist_act1, c_hist_act2 = st.columns(2)
             first_leg_id = group.iloc[0]["ID"]
-            c_hist_act1.button(f"✏️ Editar Operación Completa", key=f"hist_btn_edit_{c_data['ChainID']}", type="secondary", use_container_width=True, on_click=_cb_set_edit_trade, args=(first_leg_id,))
-            c_hist_act2.button(f"🗑️ Eliminar Operación Completa", key=f"hist_btn_del_{c_data['ChainID']}", type="secondary", use_container_width=True, on_click=_cb_set_delete_chain, args=(c_data['ChainID'], c_data['Ticker'], c_data['Estrategia']))
+
+            # --- POPOVER EDITAR OPERACIÓN COMPLETA ---
+            with c_hist_act1.popover("✏️ Editar Operación Completa", use_container_width=True):
+                st.markdown(f"#### ✏️ Editar: {c_data['Ticker']} - {c_data['Estrategia']}")
+                idx_first = st.session_state.df.index[st.session_state.df["ID"] == first_leg_id]
+                if len(idx_first) > 0:
+                    r_edit = st.session_state.df.iloc[idx_first[0]]
+                    with st.form(f"pop_edit_form_{c_data['ChainID']}"):
+                        fe_col1, fe_col2 = st.columns(2)
+                        pe_ticker = fe_col1.text_input("Ticker", r_edit["Ticker"])
+                        pe_strat = fe_col2.selectbox("Estrategia", ESTRATEGIAS, index=ESTRATEGIAS.index(r_edit["Estrategia"]) if r_edit["Estrategia"] in ESTRATEGIAS else 0)
+                        
+                        fe_col3, fe_col4 = st.columns(2)
+                        pe_setup = fe_col3.selectbox("Setup", SETUPS, index=SETUPS.index(r_edit["Setup"]) if "Setup" in r_edit and r_edit["Setup"] in SETUPS else 0)
+                        pe_tags = fe_col4.text_input("Tags", value=str(r_edit.get("Tags", "") or ""))
+                        
+                        fe_col5, fe_col6, fe_col7 = st.columns(3)
+                        pe_pnl = fe_col5.number_input("PnL USD Realizado", value=float(c_data["PnL_Total"]))
+                        pe_prima = fe_col6.number_input("Prima Neta ($/acción)", value=float(c_data["Prima_Neta"]))
+                        pe_contracts = fe_col7.number_input("Contratos", value=int(c_data["Contratos"]), min_value=1)
+                        
+                        pe_notas = st.text_area("Notas", str(r_edit.get("Notas", "") or ""))
+                        
+                        if st.form_submit_button("💾 Guardar Cambios", type="primary", use_container_width=True):
+                            for g_idx, g_row in group.iterrows():
+                                real_i = st.session_state.df.index[st.session_state.df["ID"] == g_row["ID"]][0]
+                                st.session_state.df.at[real_i, "Ticker"] = pe_ticker
+                                st.session_state.df.at[real_i, "Estrategia"] = pe_strat
+                                st.session_state.df.at[real_i, "Setup"] = pe_setup
+                                st.session_state.df.at[real_i, "Tags"] = pe_tags.strip()
+                                st.session_state.df.at[real_i, "Notas"] = pe_notas
+                                st.session_state.df.at[real_i, "Contratos"] = pe_contracts
+                            st.session_state.df.at[idx_first[0], "PnL_USD_Realizado"] = pe_pnl
+                            st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+                            st.session_state["hist_success_msg"] = f"¡Operación {pe_ticker} actualizada correctamente con éxito!"
+                            st.toast("💾 Operación actualizada con éxito.", icon="✅")
+                            st.rerun()
+
+            # --- POPOVER ELIMINAR OPERACIÓN COMPLETA ---
+            with c_hist_act2.popover("🗑️ Eliminar Operación Completa", use_container_width=True):
+                st.error(f"⚠️ ¿Eliminar definitivamente **{c_data['Ticker']} ({c_data['Estrategia']})**?")
+                st.markdown(f"Esta acción eliminará permanentemente las **{c_data['_legs']} patas** de esta operación del historial.")
+                if st.button("🗑️ Sí, eliminar permanentemente", type="primary", key=f"btn_pop_del_{c_data['ChainID']}", use_container_width=True):
+                    st.session_state.df = st.session_state.df[st.session_state.df["ChainID"] != c_data["ChainID"]].reset_index(drop=True)
+                    st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
+                    st.toast(f"🗑️ Operación {c_data['Ticker']} eliminada del historial.", icon="✅")
+                    st.rerun()
 
     st.divider()
 

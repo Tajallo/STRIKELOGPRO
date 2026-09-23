@@ -2,6 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Native Modal Dialog Invocation Fix**: Wired `edit_trade_dialog` and `confirm_delete_dialog` (`@st.dialog`) directly to the button handlers in both **Cartera Activa** and **Historial**, replacing legacy session state flags that failed to trigger modal popups.
 - **Direct Trade Edition & Full Chain Deletion in Portfolio & History**: Added explicit `✏️ Editar Operación` and `🗑️ Eliminar Operación Completa` action buttons across both **Historial** and **Cartera Activa** cards. Deleting a multi-leg operation now safely removes all legs associated with its `ChainID` from the database in a single step, preventing orphaned trade records.
 - **Tradier Pro Fee Schedule Update ($10/mo Plan)**: Updated `get_fee_rate` for Tradier accounts under the $10/mo flat-fee plan. Standard equities and ETFs remain at `$0.00`, while `SPX` defaults to `$0.97/contract` ($0.35 Tradier commission + $0.60 CBOE proprietary index exchange fee + ~$0.02 OCC/regulatory pass-through) and other major indices default to `$0.95/contract`.
 - **0DTE & 1DTE Express Form Enhancements**: Added explicit `Fecha Apertura` and `Fecha Vencimiento` date selectors alongside the `⌛ Operación Expirada OTM` sub-checkbox. This provides full support for both 0DTE and 1DTE short-term express trades while ensuring exact PnL and fee accounting.

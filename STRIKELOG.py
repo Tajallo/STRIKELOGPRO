@@ -2210,9 +2210,8 @@ def render_active_portfolio(df):
                         exp_str = str(leg.get("Expiry", "-"))
                     l_c7.write(exp_str)
                     
-                    if l_c8.button("✏️", key=f"edit_leg_{leg['ID']}"):
-                        st.session_state["edit_trade_id"] = leg["ID"]
-                        st.rerun()
+                    if l_c8.button("✏️", key=f"edit_leg_{leg['ID']}", help="Editar esta pata"):
+                        edit_trade_dialog(leg["ID"])
                 
                 st.markdown("---")
                 
@@ -2264,25 +2263,10 @@ def render_active_portfolio(df):
 
                 first_leg_id = first_row["ID"]
                 if c_btn_edit.button(f"✏️ Editar", key=f"btn_edit_active_{chain_id}", help="Editar todos los campos de esta operación"):
-                    st.session_state["edit_trade_id"] = first_leg_id
-                    st.rerun()
+                    edit_trade_dialog(first_leg_id)
 
-                if f"confirm_del_active_{chain_id}" not in st.session_state:
-                    if c_btn_del.button(f"🗑️ Eliminar", key=f"btn_del_active_{chain_id}", help="Eliminar la operación completa de la base de datos"):
-                        st.session_state[f"confirm_del_active_{chain_id}"] = True
-                        st.rerun()
-                else:
-                    st.error(f"⚠️ ¿Eliminar la operación completa {ticker} {strategy}?")
-                    cdel_col1, cdel_col2 = st.columns(2)
-                    if cdel_col1.button("✅ Sí, eliminar", key=f"conf_del_act_{chain_id}", type="primary"):
-                        st.session_state.df = st.session_state.df[st.session_state.df["ChainID"] != chain_id].reset_index(drop=True)
-                        st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
-                        del st.session_state[f"confirm_del_active_{chain_id}"]
-                        st.toast(f"🗑️ Operación {ticker} eliminada por completo.", icon="✅")
-                        st.rerun()
-                    if cdel_col2.button("❌ Cancelar", key=f"canc_del_act_{chain_id}"):
-                        del st.session_state[f"confirm_del_active_{chain_id}"]
-                        st.rerun()
+                if c_btn_del.button(f"🗑️ Eliminar", key=f"btn_del_active_{chain_id}", help="Eliminar la operación completa de la base de datos"):
+                    confirm_delete_dialog(chain_id, ticker, strategy)
                 
                 # --- MINI PANEL DE CIERRE RÁPIDO ---
                 if st.session_state.get(f"quick_close_{chain_id}", False):
@@ -4859,8 +4843,6 @@ def render_history(df):
     if "edit_trade_id" in st.session_state:
         trade_id = st.session_state.pop("edit_trade_id")
         edit_trade_dialog(trade_id)
-        st.divider()
-        st.stop()
 
     st.header("📜 Historial de Operaciones")
     
@@ -5164,33 +5146,17 @@ def render_history(df):
                 l_c7.write(exp_str)
                 
                 if l_c8.button("✏️", key=f"hist_edit_{leg['ID']}", help="Editar esta pata"):
-                    st.session_state["edit_trade_id"] = leg['ID']
-                    st.rerun()
+                    edit_trade_dialog(leg['ID'])
 
             # Botones de Acción Global para la Operación en Historial
             st.markdown("---")
             c_hist_act1, c_hist_act2 = st.columns(2)
             first_leg_id = group.iloc[0]["ID"]
             if c_hist_act1.button(f"✏️ Editar Operación Completa", key=f"hist_btn_edit_{c_data['ChainID']}", type="secondary", width="stretch"):
-                st.session_state["edit_trade_id"] = first_leg_id
-                st.rerun()
+                edit_trade_dialog(first_leg_id)
 
-            if f"confirm_del_chain_{c_data['ChainID']}" not in st.session_state:
-                if c_hist_act2.button(f"🗑️ Eliminar Operación Completa", key=f"hist_btn_del_{c_data['ChainID']}", type="secondary", width="stretch"):
-                    st.session_state[f"confirm_del_chain_{c_data['ChainID']}"] = True
-                    st.rerun()
-            else:
-                st.error(f"⚠️ ¿Eliminar TODA la operación {c_data['Ticker']} {c_data['Estrategia']} ({c_data['_legs']} pata/s)?")
-                cdel_col1, cdel_col2 = st.columns(2)
-                if cdel_col1.button("✅ Sí, eliminar toda la operación", key=f"hist_conf_del_chain_{c_data['ChainID']}", type="primary", width="stretch"):
-                    st.session_state.df = st.session_state.df[st.session_state.df["ChainID"] != c_data["ChainID"]].reset_index(drop=True)
-                    st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
-                    del st.session_state[f"confirm_del_chain_{c_data['ChainID']}"]
-                    st.toast(f"🗑️ Operación {c_data['Ticker']} eliminada del historial.", icon="✅")
-                    st.rerun()
-                if cdel_col2.button("❌ Cancelar", key=f"hist_canc_del_chain_{c_data['ChainID']}", width="stretch"):
-                    del st.session_state[f"confirm_del_chain_{c_data['ChainID']}"]
-                    st.rerun()
+            if c_hist_act2.button(f"🗑️ Eliminar Operación Completa", key=f"hist_btn_del_{c_data['ChainID']}", type="secondary", width="stretch"):
+                confirm_delete_dialog(c_data['ChainID'], c_data['Ticker'], c_data['Estrategia'])
 
     st.divider()
 

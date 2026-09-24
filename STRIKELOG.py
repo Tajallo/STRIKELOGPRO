@@ -301,7 +301,42 @@ class JournalManager:
         if "Broker" in df.columns:
             df["Broker"] = df["Broker"].fillna("IB").replace("", "IB")
         
-        df = df[COLUMNS].copy()
+        df = df[COLUMNS].copy().reset_index(drop=True)
+
+        # Higiene de identificadores
+        df["ID"] = df["ID"].astype("object")
+        df["ChainID"] = df["ChainID"].astype("object")
+
+        def _is_empty_val(v):
+            if pd.isna(v): return True
+            s = str(v).strip().lower()
+            return s in ["", "nan", "none", "<na>"]
+
+        # Rellenar IDs vacíos
+        for i in range(len(df)):
+            if _is_empty_val(df.at[i, "ID"]):
+                df.at[i, "ID"] = str(uuid4())
+
+        # Regenerar con uuid4 los ID duplicados, conservando el primero
+        seen_ids = set()
+        for i in range(len(df)):
+            curr_id = str(df.at[i, "ID"])
+            if curr_id in seen_ids:
+                df.at[i, "ID"] = str(uuid4())
+            else:
+                seen_ids.add(curr_id)
+
+        # Rellenar los ChainID vacíos con el ID de esa fila
+        for i in range(len(df)):
+            if _is_empty_val(df.at[i, "ChainID"]):
+                df.at[i, "ChainID"] = df.at[i, "ID"]
+
+        # Higiene de tipos de texto para pandas 3.x
+        text_cols = ["Ticker", "Side", "OptionType", "Setup", "Estrategia", "Tags", "Broker", "Notas", "Estado"]
+        for col in text_cols:
+            if col in df.columns:
+                df[col] = df[col].astype("object").fillna("")
+
         df["FechaApertura"] = pd.to_datetime(df["FechaApertura"], errors='coerce')
         df["Expiry"] = pd.to_datetime(df["Expiry"], errors='coerce')
         df["FechaCierre"] = pd.to_datetime(df["FechaCierre"], errors='coerce')
@@ -1231,7 +1266,11 @@ def sync_active_portfolio_calendars(active_df):
             
     st.rerun()
 
+DEBUG_LOG = False  # ponlo en True solo si necesitas depurar clics (escribe en debug_actions.log)
+
 def _log_debug(msg):
+    if not DEBUG_LOG:
+        return
     try:
         with open("debug_actions.log", "a", encoding="utf-8") as f:
             f.write(f"{datetime.now()}: {msg}\n")
@@ -5062,11 +5101,68 @@ def render_history(df):
     # =========================================================
     # --- LISTA DE OPERACIONES (acordeón agrupado) ---
     # =========================================================
+    with st.expander("⚡ Gestión Directa de Operaciones", expanded=False):
+        c_gd1, c_gd2, c_gd3 = st.columns([3, 1, 1])
+        chain_map = {}
+        for c in chain_summaries:
+            c_label = f"{c['Ticker']} - {c['Estrategia']} ({c['FechaCierre']}) [PnL: ${c['PnL_Total']:,.2f}]"
+            chain_map[c_label] = c
+        if chain_map:
+            sel_label = c_gd1.selectbox("Seleccionar operación a gestionar", options=list(chain_map.keys()), key="hist_gd_select")
+            if sel_label and sel_label in chain_map:
+                sel_data = chain_map[sel_label]
+                first_leg = sel_data["_group"].iloc[0]["ID"]
+                if c_gd2.button("✏️ Editar", key="hist_gd_edit", use_container_width=True):
+                    dialog_edit_trade(first_leg)
+                if c_gd3.button("🗑️ Eliminar", key="hist_gd_del", type="primary", use_container_width=True):
+                    dialog_delete_chain(sel_data["ChainID"], sel_data["Ticker"], sel_data["Estrategia"])
+
     st.markdown(f"### 📋 Operaciones ({total_ops})")
+
+    # --- Paginación ---
+    # Dibujar todas las operaciones a la vez (cada una con expander, columnas y botones) hace que
+    # cada clic o cambio de menú tarde varios segundos. Solo se dibuja la página actual.
+    PAGE_SIZES = [10, 20, 50, 100]
+    if st.session_state.get("hist_page_size") not in PAGE_SIZES:
+        st.session_state["hist_page_size"] = 20
+    page_size = st.session_state["hist_page_size"]
+    # Si cambia cualquier filtro, volvemos a la página 1
+    _sig = (t_filt, e_filt, s_filt, estado_filt, resultado_filt, tags_filt, filtro_0dte_h,
+            tuple(excluir_tickers_h), tuple(pnl_range), str(date_range))
+    if st.session_state.get("hist_filter_sig") != _sig:
+        st.session_state["hist_filter_sig"] = _sig
+        st.session_state["hist_page"] = 1
+    n_pages = max(1, -(-total_ops // page_size))
+    cur_page = min(max(int(st.session_state.get("hist_page", 1)), 1), n_pages)
+    st.session_state["hist_page"] = cur_page
+    p_start = (cur_page - 1) * page_size
+    p_end = min(p_start + page_size, total_ops)
+    page_chains = chain_summaries[p_start:p_end]
+
+    def _hist_go(delta):
+        st.session_state["hist_page"] = st.session_state.get("hist_page", 1) + delta
+
+    def _hist_size_changed():
+        st.session_state["hist_page"] = 1
+
+    def _hist_pager(where):
+        pc1, pc2, pc3, pc4 = st.columns([1, 1, 3, 1.4])
+        pc1.button("⬅️ Anterior", key=f"hist_prev_{where}", disabled=cur_page <= 1,
+                   use_container_width=True, on_click=_hist_go, args=(-1,))
+        pc2.button("Siguiente ➡️", key=f"hist_next_{where}", disabled=cur_page >= n_pages,
+                   use_container_width=True, on_click=_hist_go, args=(1,))
+        pc3.markdown(f"Página **{cur_page}** de **{n_pages}** · mostrando {p_start + 1}–{p_end} de {total_ops}")
+        if where == "top":
+            pc4.selectbox("Por página", PAGE_SIZES, key="hist_page_size",
+                          format_func=lambda x: f"{x} por página",
+                          on_change=_hist_size_changed, label_visibility="collapsed")
+
+    if total_ops > PAGE_SIZES[0]:
+        _hist_pager("top")
 
     ESTADO_ICON = {"Cerrada": "🔒", "Rolada": "🔄", "Asignada": "📜"}
 
-    for c_data in chain_summaries:
+    for c_data in page_chains:
         pnl   = c_data["PnL_Total"]
         pct   = c_data["ProfitPct"]
         pnl_icon = "🟢" if pnl >= 0 else "🔴"
@@ -5139,78 +5235,22 @@ def render_history(df):
                     exp_str = str(leg.get("Expiry", "-"))
                 l_c7.write(exp_str)
                 
-                with l_c8.popover("✏️", help="Editar esta pata"):
-                    leg_idx_list = st.session_state.df.index[st.session_state.df["ID"] == leg["ID"]]
-                    if len(leg_idx_list) > 0:
-                        l_idx = leg_idx_list[0]
-                        r_leg = st.session_state.df.iloc[l_idx]
-                        with st.form(f"form_leg_{leg['ID']}"):
-                            st.markdown(f"**Pata: {r_leg['Side']} {r_leg['OptionType']} @ {r_leg['Strike']}**")
-                            p_strike = st.number_input("Strike", value=float(r_leg["Strike"]))
-                            p_prima = st.number_input("Prima Recibida", value=float(r_leg["PrimaRecibida"]))
-                            p_cierre = st.number_input("Costo Cierre", value=float(r_leg["CostoCierre"]))
-                            p_pnl = st.number_input("PnL USD", value=float(r_leg["PnL_USD_Realizado"]))
-                            if st.form_submit_button("💾 Guardar Pata", type="primary", use_container_width=True):
-                                st.session_state.df.at[l_idx, "Strike"] = p_strike
-                                st.session_state.df.at[l_idx, "PrimaRecibida"] = p_prima
-                                st.session_state.df.at[l_idx, "CostoCierre"] = p_cierre
-                                st.session_state.df.at[l_idx, "PnL_USD_Realizado"] = p_pnl
-                                st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
-                                st.session_state["hist_success_msg"] = f"¡Pata {r_leg['Side']} {r_leg['OptionType']} actualizada con éxito!"
-                                st.toast("💾 Pata actualizada con éxito.", icon="✅")
-                                st.rerun()
+                if l_c8.button("✏️", key=f"hist_edit_{leg['ID']}", help="Editar esta pata"):
+                    dialog_edit_trade(leg["ID"])
 
             # Botones de Acción Global para la Operación en Historial
             st.markdown("---")
             c_hist_act1, c_hist_act2 = st.columns(2)
             first_leg_id = group.iloc[0]["ID"]
 
-            # --- POPOVER EDITAR OPERACIÓN COMPLETA ---
-            with c_hist_act1.popover("✏️ Editar Operación Completa", use_container_width=True):
-                st.markdown(f"#### ✏️ Editar: {c_data['Ticker']} - {c_data['Estrategia']}")
-                idx_first = st.session_state.df.index[st.session_state.df["ID"] == first_leg_id]
-                if len(idx_first) > 0:
-                    r_edit = st.session_state.df.iloc[idx_first[0]]
-                    with st.form(f"pop_edit_form_{c_data['ChainID']}"):
-                        fe_col1, fe_col2 = st.columns(2)
-                        pe_ticker = fe_col1.text_input("Ticker", r_edit["Ticker"])
-                        pe_strat = fe_col2.selectbox("Estrategia", ESTRATEGIAS, index=ESTRATEGIAS.index(r_edit["Estrategia"]) if r_edit["Estrategia"] in ESTRATEGIAS else 0)
-                        
-                        fe_col3, fe_col4 = st.columns(2)
-                        pe_setup = fe_col3.selectbox("Setup", SETUPS, index=SETUPS.index(r_edit["Setup"]) if "Setup" in r_edit and r_edit["Setup"] in SETUPS else 0)
-                        pe_tags = fe_col4.text_input("Tags", value=str(r_edit.get("Tags", "") or ""))
-                        
-                        fe_col5, fe_col6, fe_col7 = st.columns(3)
-                        pe_pnl = fe_col5.number_input("PnL USD Realizado", value=float(c_data["PnL_Total"]))
-                        pe_prima = fe_col6.number_input("Prima Neta ($/acción)", value=float(c_data["Prima_Neta"]))
-                        pe_contracts = fe_col7.number_input("Contratos", value=int(c_data["Contratos"]), min_value=1)
-                        
-                        pe_notas = st.text_area("Notas", str(r_edit.get("Notas", "") or ""))
-                        
-                        if st.form_submit_button("💾 Guardar Cambios", type="primary", use_container_width=True):
-                            for g_idx, g_row in group.iterrows():
-                                real_i = st.session_state.df.index[st.session_state.df["ID"] == g_row["ID"]][0]
-                                st.session_state.df.at[real_i, "Ticker"] = pe_ticker
-                                st.session_state.df.at[real_i, "Estrategia"] = pe_strat
-                                st.session_state.df.at[real_i, "Setup"] = pe_setup
-                                st.session_state.df.at[real_i, "Tags"] = pe_tags.strip()
-                                st.session_state.df.at[real_i, "Notas"] = pe_notas
-                                st.session_state.df.at[real_i, "Contratos"] = pe_contracts
-                            st.session_state.df.at[idx_first[0], "PnL_USD_Realizado"] = pe_pnl
-                            st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
-                            st.session_state["hist_success_msg"] = f"¡Operación {pe_ticker} actualizada correctamente con éxito!"
-                            st.toast("💾 Operación actualizada con éxito.", icon="✅")
-                            st.rerun()
+            if c_hist_act1.button("✏️ Editar Operación Completa", key=f"hist_btn_edit_{c_data['ChainID']}", type="secondary", use_container_width=True):
+                dialog_edit_trade(first_leg_id)
 
-            # --- POPOVER ELIMINAR OPERACIÓN COMPLETA ---
-            with c_hist_act2.popover("🗑️ Eliminar Operación Completa", use_container_width=True):
-                st.error(f"⚠️ ¿Eliminar definitivamente **{c_data['Ticker']} ({c_data['Estrategia']})**?")
-                st.markdown(f"Esta acción eliminará permanentemente las **{c_data['_legs']} patas** de esta operación del historial.")
-                if st.button("🗑️ Sí, eliminar permanentemente", type="primary", key=f"btn_pop_del_{c_data['ChainID']}", use_container_width=True):
-                    st.session_state.df = st.session_state.df[st.session_state.df["ChainID"] != c_data["ChainID"]].reset_index(drop=True)
-                    st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
-                    st.toast(f"🗑️ Operación {c_data['Ticker']} eliminada del historial.", icon="✅")
-                    st.rerun()
+            if c_hist_act2.button("🗑️ Eliminar Operación Completa", key=f"hist_btn_del_{c_data['ChainID']}", type="primary", use_container_width=True):
+                dialog_delete_chain(c_data["ChainID"], c_data["Ticker"], c_data["Estrategia"])
+
+    if total_ops > PAGE_SIZES[0] and n_pages > 1:
+        _hist_pager("bottom")
 
     st.divider()
 
@@ -5246,11 +5286,16 @@ def render_history(df):
     )
 
 
-def render_inline_edit(trade_id):
-    st.header("✏️ Editar Operación")
+def render_inline_edit(trade_id, in_dialog=False):
+    if not in_dialog:
+        st.header("✏️ Editar Operación")
     
     idx_list = st.session_state.df.index[st.session_state.df["ID"] == trade_id]
     if len(idx_list) == 0:
+        if in_dialog:
+            st.session_state.pop("edit_trade_id", None)
+            st.rerun()
+            return
         st.error("Operación no encontrada.")
         st.button("⬅️ Volver a la Lista", key=f"back_err_{trade_id}", on_click=_cb_cancel_edit_trade)
         return
@@ -5262,7 +5307,7 @@ def render_inline_edit(trade_id):
     
     st.markdown(f"**Editando: {row['Ticker']} - {row['Estrategia']} ({row['ID']})**")
     
-    with st.form(f"edit_form_inline"):
+    with st.form(f"edit_form_inline_{trade_id}"):
         c1, c2, c3, c4, c5 = st.columns(5)
         n_ticker = c1.text_input("Ticker", row["Ticker"])
         n_side = c2.selectbox("Side", SIDES, index=SIDES.index(row["Side"]) if row["Side"] in SIDES else 0)
@@ -5313,10 +5358,15 @@ def render_inline_edit(trade_id):
         st.warning("⚠️ Revisa los cambios antes de guardar. Se creará un backup automático del CSV actual.")
         
         c_sub, c_canc = st.columns(2)
-        submit_btn = c_sub.form_submit_button("💾 Guardar Cambios", type="primary", width="stretch")
-        cancel_btn = c_canc.form_submit_button("🚫 Cancelar", width="stretch")
+        submit_btn = c_sub.form_submit_button("💾 Guardar Cambios", type="primary", use_container_width=True)
+        cancel_btn = c_canc.form_submit_button("🚫 Cancelar", use_container_width=True)
 
         if submit_btn:
+            text_cols = ["Ticker", "Side", "OptionType", "Setup", "Estrategia", "Tags", "Broker", "Notas", "Estado"]
+            for col in text_cols:
+                if col in st.session_state.df.columns:
+                    st.session_state.df[col] = st.session_state.df[col].astype("object")
+
             st.session_state.df.at[idx, "Ticker"] = n_ticker
             st.session_state.df.at[idx, "Side"] = n_side
             st.session_state.df.at[idx, "OptionType"] = n_type
@@ -5355,7 +5405,8 @@ def render_inline_edit(trade_id):
                 st.session_state.df.at[idx, "ProfitPct"] = 0.0
 
             st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
-            st.success("¡Actualizado con éxito!")
+            st.session_state["hist_success_msg"] = f"¡Operación {n_ticker} actualizada con éxito!"
+            st.toast("✅ ¡Actualizado con éxito!", icon="💾")
             st.session_state.pop("edit_trade_id", None)
             st.rerun()
 
@@ -5374,6 +5425,25 @@ def render_inline_edit(trade_id):
         c_del1, c_del2 = st.columns(2)
         c_del1.button("✅ Sí, eliminar", type="primary", key=f"conf_del_{trade_id}", use_container_width=True, on_click=_cb_exec_delete_single_or_chain, args=(chain_id if has_chain else None, trade_id, row['Ticker']))
         c_del2.button("❌ Cancelar", key=f"canc_del_{trade_id}", use_container_width=True, on_click=lambda tid=trade_id: st.session_state.pop(f"confirm_delete_{tid}", None))
+
+
+@st.dialog("✏️ Editar operación", width="large")
+def dialog_edit_trade(trade_id):
+    render_inline_edit(trade_id, in_dialog=True)
+
+
+@st.dialog("🗑️ Eliminar operación")
+def dialog_delete_chain(chain_id, ticker, strategy):
+    st.error(f"### ⚠️ ¿Eliminar permanentemente la operación {ticker} - {strategy}?")
+    st.markdown("Esta acción no se puede deshacer y borrará todas las patas asociadas a esta operación del historial.")
+    cd1, cd2 = st.columns(2)
+    if cd1.button("✅ Sí, eliminar definitivamente", type="primary", key=f"dlg_del_conf_{chain_id}", use_container_width=True):
+        _cb_exec_delete_chain(chain_id, ticker)
+        st.session_state["hist_success_msg"] = f"Operación {ticker} eliminada definitivamente."
+        st.rerun()
+    if cd2.button("❌ Cancelar", key=f"dlg_del_canc_{chain_id}", use_container_width=True):
+        st.rerun()
+
 
 def main():
     st.set_page_config(page_title="STRIKELOG Pro", layout="wide")
@@ -5424,11 +5494,13 @@ def main():
         
     # Soporte para redirección automática (ej: botón Duplicar Express)
     nav_override = st.session_state.pop("nav_override", None)
-    
     nav_options = ["Dashboard", "Nueva Operación", "Cartera Activa", "Historial"]
-    default_nav_idx = nav_options.index(nav_override) if nav_override in nav_options else 0
-    
-    page = st.sidebar.radio("Navegación", nav_options, index=default_nav_idx)
+    if nav_override in nav_options:
+        st.session_state["nav_page"] = nav_override
+    elif "nav_page" not in st.session_state:
+        st.session_state["nav_page"] = nav_options[0]
+
+    page = st.sidebar.radio("Navegación", nav_options, key="nav_page")
     
     st.sidebar.divider()
     if st.sidebar.button("🔄 Recargar desde Disco"):

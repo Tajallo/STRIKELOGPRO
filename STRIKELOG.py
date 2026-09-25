@@ -4400,6 +4400,57 @@ def render_express_0dte():
             cierre_exp = col_cierre.number_input("Precio Cierre ($/acción)", value=0.0, step=0.01, key="exp_cierre")
         
         fecha_cierre_exp = col_estado.date_input("Fecha Cierre", value=fecha_vencimiento_exp, key="exp_fecha_cierre")
+        
+        # --- Cálculo y Muestra de Profit Limpio en Tiempo Real ---
+        leg_defs_prev = LEG_DEFAULTS.get(estrategia_exp, [("Sell", "Put")])
+        total_legs_prev = len(leg_defs_prev)
+        if expirada_exp:
+            total_comisiones_prev = comision_exp * total_legs_prev
+            cierre_val_prev = 0.0
+        else:
+            total_comisiones_prev = (comision_exp * 2) * total_legs_prev
+            cierre_val_prev = cierre_exp
+
+        pnl_prev, profit_pct_prev, roc_prev = calculate_pnl_metrics(
+            prima_neta=prima_exp,
+            costo_cierre_neto=cierre_val_prev,
+            contracts=contratos_exp,
+            strategy=estrategia_exp,
+            bp=bp_exp,
+            comisiones_totales=total_comisiones_prev
+        )
+
+        st.markdown("""
+        <div style='background: linear-gradient(135deg, rgba(15, 23, 42, 0.9), rgba(30, 41, 59, 0.9)); 
+                    border: 1px solid #334155; border-radius: 10px; padding: 10px 14px; margin: 12px 0 8px 0;'>
+            <span style='color: #38bdf8; font-weight: 700; font-size: 13px; text-transform: uppercase; letter-spacing: 0.8px;'>
+                📊 Vista Previa — Profit Limpio & Métricas
+            </span>
+        </div>
+        """, unsafe_allow_html=True)
+
+        c_prev1, c_prev2, c_prev3, c_prev4 = st.columns(4)
+        c_prev1.metric(
+            "💰 Profit Limpio (Neto)", 
+            f"${pnl_prev:,.2f}", 
+            delta=f"${pnl_prev:,.2f}",
+            help="PnL neto en USD tras descontar comisiones de apertura y cierre."
+        )
+        c_prev2.metric(
+            "🎯 Captura %", 
+            f"{profit_pct_prev:.1f}%",
+            help="Porcentaje del beneficio máximo capturado."
+        )
+        c_prev3.metric(
+            "📈 RoC %", 
+            f"{roc_prev:.1f}%" if bp_exp > 0 else "N/A",
+            help="Retorno sobre el Capital Reservado (Buying Power)."
+        )
+        c_prev4.metric(
+            "💸 Comisiones Totales", 
+            f"${total_comisiones_prev:,.2f}",
+            help=f"{total_legs_prev} pata(s) × ${comision_exp:.2f} (" + ("Apertura" if expirada_exp else "Apertura + Cierre") + ")"
+        )
     
     notas_exp = st.text_input("📝 Notas (opcional)", placeholder="Ej: Apertura en mínimo de sesión, VIX alto...", key="exp_notas")
     

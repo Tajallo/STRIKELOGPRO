@@ -1,0 +1,67 @@
+================================================================================
+           PLAN TACTICO DE RECUPERACION Y SALIDA EN BREAK-EVEN: NIKE (NKE)
+================================================================================
+Fecha de creación: 02 de Octubre de 2026
+Trader: Tajallo
+Subyacente: NIKE INC (NYSE: NKE)
+Precio Spot post-earnings: ~$32.00
+Estrategia seleccionada: Opcion B (Roll Defensivo CSP Down & Out + CC Tactica 37.00)
+
+--------------------------------------------------------------------------------
+1. NUMEROS CLAVE DE TU BREAK-EVEN (BE)
+--------------------------------------------------------------------------------
+- 100 Acciones actuales en cartera (adquiridas a $45.00)
+- Total de primas directas cobradas en la Rueda: $6.03/accion ($603.00)
+- BE Puro Directo actual de las 100 acciones: $38.97 / accion
+- BE Global Total Historico (arrastrando todos los trades y primas): $40.27 / accion
+
+--------------------------------------------------------------------------------
+2. CALENDARIO Y CRONOGRAMA OPERATIVO
+--------------------------------------------------------------------------------
+
+[PASO 1] HOY VIERNES 02 DE OCTUBRE DE 2026
+* Covered Call Strike 38.50:
+  - Expira HOY al cierre del mercado a $0.00 (sin valor).
+  - Ganancia neta: +$58.00 que ya estan en tu cuenta.
+  - Tus 100 acciones quedan 100% LIBERADAS para operar el lunes.
+* CSP Strike 36.00 (Vence 06/11):
+  - NO TOCAR HOY. Le quedan 35 dias de vida y alto valor extrinseco.
+  - La probabilidad de asignacion temprana anticipada es minima.
+
+[PASO 2] SEMANA DEL 05 AL 09 DE OCTUBRE: VENDER NUEVA COVERED CALL (TACTICO OPTIMO)
+* Objetivo: Cobrar prima para seguir bajando el BE sin arriesgar las acciones.
+* Regla de entrada: NO vender en pánico ni en caida. Esperar al primer dia verde
+  de rebote tecnico hacia la zona de $33.20 - $33.80.
+* Parametros de la Orden (Tradier):
+  - Tipo: Sell to Open (Covered Call)
+  - Cantidad: 1 contrato (cubierto por tus 100 acciones)
+  - Vencimiento: 20 de Noviembre o 27 de Noviembre de 2026 (35 - 45 DTE)
+  - STRIKE OBJETIVO: $37.00 (o $37.50)
+  - Prima esperada: $0.45 - $0.70 ($45 - $70 USD)
+* Margen de seguridad: Le das a NKE un +15.6% de margen de subida desde $32.
+* Si expira OTM: El BE de tus acciones baja directamente a ~$38.35.
+* Si sube y te ejercen a $37: Tu precio de venta real efectivo (sumando todas
+  las primas cobradas) sera de $43.58, saliendo con la cuenta a salvo.
+* Red de seguridad: Si NKE sube disparada hacia $36.50 antes de tiempo, aplicas
+  Roll Up & Out (rolar la Call a strike $38-$39 a Diciembre a credito neto o $0).
+
+[PASO 3] VIERNES 09 DE OCTUBRE: DESAHOGO DE BUYING POWER
+* Vencen tus 7 CSPs de la cuenta (SOFI, UBER, NU, F, AAL, DRAM).
+* Se liberan mas de $18,000 en Buying Power, eliminando cualquier estres de margen.
+
+[PASO 4] ULTIMA SEMANA DE OCTUBRE (26 AL 30 DE OCTUBRE): ROLL DEFENSIVO DEL CSP 36
+* Para esa fecha restaran solo 7-10 dias para el vencimiento del 06 de Noviembre.
+  El valor temporal de la opcion se habra secado notablemente.
+* Parametros del Roll en Tradier (Opcion B: Down & Out):
+  1. Buy to Close: Put Strike 36.00 Vencimiento 06/11/2026.
+  2. Sell to Open: Put Strike 33.00 o 34.00 Vencimiento Diciembre 2026 o Enero 2027.
+  3. Regla Inmutable: SIEMPRE a Credito Neto (cobrar dinero extra) o $0.00.
+     NUNCA pagar debito de tu bolsillo.
+* Resultado: Alejas el peligro bajando el strike a $33-$34, compras 45-60 dias
+  adicionales de tiempo y evitas absorber 100 acciones extra en cartera.
+
+================================================================================
+REGLA MNEMONICA DE ORO:
+"No vender Calls en el pozo rojo. Esperar al dia verde para vender la 37.00.
+Rolar la Put 36 a finales de octubre a credito neto bajando strike."
+================================================================================

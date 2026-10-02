@@ -1,0 +1,163 @@
+================================================================================
+           BITACORA HISTORICA Y AUDITORIA COMPLETA - NIKE (NYSE: NKE)
+================================================================================
+Fecha de Emisión del Reporte: 11 de Septiembre de 2026
+Autor / Trader: Tajallo
+Plataformas / Brokers: Tradier (0.00$ com.) / Interactive Brokers (IB)
+Subyacente: NIKE INC (NKE)
+Precio Spot Estimado (Sep 2026): ~$36.60 - $37.20
+Situación de Índices: Sale del S&P 100 el 21/09/2026 por rebalanceo trimestral.
+                      PERMANECE en el S&P 500 y en el Dow Jones Industrial Average.
+
+================================================================================
+1. RADIOGRAFIA Y RESUMEN DE POSICIONES ACTIVAS (A FECHA 11/09/2026)
+================================================================================
+- 100 Acciones Asignadas (Long Stock):
+    * Fecha de compra por asignación: 02/09/2026
+    * Strike de compra forzosa: $45.00 ($4,500.00 desembolso bruto)
+    * Prima recibida del CSP asignado: $5.19 ($519.00)
+    * Costo base inmediato de asignación: $39.81 / acción ($3,981.00)
+    * BE Dinámico en App (arrastrando pérdida spread previo): $43.01 / acción
+    * BE Puro Directo (deduciendo todos los CSPs y CCs): $39.33 / acción
+    * Estado: ABIERTA
+
+- 1 Contrato Covered Call (CC):
+    * Strike: $42.00 Call | Vencimiento: 11/09/2026 (HOY)
+    * Prima cobrada: $0.04 ($4.00)
+    * Estado: Expira hoy OTM sin valor a $0.00 (Ganancia: +$4.00 íntegros)
+    * Acciones quedan 100% liberadas al cierre de hoy.
+
+- 1 Contrato Cash Secured Put (CSP):
+    * Strike: $37.00 Put | Vencimiento: 11/09/2026 (HOY)
+    * Prima cobrada: $0.21 ($21.00)
+    * Estado: ABIERTA (Zona ATM / ligeramente ITM con spot en ~$36.80)
+    * Decisión operativa: ROLAR a Octubre 2026 (16/10 o 23/10) a Crédito Neto.
+
+================================================================================
+2. HISTORIAL COMPLETO Y CRONOLOGICO DE OPERACIONES (11 REGISTROS)
+================================================================================
+
+--- [CICLO 1: IRON CONDOR PRE-EARNINGS (MARZO 2026)] ---
+Broker: Interactive Brokers (IB) | ChainID: 5fa32378
+Apertura: 09/03/2026 | Cierre: 25/03/2026 | Vencimiento: 17/04/2026
+* Pata 1 (Sell Put 52.5): Prima: $1.01 | Cierre: $0.96 | PnL: -$0.20 | Fee: $3.25
+* Pata 2 (Buy Put 50.0):  Prima: $0.00 | Cierre: $0.00 | PnL:  $0.00 | Fee: $0.65
+* Pata 3 (Sell Call 65.0): Prima: $0.00 | Cierre: $0.00 | PnL:  $0.00 | Fee: $0.65
+* Pata 4 (Buy Call 67.5): Prima: $0.00 | Cierre: $0.00 | PnL:  $0.00 | Fee: $0.65
+Notas: "Estaba bajista tocando el BE down y venian earnings aproveche push del open para salirme"
+Balance Ciclo 1: -$0.20 bruto | -$5.40 neto con comisiones.
+
+--- [CICLO 2: ORIGEN DE LA RUEDA - PUT CREDIT SPREAD (JULIO - AGOSTO 2026)] ---
+Broker: Tradier ($0 fees) | ChainID: 59a5a25f
+Apertura: 10/07/2026 | Vencimiento Original: 21/08/2026
+* Pata Protectora (Buy Put 42.5): ID ddf23ad2 | Cerrada el 30/07/2026 a $1.65
+  -> PnL Realizado registrado: +$49.00
+* Pata Corta (Sell Put 45.0): ID e4680a53 | Rolada el 20/08/2026
+  -> Prima original cobrada: $1.08 ($108.00)
+  -> Costo de Recompra (Buy to Close): $4.81 ($481.00)
+  -> PnL Realizado registrado: -$373.00
+Balance Ciclo 2 (Spread Rolado): -$373.00 + $49.00 = -$324.00 (-$3.24/acción)
+
+--- [CICLO 3: CSP INDEPENDIENTE EN SOPORTE (AGOSTO 2026)] ---
+Broker: Tradier ($0 fees) | ChainID: 837f4e4d | ID: de89c8cd
+Apertura: 17/08/2026 | Vencimiento: 28/08/2026 | Cierre: 29/08/2026
+* Estrategia: CSP (Cash Secured Put)
+* Strike: $37.50 Put
+* Prima cobrada: $0.23 ($23.00)
+* Costo de Cierre: $0.00 (Expiró OTM sin valor)
+* PnL Realizado: +$23.00 (+$0.23/acción)
+
+--- [CICLO 4: ROLL A CSP 45.00 Y ASIGNACION DE ACCIONES (AGOSTO - SEPTIEMBRE 2026)] ---
+Broker: Tradier ($0 fees) | ChainID: 93dea0cf | ID: b67a17ef
+Apertura: 20/08/2026 | Vencimiento: 04/09/2026 | Asignada: 02/09/2026
+* Origen: Roll desde ID e4680a53
+* Strike: $45.00 Put
+* Prima Recibida: $5.19 ($519.00)
+* Estado: Asignada (Compra forzosa de 100 acciones a $45.00)
+* PnL registrado: +$519.00 de crédito de prima.
+
+--- [CICLO 5: CARTERA DE ACCIONES ASIGNADAS (02/09/2026 - PRESENTE)] ---
+Broker: Tradier | ChainID: 519d4abb | ID: 90e571d9
+Apertura: 02/09/2026 | Vencimiento: 2099-12-31 (Indefinido)
+* Cantidad: 100 acciones
+* Precio de Compra (Strike): $45.00 ($4,500.00 desembolso)
+* Costo Base Inmediato: $39.81 ($45.00 strike - $5.19 prima CSP)
+* CostBaseReal en app: $43.01 (incorpora el arrastre del spread previo)
+* Estado: ABIERTA
+
+--- [CICLO 6: COVERED CALL DEFENSIVA (SEPTIEMBRE 2026)] ---
+Broker: Tradier | ChainID: 96c21a49 | ID: 24ff5cc8
+Apertura: 02/09/2026 | Vencimiento: 11/09/2026 (HOY)
+* Strike: $42.00 Call
+* Prima cobrada: $0.04 ($4.00)
+* Estado: Abierta (Expira hoy a $0.00) -> Beneficio neto: +$4.00
+
+--- [CICLO 7: CSP PARALELO EN LA RUEDA (SEPTIEMBRE 2026)] ---
+Broker: Tradier | ChainID: 25f921d8 | ID: b6c3c6f1
+Apertura: 02/09/2026 | Vencimiento: 11/09/2026 (HOY)
+* Strike: $37.00 Put
+* Prima cobrada: $0.21 ($21.00)
+* Estado: Abierta (Sujeta a Roll a Octubre para no absorber 100 acc más)
+
+================================================================================
+3. AUDITORIA MATEMATICA DE FLUJO DE CAJA Y BREAK-EVEN
+================================================================================
+
+A) TOTAL DE PRIMAS Y RENDIMIENTOS GENERADOS EN OPCIONES DE NKE:
+   + $108.00  (Short Put 45 original)
+   - $481.00  (Recompra Short Put 45)
+   +  $49.00  (Venta protectora Long Put 42.5)
+   +  $23.00  (CSP 37.5 agosto expirado)
+   + $519.00  (CSP 45 agosto asignado)
+   +   $4.00  (CC 42 septiembre hoy)
+   +  $21.00  (CSP 37 septiembre hoy)
+   ----------------------------------------------------------------------------
+   = +$243.00 NETOS generados por venta de opciones sobre NKE (Tradier)
+   (O +$237.60 netos si se incluye el Iron Condor de marzo en IB)
+
+B) CALCULO DEL BREAK-EVEN (2 ENFOQUES):
+
+   1. ENFOQUE PURO ASIGNACION (Sin arrastrar la pérdida del spread de julio):
+      Costo compra 100 acciones:                      $45.00
+      - Prima CSP 45 asignado:                       -$ 5.19
+      ------------------------------------------------------
+      Costo base inicial asignación:                  $39.81 / acción
+      - Prima CSP 37.5 agosto:                       -$ 0.23
+      - Prima CC 42 septiembre (hoy):                -$ 0.04
+      - Prima CSP 37 septiembre (hoy):               -$ 0.21
+      ------------------------------------------------------
+      BREAK-EVEN PURO DIRECTO:                        $39.33 / acción
+      (Distancia al mercado ~$36.80: SOLO -$2.53 / -6.4%)
+
+   2. ENFOQUE CONSOLIDADO GLOBAL (Arrastrando el spread previo de julio):
+      Desembolso bruto por 100 acciones:            $4,500.00
+      - Total primas netas opciones NKE:           - $ 243.00
+      ------------------------------------------------------
+      Inversión neta acumulada:                     $4,257.00
+      BREAK-EVEN GLOBAL CONSOLIDADO:                  $42.57 / acción
+      (La app reportaba $43.01 antes de imputar los últimos CSP 37 y CC 42)
+
+================================================================================
+4. GUIA OPERATIVA PARA EL ROLL DEL CSP 37 (11 DE SEPTIEMBRE)
+================================================================================
+Objetivo: Evitar comprar 100 acciones más a $37.00 ($3,700 BP), evitar asignación
+          y capturar prima extra a crédito para bajar aún más el BE.
+
+Instrucciones de Ejecución en Tradier:
+1. Recomprar (Buy to Close): Put Strike 37.00 Vencimiento 11/09/2026.
+2. Vender (Sell to Open):   Put Vencimiento Octubre (16/10/2026 o 23/10/2026).
+3. Selección de Strike:
+   - Opción Conservadora (Down & Out): Strike $35.00 o $35.50 (Crédito neto o $0)
+   - Opción Recaudadora (Roll Out):    Strike $37.00 (Crédito neto esperado ~$1.00-$1.50)
+4. Regla inmutable: SIEMPRE a Crédito Neto (Net Credit). NUNCA pagar débito.
+
+================================================================================
+5. PLAN MAESTRO DE RECUPERACION (A PARTIR DEL LUNES 14 DE SEPTIEMBRE)
+================================================================================
+- Las 100 acciones quedan 100% liberadas tras la expiración del CC 42.00 hoy.
+- Vender nueva Covered Call mensual (30-45 DTE, vencimiento Octubre/Noviembre):
+    * Strike objetivo: $41.00 o $42.00
+    * Prima esperada: ~$0.50 - $0.80 ($50 - $80 mensuales)
+- Cada mes que pasa cobrando Covered Call + el crédito del Roll de hoy va empujando
+  el Break-Even real de tus acciones por debajo de los $38.50 sin asumir riesgos extra.
+================================================================================

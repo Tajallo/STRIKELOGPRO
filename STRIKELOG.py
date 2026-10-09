@@ -54,8 +54,9 @@ SETUPS = [
 
 ESTADOS = ["Abierta", "Cerrada", "Rolada", "Asignada"]
 ESTRATEGIAS = [
+    "CSP (Cash Secured Put)",
     "La Rueda (The Wheel)",
-    "CSP (Cash Secured Put)", "CC (Covered Call)", "PMCC (Poor Man's Covered Call)",
+    "CC (Covered Call)", "PMCC (Poor Man's Covered Call)",
     "Collar",
     "Put Credit Spread", "Call Credit Spread", 
     "Put Debit Spread", "Call Debit Spread",
@@ -882,10 +883,35 @@ def render_dashboard(df):
     
     # --- FILTROS ---
     with st.container():
+        def _cb_reset_dash_filters():
+            st.session_state["dash_ticker"] = "Todos Tickers"
+            st.session_state["dash_periodo"] = "Todo el Historial"
+            st.session_state["dash_setup"] = "Todos los Setups"
+            st.session_state["dash_estado"] = "Todos"
+            st.session_state["dash_0dte"] = "Todos"
+            st.session_state["dash_excl"] = []
+
+        dash_is_filtered = (
+            st.session_state.get("dash_ticker", "Todos Tickers") != "Todos Tickers" or
+            st.session_state.get("dash_periodo", "Todo el Historial") != "Todo el Historial" or
+            st.session_state.get("dash_setup", "Todos los Setups") != "Todos los Setups" or
+            st.session_state.get("dash_estado", "Todos") != "Todos" or
+            st.session_state.get("dash_0dte", "Todos") != "Todos" or
+            bool(st.session_state.get("dash_excl", []))
+        )
+
+        col_fh1, col_fh2 = st.columns([5, 1])
+        with col_fh1:
+            if dash_is_filtered:
+                st.caption("🟢 **Filtros activos en el Cuadro de Mando**")
+        with col_fh2:
+            if dash_is_filtered:
+                st.button("🔄 Restablecer Filtros", key="btn_reset_dash", on_click=_cb_reset_dash_filters, use_container_width=True, help="Restablecer todos los filtros del dashboard")
+
         # --- Fila 1: Filtros principales ---  
         c_f1, c_f2, c_f3, c_f4 = st.columns([1, 1, 1, 1])
         all_tickers = ["Todos Tickers"] + sorted(df["Ticker"].unique().tolist())
-        ticker_filter = c_f1.selectbox("🔍 Ticker", all_tickers)
+        ticker_filter = c_f1.selectbox("🔍 Ticker", all_tickers, key="dash_ticker")
         
         meses = {
             "Todo el Historial": "Todos",
@@ -895,9 +921,9 @@ def render_dashboard(df):
             "Mes Pasado": (datetime.now().replace(day=1) - timedelta(days=1)).strftime("%Y-%m"),
             "Este Año": datetime.now().strftime("%Y")
         }
-        periodo_filter = c_f2.selectbox("📅 Periodo", list(meses.keys()))
-        setup_filter = c_f3.selectbox("🎯 Setup", ["Todos los Setups"] + SETUPS)
-        estado_filter = c_f4.selectbox("📋 Estado", ["Todos"] + ESTADOS)
+        periodo_filter = c_f2.selectbox("📅 Periodo", list(meses.keys()), key="dash_periodo")
+        setup_filter = c_f3.selectbox("🎯 Setup", ["Todos los Setups"] + SETUPS, key="dash_setup")
+        estado_filter = c_f4.selectbox("📋 Estado", ["Todos"] + ESTADOS, key="dash_estado")
 
         # --- Fila 2: Filtros 0DTE y exclusiones ---
         c_f5, c_f6 = st.columns([1, 2])
@@ -911,7 +937,6 @@ def render_dashboard(df):
         excluir_tickers = c_f6.multiselect(
             "🛋️ Excluir tickers",
             options=all_tickers_excl,
-            default=[],
             key="dash_excl",
             placeholder="Selecciona tickers a excluir del análisis..."
         )
@@ -962,11 +987,21 @@ def render_dashboard(df):
         
         # --- KPIs DE ALTO NIVEL ---
         pnl_total = closed_trades["PnL_USD_Realizado"].sum() if not closed_trades.empty else 0.0
-        wins_df = closed_trades[closed_trades["PnL_USD_Realizado"] > 0] if not closed_trades.empty else pd.DataFrame()
-        losses_df = closed_trades[closed_trades["PnL_USD_Realizado"] < 0] if not closed_trades.empty else pd.DataFrame()
+
+        # Los roles son defensas/ajustes de una posición viva, no pérdidas definitivas.
+        # Solo se evalúan como victorias/derrotas si el usuario filtró explícitamente por "Rolada".
+        if estado_filter == "Rolada":
+            eval_trades = closed_trades.copy()
+        else:
+            eval_trades = closed_trades[closed_trades["Estado"].isin(["Cerrada", "Asignada"])].copy()
+
+        wins_df = eval_trades[eval_trades["PnL_USD_Realizado"] > 0] if not eval_trades.empty else pd.DataFrame()
+        losses_df = eval_trades[eval_trades["PnL_USD_Realizado"] < 0] if not eval_trades.empty else pd.DataFrame()
+        rolls_df = closed_trades[closed_trades["Estado"] == "Rolada"] if not closed_trades.empty else pd.DataFrame()
         
         wins = len(wins_df)
         losses = len(losses_df)
+        rolls_count = len(rolls_df)
         total_closed = wins + losses
         win_rate = (wins / total_closed * 100) if total_closed > 0 else 0.0
         
@@ -985,6 +1020,11 @@ def render_dashboard(df):
         loss_prob = (100.0 - win_rate) / 100.0
         expectancy_trade = (win_prob * avg_win) - (loss_prob * avg_loss) if total_closed > 0 else 0.0
 
+        # Conteo de operaciones (ChainID) para visibilidad de cantidad
+        total_chains_in_view = df_view["ChainID"].nunique() if not df_view.empty else 0
+        open_chains_in_view = open_trades["ChainID"].nunique() if not open_trades.empty else 0
+        closed_chains_in_view = eval_trades["ChainID"].nunique() if not eval_trades.empty else 0
+
         # --- MINI-RESUMEN DE CARTERA ACTIVA HOY ---
         open_positions_count = len(open_trades["ChainID"].unique()) if not open_trades.empty else 0
         open_primas_pending = sum(
@@ -1001,10 +1041,36 @@ def render_dashboard(df):
         ca3.metric("🔒 Capital Reservado (BP)", f"${open_bp_total:,.2f}", help="Garantías y margen retenidos por tu broker")
 
         st.divider()
+
+        # Banner informativo cuando se filtra por un Ticker concreto
+        if ticker_filter != "Todos Tickers":
+            t_all = df[df["Ticker"] == ticker_filter]
+            t_total_ops = t_all["ChainID"].nunique()
+            t_open_ops = t_all[t_all["Estado"] == "Abierta"]["ChainID"].nunique()
+            t_eval_ops = t_all[t_all["Estado"].isin(["Cerrada", "Asignada"])]
+            t_closed_ops = t_eval_ops["ChainID"].nunique()
+            t_rolls_ops = t_all[t_all["Estado"] == "Rolada"]["ChainID"].nunique()
+            t_wins = len(t_eval_ops[t_eval_ops["PnL_USD_Realizado"] > 0])
+            t_losses = len(t_eval_ops[t_eval_ops["PnL_USD_Realizado"] < 0])
+            t_net_pnl = t_all["PnL_USD_Realizado"].sum() - t_all["Comisiones"].sum()
+            
+            rolls_txt = f", 🔄 {t_rolls_ops} roles" if t_rolls_ops > 0 else ""
+            period_note = f" · *(Mostrando {total_chains_in_view} ops en el periodo '{periodo_filter}')*" if periodo_filter != "Todo el Historial" else ""
+            
+            st.info(
+                f"🎯 **Ticker {ticker_filter}:** Has realizado un total de **{t_total_ops} operaciones** "
+                f"en todo su historial (**{t_closed_ops} cerradas** [🏆 {t_wins}W - ❌ {t_losses}L{rolls_txt}], "
+                f"**{t_open_ops} abiertas actualmente**) · PnL Neto Histórico: **${t_net_pnl:,.2f}**{period_note}"
+            )
+
         st.markdown("#### 📊 Rendimiento del Historial")
         
-        # Fila 1: Métricas Principales con PnL Neto, Expectancy y Diagnósticos "For Dummies"
-        m1, m2, m3, m4, m5, m6, m7 = st.columns(7)
+        # Fila 1: Métricas Principales con PnL Neto, Expectancy, Total Ops y Diagnósticos
+        m0, m1, m2, m3, m4, m5, m6, m7 = st.columns([1.1, 1, 1, 1.1, 1.1, 1, 1.1, 1])
+
+        delta_ops = f"{closed_chains_in_view} cerr | {open_chains_in_view} ab" if open_chains_in_view > 0 else f"{closed_chains_in_view} cerradas"
+        help_ops = f"Total de operaciones únicas (ChainID) en este filtro ({closed_chains_in_view} cerradas, {open_chains_in_view} abiertas" + (f", {rolls_count} roles" if rolls_count > 0 else "") + ")"
+        m0.metric("📋 Total Ops", f"{total_chains_in_view}", delta=delta_ops, help=help_ops)
         
         m1.metric("PnL Bruto", f"${pnl_total:,.2f}", delta=f"${pnl_total:,.2f}" if pnl_total != 0 else None, help="Ganancia/Pérdida antes de comisiones")
         m2.metric("Comisiones", f"${total_comisiones:,.2f}", help="Total pagado al broker")
@@ -1014,7 +1080,11 @@ def render_dashboard(df):
 
         # Semáforos For Dummies
         wr_status = "🟢 Saludable" if win_rate >= 60 else ("🟡 Moderado" if win_rate >= 50 else "🔴 Riesgo")
-        m4.metric("Win Rate", f"{win_rate:.1f}%", delta=wr_status, help="Porcentaje de operaciones ganadoras")
+        wr_help = f"Porcentaje de acierto: {wins} ganadas / {losses} pérdidas sobre {total_closed} cerradas"
+        if rolls_count > 0:
+            wr_help += f" (Se excluyen {rolls_count} roles de las pérdidas para no penalizar ajustes)."
+        wr_delta = f"✅ {wins}W / ❌ {losses}L" + (f" (🔄{rolls_count}r)" if rolls_count > 0 else "")
+        m4.metric("Win Rate", f"{win_rate:.1f}%", delta=wr_delta, help=wr_help)
 
         pf_status = "🟢 Excelente" if profit_factor >= 1.5 else ("🟡 Aceptable" if profit_factor >= 1.0 else "🔴 Pérdida")
         m5.metric("Profit Factor", f"{profit_factor:.2f}x", delta=pf_status, help="Ratio Ganancia Total / Pérdida Total")
@@ -1038,9 +1108,9 @@ def render_dashboard(df):
         if comisiones_0dte > 0:
             st.info(f"⚡ **Comisiones acumuladas en 0DTE:** ${comisiones_0dte:,.2f}")
         
-        # Racha actual (Streak)
-        if not closed_trades.empty:
-            sorted_for_streak = closed_trades.sort_values("FechaCierre", ascending=False)
+        # Racha actual (Streak) - evaluada sobre operaciones definitivas para que los roles no rompan rachas
+        if not eval_trades.empty:
+            sorted_for_streak = eval_trades.sort_values("FechaCierre", ascending=False)
             streak = 0
             streak_type = None
             for _, t in sorted_for_streak.iterrows():
@@ -1106,24 +1176,93 @@ def render_dashboard(df):
     else:
         st.info("No hay datos para mostrar la curva.")
 
-    # Rendimiento Mensual (siempre visible, es el segundo gráfico más importante)
+    # Rendimiento Mensual (diseño moderno, orden cronológico y métricas clave)
     if not closed_trades.empty:
         st.markdown("### 📅 Rendimiento Mensual")
-        closed_trades['Mes'] = pd.to_datetime(closed_trades['FechaCierre']).dt.strftime('%b %Y')
-        monthly_pnl = closed_trades.groupby('Mes')['PnL_USD_Realizado'].sum().reset_index()
+        c_m_df = closed_trades.copy()
+        c_m_df['__dt_cierre'] = pd.to_datetime(c_m_df['FechaCierre'], errors='coerce')
+        c_m_df = c_m_df.dropna(subset=['__dt_cierre'])
         
-        fig_monthly = px.bar(monthly_pnl, x='Mes', y='PnL_USD_Realizado', 
-                             color='PnL_USD_Realizado', 
-                             color_continuous_scale="RdYlGn",
-                             template="plotly_dark")
-        fig_monthly.update_layout(
-            height=300,
-            margin=dict(l=10, r=10, t=10, b=10),
-            xaxis_title=None,
-            yaxis_title="PnL USD",
-            coloraxis_showscale=False
-        )
-        st.plotly_chart(fig_monthly, width="stretch")
+        if not c_m_df.empty:
+            c_m_df['__periodo'] = c_m_df['__dt_cierre'].dt.to_period('M')
+            monthly_pnl = c_m_df.groupby('__periodo').agg(
+                PnL=('PnL_USD_Realizado', 'sum'),
+                Comisiones=('Comisiones', 'sum'),
+                TotalOps=('ChainID', 'nunique'),
+                Wins=('PnL_USD_Realizado', lambda x: (x > 0).sum()),
+                Losses=('PnL_USD_Realizado', lambda x: (x < 0).sum())
+            ).reset_index().sort_values('__periodo')
+            
+            MESES_ES = {1: 'Ene', 2: 'Feb', 3: 'Mar', 4: 'Abr', 5: 'May', 6: 'Jun', 7: 'Jul', 8: 'Ago', 9: 'Sep', 10: 'Oct', 11: 'Nov', 12: 'Dic'}
+            monthly_pnl['MesLabel'] = monthly_pnl['__periodo'].apply(lambda p: f"{MESES_ES.get(p.month, '')} {p.year}")
+            monthly_pnl['Color'] = monthly_pnl['PnL'].apply(lambda val: '#00FFA2' if val >= 0 else '#FF4D4D')
+            monthly_pnl['BorderColor'] = monthly_pnl['PnL'].apply(lambda val: '#00cc82' if val >= 0 else '#cc3d3d')
+            monthly_pnl['TextLabel'] = monthly_pnl['PnL'].apply(lambda val: f"+${val:,.0f}" if val >= 0 else f"-${abs(val):,.0f}")
+            monthly_pnl['WinRate'] = monthly_pnl.apply(lambda r: (r['Wins'] / (r['Wins'] + r['Losses']) * 100) if (r['Wins'] + r['Losses']) > 0 else 0.0, axis=1)
+            
+            # --- Mini Tarjetas de Resumen Mensual ---
+            best_month_row = monthly_pnl.loc[monthly_pnl['PnL'].idxmax()]
+            worst_month_row = monthly_pnl.loc[monthly_pnl['PnL'].idxmin()]
+            avg_monthly_pnl = monthly_pnl['PnL'].mean()
+            green_months = (monthly_pnl['PnL'] > 0).sum()
+            total_months = len(monthly_pnl)
+            consistency_pct = (green_months / total_months * 100) if total_months > 0 else 0.0
+            
+            km1, km2, km3, km4 = st.columns(4)
+            km1.metric("🏆 Mejor Mes", f"{best_month_row['MesLabel']}", delta=f"+${best_month_row['PnL']:,.2f}", help=f"Mes con mayor beneficio neto ({best_month_row['TotalOps']} operaciones)")
+            km2.metric("🔻 Peor Mes", f"{worst_month_row['MesLabel']}", delta=f"${worst_month_row['PnL']:,.2f}", delta_color="inverse", help=f"Mes con mayor drawdown ({worst_month_row['TotalOps']} operaciones)")
+            km3.metric("📊 Media Mensual", f"${avg_monthly_pnl:,.2f}", delta=f"{'+' if avg_monthly_pnl >= 0 else ''}${avg_monthly_pnl:,.2f}/mes", help="Beneficio promedio por mes activo")
+            km4.metric("🎯 Consistencia", f"{consistency_pct:.0f}%", delta=f"{green_months} de {total_months} meses en verde", help="Porcentaje de meses cerrados en positivo")
+            
+            custom_data = list(zip(
+                [f"+${v:,.2f}" if v >= 0 else f"-${abs(v):,.2f}" for v in monthly_pnl['PnL']],
+                monthly_pnl['TotalOps'],
+                [f"{wr:.1f}" for wr in monthly_pnl['WinRate']],
+                monthly_pnl['Wins'],
+                monthly_pnl['Losses'],
+                monthly_pnl['Comisiones']
+            ))
+            
+            fig_monthly = go.Figure(data=[
+                go.Bar(
+                    x=monthly_pnl['MesLabel'],
+                    y=monthly_pnl['PnL'],
+                    text=monthly_pnl['TextLabel'],
+                    textposition='outside',
+                    textfont=dict(color='#e6edf3', size=11),
+                    marker=dict(
+                        color=monthly_pnl['Color'],
+                        line=dict(color=monthly_pnl['BorderColor'], width=1.5),
+                        opacity=0.9
+                    ),
+                    customdata=custom_data,
+                    hovertemplate='<b>%{x}</b><br>💰 PnL Realizado: <b>%{customdata[0]}</b><br>📋 Operaciones: <b>%{customdata[1]}</b><br>🏆 Win Rate: <b>%{customdata[2]}%</b> (%{customdata[3]}W / %{customdata[4]}L)<br>💸 Comisiones: <b>$%{customdata[5]:,.2f}</b><extra></extra>'
+                )
+            ])
+            
+            fig_monthly.update_layout(
+                height=320,
+                margin=dict(l=10, r=10, t=25, b=10),
+                template="plotly_dark",
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                xaxis=dict(
+                    title=None,
+                    gridcolor="rgba(255, 255, 255, 0.03)",
+                    tickfont=dict(color="#c9d1d9", size=12)
+                ),
+                yaxis=dict(
+                    title="PnL USD",
+                    zeroline=True,
+                    zerolinecolor="rgba(255, 255, 255, 0.25)",
+                    zerolinewidth=1.5,
+                    gridcolor="rgba(255, 255, 255, 0.06)",
+                    tickprefix="$",
+                    tickfont=dict(color="#8b949e")
+                ),
+                showlegend=False
+            )
+            st.plotly_chart(fig_monthly, width="stretch")
 
     # Gráficos de análisis por categoría (colapsados)
     with st.expander("🔍 Análisis por Categoría", expanded=False):
@@ -1169,10 +1308,120 @@ def render_dashboard(df):
                 )
                 st.plotly_chart(fig_setup, width="stretch")
 
-def sync_active_portfolio_calendars(active_df):
+def fetch_multisource_calendar_dates(ticker_symbol):
+    """
+    Consulta y contrasta fechas de Earnings y Dividendos combinando Yahoo Finance y Nasdaq API.
+    Asegura que no se almacenen fechas pasadas para los próximos dividendos (calculando
+    el ciclo trimestral proyectado si la compañía distribuye pero aún no ha oficializado la siguiente fecha).
+    """
     import yfinance as yf
+    import requests
+    today = date.today()
+    yf_earn = None
+    yf_div = None
+    yf_last_div = None
     
-    # Obtener tickers únicos con Estado == "Abierta"
+    # 1. YAHOO FINANCE
+    try:
+        tk = yf.Ticker(ticker_symbol)
+        cal = tk.calendar
+        if isinstance(cal, dict) and cal:
+            e_val = cal.get('Earnings Date')
+            if isinstance(e_val, list) and len(e_val) > 0:
+                future_dates = [pd.to_datetime(d).date() for d in e_val if pd.to_datetime(d).date() >= today]
+                yf_earn = future_dates[0] if future_dates else pd.to_datetime(e_val[0]).date()
+            elif e_val:
+                yf_earn = pd.to_datetime(e_val).date()
+            
+            d_val = cal.get('Ex-Dividend Date')
+            if d_val:
+                yf_div = pd.to_datetime(d_val).date()
+        
+        # Historial de dividendos de Yahoo Finance
+        div_series = tk.dividends
+        if div_series is not None and not div_series.empty:
+            yf_last_div = div_series.index[-1].date()
+            future_divs = [d.date() for d in div_series.index if d.date() >= today]
+            if future_divs:
+                yf_div = future_divs[0]
+    except Exception:
+        pass
+
+    # 2. NASDAQ API
+    ndaq_earn = None
+    ndaq_div = None
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json'
+    }
+    
+    # Próximos Resultados en Nasdaq
+    try:
+        url_e = f'https://api.nasdaq.com/api/analyst/{ticker_symbol}/earnings-date'
+        r = requests.get(url_e, headers=headers, timeout=5)
+        if r.status_code == 200:
+            data = r.json().get('data', {})
+            ann = data.get('announcement')
+            if ann and 'date' in ann:
+                dt = pd.to_datetime(ann['date']).date()
+                if dt >= today:
+                    ndaq_earn = dt
+    except Exception:
+        pass
+
+    # Próximos Dividendos en Nasdaq
+    try:
+        url_d = f'https://api.nasdaq.com/api/quote/{ticker_symbol}/dividends?assetclass=stocks'
+        r = requests.get(url_d, headers=headers, timeout=5)
+        if r.status_code == 200:
+            data = r.json().get('data', {})
+            ex_str = data.get('exDividendDate')
+            if ex_str and ex_str != 'N/A':
+                dt = pd.to_datetime(ex_str).date()
+                if dt >= today:
+                    ndaq_div = dt
+    except Exception:
+        pass
+
+    # CONCILIACIÓN Y CONTRASTE DE EARNINGS
+    earn_date = None
+    if yf_earn and ndaq_earn:
+        if abs((yf_earn - ndaq_earn).days) <= 2:
+            earn_date = yf_earn
+            earn_status = "✅ Verificado (Yahoo + Nasdaq)"
+        else:
+            earn_date = min(yf_earn, ndaq_earn)
+            earn_status = f"⚠️ Discrepancia (YF: {yf_earn} / NDAQ: {ndaq_earn})"
+    elif yf_earn:
+        earn_date = yf_earn
+        earn_status = "ℹ️ Yahoo Finance"
+    elif ndaq_earn:
+        earn_date = ndaq_earn
+        earn_status = "ℹ️ Nasdaq"
+    else:
+        earn_status = "— No anunciado"
+
+    # CONCILIACIÓN Y CONTRASTE DE DIVIDENDOS
+    div_date = None
+    if ndaq_div and ndaq_div >= today:
+        div_date = ndaq_div
+        div_status = "✅ Declarado Oficial (Nasdaq)"
+    elif yf_div and yf_div >= today:
+        div_date = yf_div
+        div_status = "✅ Declarado Oficial (Yahoo)"
+    elif yf_last_div:
+        # Paga dividendo pero aún no se ha formalizado la nueva fecha: proyectar ciclo trimestral
+        est = yf_last_div
+        while est < today:
+            est = (pd.to_datetime(est) + pd.DateOffset(days=91)).date()
+        div_date = est
+        div_status = f"📅 Estimado Trimestral (Previo: {yf_last_div.strftime('%d/%m/%Y')})"
+    else:
+        div_status = "— No distribuye"
+
+    return earn_date, earn_status, div_date, div_status
+
+def sync_active_portfolio_calendars(active_df):
     tickers = active_df["Ticker"].dropna().unique().tolist()
     if not tickers:
         st.toast("No hay tickers activos para sincronizar.", icon="⚠️")
@@ -1185,64 +1434,48 @@ def sync_active_portfolio_calendars(active_df):
     success_count = 0
     updated_tickers = []
     failed_tickers = []
+    sync_report = []
     
     df_copy = st.session_state.df.copy()
     
     for idx, ticker_symbol in enumerate(tickers):
         pct = int((idx / total) * 100)
         progress_bar.progress(pct)
-        status_text.write(f"🔄 Consultando Yahoo Finance para **{ticker_symbol}** ({idx+1}/{total})...")
-        
-        earn_date = None
-        div_date = None
+        status_text.write(f"🔄 Contrastando Yahoo Finance & Nasdaq para **{ticker_symbol}** ({idx+1}/{total})...")
         
         try:
-            ticker = yf.Ticker(ticker_symbol)
+            earn_date, earn_status, div_date, div_status = fetch_multisource_calendar_dates(ticker_symbol)
             
-            # Intentar obtener calendario (contiene earnings y a veces ex-dividend)
-            cal = None
-            try:
-                cal = ticker.calendar
-            except Exception:
-                pass
+            sync_report.append({
+                "Ticker": ticker_symbol,
+                "Próximos Resultados": earn_date.strftime("%d/%m/%Y") if earn_date else "—",
+                "Verificación Resultados": earn_status,
+                "Próximo Ex-Dividendo": div_date.strftime("%d/%m/%Y") if div_date else "—",
+                "Estado Dividendo": div_status
+            })
             
-            if isinstance(cal, dict) and cal:
-                # Extraer Earnings
-                earn_list = cal.get('Earnings Date')
-                if isinstance(earn_list, list) and len(earn_list) > 0:
-                    earn_date = earn_list[0]
-                elif earn_list:
-                    earn_date = earn_list
-                    
-                # Extraer Ex-Dividend del calendario
-                div_date = cal.get('Ex-Dividend Date')
+            # Actualizar filas de este ticker en estado 'Abierta'
+            rows_to_update = df_copy[(df_copy["Ticker"] == ticker_symbol) & (df_copy["Estado"] == "Abierta")]
+            if not rows_to_update.empty:
+                for real_idx in rows_to_update.index:
+                    if earn_date:
+                        df_copy.at[real_idx, "EarningsDate"] = pd.to_datetime(earn_date).normalize()
+                    if div_date:
+                        df_copy.at[real_idx, "DividendosDate"] = pd.to_datetime(div_date).normalize()
+                    df_copy.at[real_idx, "UpdatedAt"] = datetime.now().isoformat()
                 
-            # Si no hay ex-dividend en calendar, intentar con ticker.info (que tiene exDividendDate en unix timestamp)
-            if not div_date:
-                try:
-                    info = ticker.info
-                    ex_div_timestamp = info.get('exDividendDate')
-                    if ex_div_timestamp:
-                        div_date = pd.to_datetime(ex_div_timestamp, unit='s').date()
-                except Exception:
-                    pass
-            
-            # Si logramos obtener alguna de las dos fechas, actualizamos la base de datos
-            if earn_date or div_date:
-                rows_to_update = df_copy[(df_copy["Ticker"] == ticker_symbol) & (df_copy["Estado"] == "Abierta")]
-                if not rows_to_update.empty:
-                    for real_idx in rows_to_update.index:
-                        if earn_date:
-                            df_copy.at[real_idx, "EarningsDate"] = pd.to_datetime(earn_date).normalize()
-                        if div_date:
-                            df_copy.at[real_idx, "DividendosDate"] = pd.to_datetime(div_date).normalize()
-                        df_copy.at[real_idx, "UpdatedAt"] = datetime.now().isoformat()
-                    
-                    success_count += 1
-                    updated_tickers.append(ticker_symbol)
-                    
+                success_count += 1
+                updated_tickers.append(ticker_symbol)
+                
         except Exception as e:
             failed_tickers.append(ticker_symbol)
+            sync_report.append({
+                "Ticker": ticker_symbol,
+                "Próximos Resultados": "Error",
+                "Verificación Resultados": f"Error: {e}",
+                "Próximo Ex-Dividendo": "Error",
+                "Estado Dividendo": f"Error: {e}"
+            })
             
     progress_bar.progress(100)
     status_text.empty()
@@ -1252,9 +1485,12 @@ def sync_active_portfolio_calendars(active_df):
         if k.startswith("earn_") or k.startswith("div_"):
             del st.session_state[k]
     
+    # Guardar informe de verificación en session_state para mostrar en UI
+    st.session_state["calendar_sync_report"] = sync_report
+    
     if success_count > 0:
         st.session_state.df = JournalManager.save_with_backup(df_copy)
-        msg = f"Sincronización completada. Se actualizaron {success_count} tickers: {', '.join(updated_tickers)}."
+        msg = f"Sincronización multi-fuente completada para {success_count} tickers: {', '.join(updated_tickers)}."
         if failed_tickers:
             msg += f" (Errores en: {', '.join(failed_tickers)})"
         st.toast(msg, icon="✅")
@@ -1347,9 +1583,19 @@ def render_active_portfolio(df):
     with col_sync:
         st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
         if not active_df.empty:
-            if st.button("🔄 Sincronizar Calendario", key="sync_calendar_btn", type="secondary", width="stretch", help="Sincroniza fechas de Earnings y Dividendos con Yahoo Finance"):
+            if st.button("🔄 Sincronizar Calendario", key="sync_calendar_btn", type="secondary", width="stretch", help="Sincroniza y contrasta fechas de Earnings y Dividendos con Yahoo Finance y Nasdaq"):
                 sync_active_portfolio_calendars(active_df)
     
+    # Informe de verificación multi-fuente si está disponible
+    if "calendar_sync_report" in st.session_state and st.session_state["calendar_sync_report"]:
+        with st.expander("📅 **Informe de Verificación Multi-Fuente (Yahoo Finance & Nasdaq)**", expanded=True):
+            st.caption("ℹ️ Datos contrastados automáticamente entre Yahoo Finance y Nasdaq. En empresas que reparten dividendos sin fecha oficial publicada para el próximo trimestre, se calcula la proyección del ciclo trimestral.")
+            rep_df = pd.DataFrame(st.session_state["calendar_sync_report"])
+            st.dataframe(rep_df, use_container_width=True, hide_index=True)
+            if st.button("✕ Ocultar Informe", key="close_sync_report_btn"):
+                del st.session_state["calendar_sync_report"]
+                st.rerun()
+
     # CSS personalizado para badges y tarjetas
     st.markdown("""
     <style>
@@ -3302,6 +3548,7 @@ def render_active_portfolio(df):
                     col_note_st, col_note_cc = st.columns(2)
                 else:
                     col_note_st = st.container()
+                    col_note_cc = col_note_st
                 
                 # Editor de Notas del Stock
                 with col_note_st:
@@ -3321,7 +3568,7 @@ def render_active_portfolio(df):
                         st.rerun()
                 
                 # Editor de Notas del Covered Call activo
-                if tiene_cc:
+                if tiene_cc and col_note_cc is not None:
                     with col_note_cc:
                         st.markdown("**Covered Call Activo**")
                         cc_linked = df[df["ChainID"] == cc_chain_id]
@@ -4186,6 +4433,8 @@ def render_active_portfolio(df):
                             if not stock_rows.empty:
                                 stock_row = stock_rows.iloc[0]
 
+                        stock_id = None
+                        acciones_st = 0
                         if stock_row is not None:
                             stock_id = stock_row["ID"]
                             contratos_st = int(stock_row.get("Contratos", 1))
@@ -4947,7 +5196,53 @@ def render_history(df):
     # =========================================================
     # --- FILTROS EXPANDIDOS ---
     # =========================================================
-    with st.expander("🔍 Filtros", expanded=False):
+    valid_dates = hist_df["__dt_sort"].dropna()
+    fecha_min_val = valid_dates.min().date() if not valid_dates.empty else (date.today() - timedelta(days=365))
+
+    chain_pnl_for_slider = hist_df.groupby("ChainID")["PnL_USD_Realizado"].sum().round(2)
+    pnl_min_sl = float(chain_pnl_for_slider.min()) if not chain_pnl_for_slider.empty else -1000.0
+    pnl_max_sl = float(chain_pnl_for_slider.max()) if not chain_pnl_for_slider.empty else 1000.0
+    if pnl_min_sl == pnl_max_sl:
+        pnl_min_sl -= 1.0
+        pnl_max_sl += 1.0
+
+    def _cb_reset_hist_filters():
+        st.session_state["hist_t"] = "Todos"
+        st.session_state["hist_e"] = "Todos"
+        st.session_state["hist_s"] = "Todos"
+        st.session_state["hist_estado"] = "Todos"
+        st.session_state["hist_resultado"] = "Todos"
+        st.session_state["hist_tags"] = ""
+        st.session_state["hist_d"] = [fecha_min_val, date.today()]
+        st.session_state["hist_0dte"] = "Todos"
+        st.session_state["hist_excl"] = []
+        st.session_state["hist_pnl"] = (round(pnl_min_sl, 2), round(pnl_max_sl, 2))
+        st.session_state["hist_page"] = 1
+
+    hist_is_filtered = (
+        st.session_state.get("hist_t", "Todos") != "Todos" or
+        st.session_state.get("hist_e", "Todos") != "Todos" or
+        st.session_state.get("hist_s", "Todos") != "Todos" or
+        st.session_state.get("hist_estado", "Todos") != "Todos" or
+        st.session_state.get("hist_resultado", "Todos") != "Todos" or
+        bool(st.session_state.get("hist_tags", "").strip()) or
+        st.session_state.get("hist_0dte", "Todos") != "Todos" or
+        bool(st.session_state.get("hist_excl", [])) or
+        (st.session_state.get("hist_pnl") is not None and st.session_state.get("hist_pnl") != (round(pnl_min_sl, 2), round(pnl_max_sl, 2)))
+    )
+
+    col_h_exp, col_h_rst = st.columns([5, 1])
+    with col_h_rst:
+        if hist_is_filtered:
+            st.button("🔄 Restablecer Filtros", key="btn_reset_hist_bar", on_click=_cb_reset_hist_filters, use_container_width=True, help="Restablecer todos los filtros del historial")
+
+    with st.expander("🔍 Filtros" + (" (Activos 🟢)" if hist_is_filtered else ""), expanded=False):
+        c_rh1, c_rh2 = st.columns([4, 1])
+        with c_rh1:
+            st.caption("Ajusta los criterios de búsqueda para analizar tus operaciones cerradas.")
+        with c_rh2:
+            st.button("🔄 Restablecer Filtros", key="btn_reset_hist_in", on_click=_cb_reset_hist_filters, use_container_width=True)
+
         # Fila 1: Ticker | Estrategia | Setup | Estado
         cf1, cf2, cf3, cf4 = st.columns(4)
         hist_tickers = ["Todos"] + sorted(hist_df["Ticker"].dropna().unique().tolist())
@@ -4967,12 +5262,12 @@ def render_history(df):
         resultado_filt = cf5.selectbox("💰 Resultado", ["Todos", "✅ Ganadoras", "❌ Perdedoras"], key="hist_resultado")
         tags_filt = cf6.text_input("🔖 Buscar Tag", placeholder="ej: hedge, 0DTE...", key="hist_tags")
         
-        valid_dates = hist_df["__dt_sort"].dropna()
-        fecha_min_val = valid_dates.min().date() if not valid_dates.empty else (date.today() - timedelta(days=365))
         with cf7:
             st.markdown("📅 **Rango de cierre**")
+            if "hist_d" not in st.session_state:
+                st.session_state["hist_d"] = [fecha_min_val, date.today()]
             date_range = st.date_input(
-                "Rango", [fecha_min_val, date.today()], key="hist_d", label_visibility="collapsed"
+                "Rango", key="hist_d", label_visibility="collapsed"
             )
 
         # Fila 3: 0DTE | Excluir Tickers
@@ -4987,23 +5282,17 @@ def render_history(df):
         excluir_tickers_h = cf9.multiselect(
             "🛋️ Excluir tickers",
             options=all_tickers_excl_h,
-            default=[],
             key="hist_excl",
             placeholder="Selecciona tickers a excluir..."
         )
         
         # Fila 4: Slider PnL
-        chain_pnl_for_slider = hist_df.groupby("ChainID")["PnL_USD_Realizado"].sum().round(2)
-        pnl_min_sl = float(chain_pnl_for_slider.min()) if not chain_pnl_for_slider.empty else -1000.0
-        pnl_max_sl = float(chain_pnl_for_slider.max()) if not chain_pnl_for_slider.empty else 1000.0
-        if pnl_min_sl == pnl_max_sl:
-            pnl_min_sl -= 1.0
-            pnl_max_sl += 1.0
+        if "hist_pnl" not in st.session_state:
+            st.session_state["hist_pnl"] = (round(pnl_min_sl, 2), round(pnl_max_sl, 2))
         pnl_range = st.slider(
             "💵 Rango PnL ($)",
             min_value=round(pnl_min_sl, 2),
             max_value=round(pnl_max_sl, 2),
-            value=(round(pnl_min_sl, 2), round(pnl_max_sl, 2)),
             key="hist_pnl"
         )
 
@@ -5113,9 +5402,9 @@ def render_history(df):
     # --- Filtros sobre los resúmenes de cadena ---
     chain_summaries = [c for c in chain_summaries if pnl_range[0] <= round(c["PnL_Total"], 2) <= pnl_range[1]]
     if resultado_filt == "✅ Ganadoras":
-        chain_summaries = [c for c in chain_summaries if c["PnL_Total"] >= 0]
+        chain_summaries = [c for c in chain_summaries if c["PnL_Total"] >= 0 and (c["Estado"] != "Rolada" if estado_filt != "Rolada" else True)]
     elif resultado_filt == "❌ Perdedoras":
-        chain_summaries = [c for c in chain_summaries if c["PnL_Total"] < 0]
+        chain_summaries = [c for c in chain_summaries if c["PnL_Total"] < 0 and (c["Estado"] != "Rolada" if estado_filt != "Rolada" else True)]
 
     # Ordenar por fecha de cierre descendente
     chain_summaries.sort(
@@ -5132,21 +5421,44 @@ def render_history(df):
     # =========================================================
     total_ops   = len(chain_summaries)
     total_pnl_all = sum(c["PnL_Total"] for c in chain_summaries)
-    ganadoras   = sum(1 for c in chain_summaries if c["PnL_Total"] >= 0)
-    win_rate    = (ganadoras / total_ops * 100) if total_ops > 0 else 0.0
+
+    # Excluir roles del conteo de victorias/derrotas a menos que se filtre explícitamente por "Rolada"
+    if estado_filt == "Rolada":
+        eval_chains = chain_summaries
+    else:
+        eval_chains = [c for c in chain_summaries if c["Estado"] != "Rolada"]
+
+    total_eval  = len(eval_chains)
+    ganadoras   = sum(1 for c in eval_chains if c["PnL_Total"] >= 0)
+    perdedoras  = sum(1 for c in eval_chains if c["PnL_Total"] < 0)
+    rolls_h     = sum(1 for c in chain_summaries if c["Estado"] == "Rolada")
+    win_rate    = (ganadoras / total_eval * 100) if total_eval > 0 else 0.0
     avg_pnl     = total_pnl_all / total_ops if total_ops > 0 else 0.0
 
     st.divider()
     k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("📋 Total Ops",       f"{total_ops}")
+    t_tot_lifetime = 0
+    t_open_lifetime = 0
+    if t_filt != "Todos":
+        t_hist_all = df[df["Ticker"] == t_filt]
+        t_tot_lifetime = t_hist_all["ChainID"].nunique()
+        t_open_lifetime = t_hist_all[t_hist_all["Estado"] == "Abierta"]["ChainID"].nunique()
+        k1.metric("📋 Total Ops", f"{total_ops}", delta=f"De {t_tot_lifetime} tot ({t_open_lifetime} ab)", help=f"Operaciones cerradas visibles en este filtro. Total histórico de {t_filt}: {t_tot_lifetime} operaciones ({t_open_lifetime} abiertas actualmente).")
+    else:
+        k1.metric("📋 Total Ops", f"{total_ops}", help="Total de operaciones en esta vista")
+
     k2.metric("💵 PnL Total",        f"${total_pnl_all:,.2f}")
-    k3.metric("🏆 Win Rate",         f"{win_rate:.1f}%")
-    k4.metric("✅ / ❌",             f"{ganadoras} / {total_ops - ganadoras}")
+    k3.metric("🏆 Win Rate",         f"{win_rate:.1f}%", help=f"Porcentaje de acierto: {ganadoras} ganadas / {perdedoras} pérdidas sobre {total_eval} operaciones definitivas" + (f" (excluye {rolls_h} roles)" if rolls_h > 0 else ""))
+    k4.metric("✅ / ❌",             f"{ganadoras} / {perdedoras}", delta=f"🔄 {rolls_h} roles" if rolls_h > 0 and estado_filt != "Rolada" else None, help=f"{ganadoras} ganadas y {perdedoras} pérdidas definitivas" + (f". {rolls_h} roles no computados como pérdidas." if rolls_h > 0 else ""))
     k5.metric("📊 PnL Medio",        f"${avg_pnl:,.2f}")
     
     # Comisiones 0DTE en historial
     comisiones_0dte_h = hist_df[hist_df["__is_0dte"] == True]["Comisiones"].sum()
-    st.info(f"⚡ **Comisiones acumuladas en 0DTE (en este filtro):** ${comisiones_0dte_h:,.2f}")
+    if comisiones_0dte_h > 0:
+        st.info(f"⚡ **Comisiones acumuladas en 0DTE (en este filtro):** ${comisiones_0dte_h:,.2f}")
+
+    if t_filt != "Todos":
+        st.info(f"🏷️ **Filtro Ticker {t_filt}:** Mostrando **{total_ops}** operaciones en el historial (Total histórico de {t_filt}: **{t_tot_lifetime} operaciones** — {t_open_lifetime} abiertas actualmente).")
     st.divider()
 
     # =========================================================

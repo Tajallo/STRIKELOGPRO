@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Cálculo de Margen Tradier (Reg-T) vs Asignación 100% Cash y Resumen Ejecutivo en Cartera Activa**:
+  - **Margen Real de Tradier (Reg-T Margin / BP Effect)**: Se añadió el cálculo del margen real retenido por Tradier (`calculate_tradier_margin`, aprox. 20% del strike en CSPs vendidas + valor de stock asignado), diferenciándolo del compromiso de asignación total en efectivo (`calculate_position_bp`).
+  - **Resumen Informativo Limpio en Cartera Activa y Dashboard**: Se integraron tarjetas KPI ejecutivas directas y sin alarmas visuales:
+    - `📦 Posiciones Abiertas`: Conteo total de operaciones y desglose por tipo (CSPs, CCs, Stock).
+    - `🏦 Margen Bloqueado Tradier`: Refleja el margen real bloqueado en el broker con delta del Option BP libre para seguir operando.
+    - `🔒 Asignación 100% Cash`: Efectivo requerido en caso de asignación total al contado.
+    - `💵 Primas Pendientes`: Crédito acumulado en posiciones abiertas a capturar si expiran OTM.
+    - `🎯 Tickers Activos`: Número de subyacentes únicos en cartera.
+  - **Métricas Individuales por Tarjeta de Posición**: En cada operación abierta se muestra cara a cara el capital necesario al 100% cash (`100% Cash Asignación`) y el margen retenido por Tradier (`Margen Tradier`).
+  - **Configuración Persistente de Cuenta (`config_cuenta.json`)**: Gestión persistente de capital de cuenta y configuración de cuenta accesible desde el Sidebar.
+  - **Auto-cálculo y Corrección de Buying Power (BP)**: Normalización automática de Buying Power para todas las CSPs y acciones con BP = 0 en la bitácora (`bitacora_opciones.csv`) y auto-sugerencia en los formularios de registro de operaciones.
 - **Resolución de Advertencias de Inicialización de Variables (Punto 1)**: Se corrigieron todas las posibles variables no inicializadas reportadas por el linter estático (`col_note_cc` en el panel de notas de La Rueda, `stock_id` y `acciones_st` en la asignación de Covered Calls, y `t_tot_lifetime` / `t_open_lifetime` en el cálculo de métricas de Historial).
 - **Modernización y Rediseño Premium del Rendimiento Mensual (Punto 2)**:
   - Se sustituyó el gráfico anterior por un diseño visual moderno, ordenado **cronológicamente por año y mes** (evitando el orden alfabético previo que mezclaba meses).

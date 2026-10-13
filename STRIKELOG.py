@@ -3,6 +3,7 @@ import pandas as pd
 import os
 import shutil
 import re
+import json
 from datetime import date, datetime, timedelta
 from uuid import uuid4
 import plotly.express as px
@@ -10,14 +11,96 @@ import plotly.graph_objects as go
 
 
 # ----------------------------
-# Configuración
+# Configuración y Parámetros
 # ----------------------------
 APP_TITLE = "🚀 STRIKELOG Pro"
 FILE_NAME = "bitacora_opciones.csv"
 BACKUP_DIR = "backups_journal"
+CONFIG_FILE = "config_cuenta.json"
 
 if not os.path.exists(BACKUP_DIR):
     os.makedirs(BACKUP_DIR)
+
+
+class AccountConfig:
+    """Gestor de configuración persistente para la cuenta y control de riesgo estilo Tom Sosnoff."""
+    DEFAULT_CONFIG = {
+        "capital_total": 100000.0,
+        "max_csps_per_ticker": 3,
+        "bp_target_pct": 70.0
+    }
+
+    @staticmethod
+    def load() -> dict:
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                    return {**AccountConfig.DEFAULT_CONFIG, **cfg}
+            except Exception:
+                pass
+        return AccountConfig.DEFAULT_CONFIG.copy()
+
+    @staticmethod
+    def save(cfg: dict):
+        try:
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=4)
+        except Exception:
+            pass
+
+
+def calculate_position_bp(row) -> float:
+    """
+    Calcula el Buying Power / Capital Reservado real de una posición.
+    - Para Cash-Secured Puts (CSPs): Strike * 100 * Contratos (efectivo íntegro reservado para comprar acciones).
+    - Para Long Stock / Asignación: Strike/Precio * 100 * Contratos.
+    - Para Covered Calls: $0 (el colateral son las acciones ya poseídas).
+    - Si el registro ya tiene un BuyingPower > 0 definido explícitamente, se respeta ese valor.
+    """
+    try:
+        bp_val = float(row.get("BuyingPower", 0.0) or 0.0)
+        if bp_val > 0.0:
+            return bp_val
+        
+        strat = str(row.get("Estrategia", ""))
+        side = str(row.get("Side", ""))
+        opt_type = str(row.get("OptionType", ""))
+        strike = float(row.get("Strike", 0.0) or 0.0)
+        contratos = int(row.get("Contratos", 1) or 1)
+        
+        # CSP o Venta de Put simple (que requiere colateral en efectivo)
+        if ("CSP" in strat or (side == "Sell" and opt_type == "Put" and "Spread" not in strat and "Iron" not in strat)) and strike > 0:
+            return strike * 100.0 * contratos
+        # Acciones en cartera (ej. asignación de La Rueda)
+        elif (opt_type == "Stock" or "Long Stock" in strat) and strike > 0:
+            return strike * 100.0 * contratos
+    except Exception:
+        pass
+    return 0.0
+
+
+def calculate_tradier_margin(row) -> float:
+    """
+    Calcula el margen real que Tradier retiene en cuenta de margen (Reg-T):
+    - Short Puts / CSPs: ~20% del valor del strike * 100 * contratos (requisito de margen del broker).
+    - Long Stock: 100% del valor de las acciones (o compra).
+    - Covered Calls: $0 (cubierto por las acciones poseídas).
+    """
+    try:
+        strat = str(row.get("Estrategia", ""))
+        side = str(row.get("Side", ""))
+        opt_type = str(row.get("OptionType", ""))
+        strike = float(row.get("Strike", 0.0) or 0.0)
+        contratos = int(row.get("Contratos", 1) or 1)
+        
+        if ("CSP" in strat or (side == "Sell" and opt_type == "Put" and "Spread" not in strat and "Iron" not in strat)) and strike > 0:
+            return strike * 100.0 * contratos * 0.20
+        elif (opt_type == "Stock" or "Long Stock" in strat) and strike > 0:
+            return strike * 100.0 * contratos
+    except Exception:
+        pass
+    return 0.0
 
 # Columnas actualizadas
 COLUMNS = [
@@ -370,6 +453,21 @@ class JournalManager:
                     df.at[idx, "CostBaseReal"] = dynamic_be
                 except Exception:
                     pass
+
+        # Recálculo / Auto-asignación de Buying Power para CSPs y acciones con BP = 0
+        if "BuyingPower" in df.columns:
+            for idx in range(len(df)):
+                curr_bp = float(df.at[idx, "BuyingPower"] or 0.0)
+                if curr_bp <= 0.0:
+                    strat = str(df.at[idx, "Estrategia"] or "")
+                    side = str(df.at[idx, "Side"] or "")
+                    opt_type = str(df.at[idx, "OptionType"] or "")
+                    strike = float(df.at[idx, "Strike"] or 0.0)
+                    contratos = int(df.at[idx, "Contratos"] or 1)
+                    if ("CSP" in strat or (side == "Sell" and opt_type == "Put" and "Spread" not in strat and "Iron" not in strat)) and strike > 0:
+                        df.at[idx, "BuyingPower"] = strike * 100.0 * contratos
+                    elif (opt_type == "Stock" or "Long Stock" in strat) and strike > 0:
+                        df.at[idx, "BuyingPower"] = strike * 100.0 * contratos
 
         return df
 
@@ -1032,13 +1130,18 @@ def render_dashboard(df):
             for _, r in open_trades.iterrows()
             if r.get("Side", "Sell") == "Sell"
         ) if not open_trades.empty else 0.0
-        open_bp_total = open_trades["BuyingPower"].sum() if not open_trades.empty else 0.0
+        open_bp_total = sum(calculate_position_bp(r) for _, r in open_trades.iterrows()) if not open_trades.empty else 0.0
+        open_tradier_margin = sum(calculate_tradier_margin(r) for _, r in open_trades.iterrows()) if not open_trades.empty else 0.0
+        acc_cfg_dash = AccountConfig.load()
+        cap_total_dash = float(acc_cfg_dash.get("capital_total", 50075.46))
+        option_bp_dash = max(0.0, cap_total_dash - open_tradier_margin)
 
         st.markdown("#### 🚀 Resumen Ejecutivo: Cartera Activa Hoy")
-        ca1, ca2, ca3 = st.columns(3)
+        ca1, ca2, ca3, ca4 = st.columns(4)
         ca1.metric("📦 Posiciones Abiertas", f"{open_positions_count} trade{'s' if open_positions_count != 1 else ''}", help="Operaciones que tienes actualmente en mercado")
         ca2.metric("💵 Crédito Pendiente (Primas)", f"${open_primas_pending:,.2f}", help="Prima acumulada recibida en las posiciones que siguen abiertas")
-        ca3.metric("🔒 Capital Reservado (BP)", f"${open_bp_total:,.2f}", help="Garantías y margen retenidos por tu broker")
+        ca3.metric("🏦 Margen Bloqueado Tradier", f"${open_tradier_margin:,.2f}", delta=f"Option BP Libre: ${option_bp_dash:,.0f}", delta_color="normal", help=f"Margen real que Tradier/Sigma te bloquea en cuenta Reg-T (~20% en CSPs + valor de stock).\nTe deja aproximadamente ${option_bp_dash:,.0f} de Option BP libre en el broker.")
+        ca4.metric("🔒 Asignación 100% Cash", f"${open_bp_total:,.2f}", help="Capital total necesario si todas tus CSPs y acciones fuesen asignadas y pagases el 100% en cash sin apalancamiento.")
 
         st.divider()
 
@@ -1661,6 +1764,86 @@ def render_active_portfolio(df):
         return
 
     # ─────────────────────────────────────────────────────────────────────
+    # 📊 RESUMEN EJECUTIVO DE CARTERA ACTIVA & COCKPIT DE RIESGO SOSNOFF
+    # ─────────────────────────────────────────────────────────────────────
+    account_cfg = AccountConfig.load()
+    capital_total = float(account_cfg.get("capital_total", 100000.0))
+    max_csps_rule = int(account_cfg.get("max_csps_per_ticker", 3))
+    target_bp_pct = float(account_cfg.get("bp_target_pct", 70.0))
+
+    total_open_chains = active_df["ChainID"].nunique()
+    total_open_rows = len(active_df)
+
+    # Conteo por tipo de posición
+    csp_mask = active_df["Estrategia"].str.contains("CSP", na=False) | (
+        (active_df["Side"] == "Sell") & (active_df["OptionType"] == "Put") & (~active_df["Estrategia"].str.contains("Spread|Iron|Butterfly|Strangle", na=False))
+    )
+    cc_mask = active_df["Estrategia"].str.contains("CC|Covered Call", na=False) | (active_df["WheelLeg"] == "covered_call")
+    stock_mask = active_df["OptionType"] == "Stock"
+
+    total_csps = int(active_df[csp_mask]["Contratos"].sum()) if not active_df[csp_mask].empty else 0
+    total_csp_ops = active_df[csp_mask]["ChainID"].nunique()
+    total_ccs = int(active_df[cc_mask]["Contratos"].sum()) if not active_df[cc_mask].empty else 0
+    total_stocks = active_df[stock_mask]["ChainID"].nunique()
+    total_tickers = active_df["Ticker"].nunique()
+
+    # Cálculo preciso de Capital Reservado (Buying Power)
+    total_bp_reserved = sum(calculate_position_bp(r) for _, r in active_df.iterrows())
+    bp_csps = sum(calculate_position_bp(r) for _, r in active_df[csp_mask].iterrows())
+    bp_stocks = sum(calculate_position_bp(r) for _, r in active_df[stock_mask].iterrows())
+    bp_other = max(0.0, total_bp_reserved - bp_csps - bp_stocks)
+
+    capital_libre = max(0.0, capital_total - total_bp_reserved)
+    bp_util_pct = (total_bp_reserved / capital_total * 100.0) if capital_total > 0 else 0.0
+
+    open_primas_pending = sum(
+        float(r.get("PrimaRecibida", 0.0) or 0.0) * float(r.get("Contratos", 1.0) or 1.0) * 100
+        for _, r in active_df.iterrows()
+        if r.get("Side", "Sell") == "Sell"
+    )
+
+    # 1. Tarjetas KPI de Resumen Simple y Claro
+    total_tradier_margin = sum(calculate_tradier_margin(r) for _, r in active_df.iterrows())
+    total_cash_secured = sum(calculate_position_bp(r) for _, r in active_df.iterrows())
+    option_bp_estimado = max(0.0, capital_total - total_tradier_margin)
+
+    kpi_col1, kpi_col2, kpi_col3, kpi_col4, kpi_col5 = st.columns([1.1, 1.3, 1.3, 1.1, 1.0])
+    
+    kpi_col1.metric(
+        "📦 Posiciones Abiertas",
+        f"{total_open_chains} ops",
+        help=f"Total de {total_open_chains} operaciones en mercado ({total_open_rows} contratos/patas)\n• {total_csps} CSPs\n• {total_ccs} Covered Calls\n• {total_stocks} Posiciones de Stock"
+    )
+    
+    kpi_col2.metric(
+        "🏦 Margen Bloqueado Tradier",
+        f"${total_tradier_margin:,.0f}",
+        delta=f"Option BP Libre: ${option_bp_estimado:,.0f}",
+        delta_color="normal",
+        help=f"Margen real que Tradier te bloquea en cuenta Reg-T (~20% en CSPs + valor de stock).\nTe deja aproximadamente ${option_bp_estimado:,.0f} de Option BP libre en Tradier/Sigma Trade."
+    )
+    
+    kpi_col3.metric(
+        "🔒 Asignación 100% Cash",
+        f"${total_cash_secured:,.0f}",
+        help=f"Capital total necesario si todas tus CSPs y acciones fuesen asignadas y pagases el 100% en cash sin apalancamiento."
+    )
+    
+    kpi_col4.metric(
+        "💵 Primas Pendientes",
+        f"${open_primas_pending:,.2f}",
+        help="Crédito acumulado en posiciones abiertas que se convertirá en beneficio si expiran OTM."
+    )
+    
+    kpi_col5.metric(
+        "🎯 Tickers Activos",
+        f"{total_tickers} activos",
+        help=f"Total de {total_tickers} empresas distintas en cartera activa."
+    )
+
+    st.markdown("<div style='margin-bottom: 12px;'></div>", unsafe_allow_html=True)
+
+    # ─────────────────────────────────────────────────────────────────────
     # 🔔 BANNER DE EXPIRACIONES PENDIENTES
     # Regla: DTE <= 0 AND Estado == "Abierta"
     # Incluye efecto fin de semana: si el usuario abre el sábado/domingo,
@@ -1885,6 +2068,8 @@ def render_active_portfolio(df):
         
         # Métricas agregadas del grupo
         total_bp = group["BuyingPower"].sum()
+        if total_bp <= 0.0:
+            total_bp = sum(calculate_position_bp(r) for _, r in group.iterrows())
         total_premium = group["PrimaRecibida"].sum()
         
         # Asegurar que expiry es objeto fecha par el cálculo
@@ -2141,7 +2326,18 @@ def render_active_portfolio(df):
                 else:
                     m3.metric("Cierre BE Opción", f"${net_credit_chain:,.2f}/acc", help="Precio máximo de la opción para recomprar hoy sin pérdidas en la campaña total")
                     
-                m4.metric("Capital Reservado", f"${total_bp:,.2f}")
+                m4.metric("100% Cash Asignación", f"${total_bp:,.2f}", help="Efectivo necesario si se asigna la posición y compras las acciones al 100% en cash.")
+                
+                # Lo que bloquea realmente Tradier de margen en esta posición
+                if not is_stock_position and first_row.get("OptionType") == "Put" and first_row.get("Side") == "Sell":
+                    tradier_margin_leg = total_bp * 0.20
+                    m5.metric("Margen Tradier", f"${tradier_margin_leg:,.2f}", help="Margen Reg-T que te retiene Tradier realmente (~20% del strike).")
+                elif is_stock_position:
+                    m5.metric("Margen Tradier", f"${total_bp:,.2f}", help="Acciones en cartera procedentes de asignación.")
+                elif is_cc_rueda:
+                    m5.metric("Margen Tradier", "$0.00", help="Covered Call cubierta por acciones.")
+                else:
+                    m5.metric("Contratos", f"{int(qty_active)}")
                 # --- GUÍA CONTEXTUAL DTE Y ESCENARIO DE ASIGNACIÓN ---
                 if not is_stock_position:
                     if dte > 30:
@@ -4617,6 +4813,9 @@ def render_express_0dte():
     col_fa, col_fv, col_p, col_bp, col_fee = st.columns(5)
     default_prima = float(dup_defaults.get("prima", 0.0)) if dup_defaults else 0.0
     default_bp = float(dup_defaults.get("buying_power", 0.0)) if dup_defaults else 0.0
+    if default_bp <= 0.0 and dup_defaults and "strike" in dup_defaults:
+        if "CSP" in estrategia_exp:
+            default_bp = float(dup_defaults.get("strike", 0.0)) * 100.0 * contratos_exp
     
     default_comision_exp = contratos_exp * get_fee_rate(broker_exp, ticker_exp)
     
@@ -4823,6 +5022,21 @@ def render_new_trade():
         ticker = c_top1.text_input("Ticker", key="nt_ticker").upper()
         estrategia = c_top2.selectbox("Estrategia", ESTRATEGIAS, key="nt_estrategia")
         broker = c_top3.selectbox("Broker", ["Tradier", "IB"], key="nt_broker")
+
+        # Alerta en tiempo real sobre Cupo de CSPs por Ticker (Regla de hasta 3 CSPs)
+        if ticker and "df" in st.session_state and not st.session_state.df.empty:
+            open_t_csps = st.session_state.df[
+                (st.session_state.df["Ticker"] == ticker) &
+                (st.session_state.df["Estado"] == "Abierta") &
+                (st.session_state.df["Estrategia"].str.contains("CSP", na=False) | ((st.session_state.df["Side"] == "Sell") & (st.session_state.df["OptionType"] == "Put")))
+            ]
+            t_csp_cnt = len(open_t_csps)
+            rule_limit = int(AccountConfig.load().get("max_csps_per_ticker", 3))
+            if "CSP" in estrategia:
+                if t_csp_cnt >= rule_limit:
+                    st.warning(f"⚠️ **Regla de Riesgo (Máx {rule_limit} CSPs):** Ya tienes **{t_csp_cnt} de {rule_limit} CSPs abiertas en {ticker}**. Abrir otra excederá tu cupo máximo prudencial por activo.")
+                else:
+                    st.info(f"🛡️ **Cupo CSPs en {ticker}:** Tienes **{t_csp_cnt} de {rule_limit}** abiertas. Espacio disponible: **{rule_limit - t_csp_cnt}**.")
         
         # Determinar patas según selección
         legs_count = 1
@@ -5033,8 +5247,21 @@ def render_new_trade():
                 fecha_apertura = c_ad2.date_input("📅 Fecha Apertura", value=date.today(), help="Cambia si registras la operación un día diferente.", key="f_apert")
                 user_tags = c_ad3.text_input("🏷️ Tags", placeholder="income, hedge", help="Etiquetas separadas por coma", key="tags_input")
                 
+                # Auto-sugerencia inteligente de Buying Power
+                suggested_bp = 0.0
+                if legs_data:
+                    first_strike = float(legs_data[0].get("Strike", 0.0) or 0.0)
+                    if "CSP" in estrategia or (legs_data[0].get("Side") == "Sell" and legs_data[0].get("Type") == "Put"):
+                        suggested_bp = first_strike * 100.0 * contratos
+                    elif "Stock" in estrategia or legs_data[0].get("Type") == "Stock":
+                        suggested_bp = first_strike * 100.0 * contratos
+                    elif "Spread" in estrategia and len(legs_data) >= 2:
+                        s1 = float(legs_data[0].get("Strike", 0.0) or 0.0)
+                        s2 = float(legs_data[1].get("Strike", 0.0) or 0.0)
+                        suggested_bp = abs(s1 - s2) * 100.0 * contratos
+
                 c_bp1, c_bp2, c_bp3, c_bp4 = st.columns(4)
-                buy_pow = c_bp1.number_input("Capital Reservado ($)", value=0.0, step=100.0, help="Buying Power reservado por tu broker para esta posición.", key="bp_input")
+                buy_pow = c_bp1.number_input("Capital Reservado ($)", value=float(suggested_bp), step=100.0, help="Buying Power reservado por tu broker (auto-calculado para CSP/Stock).", key="bp_input")
                 
                 # Comisiones calculadas por defecto según broker
                 default_comision = contratos * get_fee_rate(st.session_state.get("nt_broker", "IB"), ticker)
@@ -5103,7 +5330,7 @@ def render_new_trade():
                         "PrimaRecibida": total_premium if i_leg == 0 else 0.0,
                         "CostoCierre": 0.0,
                         "Contratos": contratos,
-                        "BuyingPower": buy_pow if i_leg == 0 else 0.0,
+                        "BuyingPower": (buy_pow if buy_pow > 0 else suggested_bp) if i_leg == 0 else 0.0,
                         "BreakEven": be_input,
                         "BreakEven_Upper": be_upper_input,
                         "POP": pop_val,
@@ -5866,6 +6093,53 @@ def main():
     page = st.sidebar.radio("Navegación", nav_options, key="nav_page")
     
     st.sidebar.divider()
+    
+    # ─── 🏦 Configuración de Cuenta & Riesgo (Sosnoff) ───
+    with st.sidebar.expander("🏦 Cuenta & Gestión de Capital", expanded=False):
+        st.caption("Configura tu capital total para monitorizar el Buying Power (BP) y prevenir Margin Calls.")
+        cfg_side = AccountConfig.load()
+        inp_cap = st.number_input(
+            "Capital Total Cuenta ($)", 
+            value=float(cfg_side.get("capital_total", 100000.0)), 
+            step=5000.0, 
+            format="%.2f", 
+            key="sidebar_cap_total_input", 
+            help="Saldo total o Net Liquidity de tu cuenta de trading."
+        )
+        inp_max_csps = st.number_input(
+            "Máx CSPs por Activo", 
+            value=int(cfg_side.get("max_csps_per_ticker", 3)), 
+            min_value=1, 
+            max_value=10, 
+            step=1, 
+            key="sidebar_max_csps_input", 
+            help="Límite prudencial de CSPs simultáneas por ticker (Regla de diversificación)."
+        )
+        inp_bp_target = st.slider(
+            "% Objetivo Máx BP (Sosnoff)", 
+            min_value=30, 
+            max_value=100, 
+            value=int(cfg_side.get("bp_target_pct", 70)), 
+            step=5, 
+            key="sidebar_bp_target_slider", 
+            help="Tom Sosnoff aconseja mantener <50-70% de BP ocupado para tener colchón ante subidas de volatilidad."
+        )
+        
+        if (inp_cap != cfg_side.get("capital_total") or 
+            inp_max_csps != cfg_side.get("max_csps_per_ticker") or 
+            inp_bp_target != cfg_side.get("bp_target_pct")):
+            AccountConfig.save({
+                "capital_total": inp_cap,
+                "max_csps_per_ticker": inp_max_csps,
+                "bp_target_pct": inp_bp_target
+            })
+            st.session_state["account_config"] = {
+                "capital_total": inp_cap,
+                "max_csps_per_ticker": inp_max_csps,
+                "bp_target_pct": inp_bp_target
+            }
+            st.rerun()
+
     if st.sidebar.button("🔄 Recargar desde Disco"):
         st.session_state.df = JournalManager.load_data()
         st.toast("📝 ¡Datos recargados desde el archivo CSV!")

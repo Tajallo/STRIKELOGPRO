@@ -2625,21 +2625,50 @@ def render_active_portfolio(df):
                     l_c7.write(exp_str)
                     
                     with l_c8.popover("✏️", help="Editar esta pata"):
-                        leg_idx_list = df.index[df["ID"] == leg["ID"]]
+                        leg_idx_list = st.session_state.df.index[st.session_state.df["ID"] == leg["ID"]]
                         if len(leg_idx_list) > 0:
                             l_idx = leg_idx_list[0]
-                            r_leg = df.iloc[l_idx]
+                            r_leg = st.session_state.df.iloc[l_idx]
                             with st.form(f"form_act_leg_{leg['ID']}"):
                                 st.markdown(f"**Pata: {r_leg['Side']} {r_leg['OptionType']} @ {r_leg['Strike']}**")
                                 p_strike = st.number_input("Strike", value=float(r_leg["Strike"]))
                                 p_delta = st.number_input("Delta", value=float(r_leg["Delta"]), step=0.01)
                                 p_prima = st.number_input("Prima Recibida", value=float(r_leg["PrimaRecibida"]))
                                 p_contracts = st.number_input("Contratos", value=int(r_leg["Contratos"]), min_value=1)
+                                
+                                try:
+                                    cur_expiry = pd.to_datetime(r_leg["Expiry"]).date()
+                                    if pd.isna(cur_expiry):
+                                        cur_expiry = date.today()
+                                except Exception:
+                                    cur_expiry = date.today()
+                                p_expiry = st.date_input("Fecha Vencimiento", value=cur_expiry)
+
+                                sync_all_legs = False
+                                if len(group) > 1:
+                                    sync_all_legs = st.checkbox(
+                                        "Aplicar vencimiento a todas las patas",
+                                        value=False,
+                                        help="Marca esta opción si deseas actualizar el vencimiento en todas las patas de esta estrategia."
+                                    )
+
                                 if st.form_submit_button("💾 Guardar Pata", type="primary", use_container_width=True):
                                     st.session_state.df.at[l_idx, "Strike"] = p_strike
                                     st.session_state.df.at[l_idx, "Delta"] = p_delta
                                     st.session_state.df.at[l_idx, "PrimaRecibida"] = p_prima
                                     st.session_state.df.at[l_idx, "Contratos"] = p_contracts
+                                    st.session_state.df.at[l_idx, "Expiry"] = pd.to_datetime(p_expiry).normalize()
+                                    st.session_state.df.at[l_idx, "MaxProfitUSD"] = p_prima * p_contracts * 100
+                                    st.session_state.df.at[l_idx, "UpdatedAt"] = datetime.now().isoformat()
+
+                                    if sync_all_legs:
+                                        for _, g_leg in group.iterrows():
+                                            g_idx_list = st.session_state.df.index[st.session_state.df["ID"] == g_leg["ID"]]
+                                            if len(g_idx_list) > 0:
+                                                g_i = g_idx_list[0]
+                                                st.session_state.df.at[g_i, "Expiry"] = pd.to_datetime(p_expiry).normalize()
+                                                st.session_state.df.at[g_i, "UpdatedAt"] = datetime.now().isoformat()
+
                                     st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
                                     st.toast("💾 Pata actualizada con éxito.", icon="✅")
                                     st.rerun()
@@ -2703,6 +2732,18 @@ def render_active_portfolio(df):
                             pe_strat = st.selectbox("Estrategia", ESTRATEGIAS, index=ESTRATEGIAS.index(r_edit["Estrategia"]) if r_edit["Estrategia"] in ESTRATEGIAS else 0)
                             pe_setup = st.selectbox("Setup", SETUPS, index=SETUPS.index(r_edit["Setup"]) if "Setup" in r_edit and r_edit["Setup"] in SETUPS else 0)
                             pe_tags = st.text_input("Tags", value=str(r_edit.get("Tags", "") or ""))
+                            
+                            pe_expiry = None
+                            has_diff_exp = group["Expiry"].nunique() > 1
+                            if not has_diff_exp:
+                                try:
+                                    cur_op_exp = pd.to_datetime(r_edit["Expiry"]).date()
+                                    if pd.isna(cur_op_exp):
+                                        cur_op_exp = date.today()
+                                except Exception:
+                                    cur_op_exp = date.today()
+                                pe_expiry = st.date_input("Fecha Vencimiento", value=cur_op_exp)
+
                             pe_notas = st.text_area("Notas", str(r_edit.get("Notas", "") or ""))
                             if st.form_submit_button("💾 Guardar Cambios", type="primary", use_container_width=True):
                                 for g_idx, g_row in group.iterrows():
@@ -2712,6 +2753,9 @@ def render_active_portfolio(df):
                                     st.session_state.df.at[real_i, "Setup"] = pe_setup
                                     st.session_state.df.at[real_i, "Tags"] = pe_tags.strip()
                                     st.session_state.df.at[real_i, "Notas"] = pe_notas
+                                    if not has_diff_exp and pe_expiry is not None:
+                                        st.session_state.df.at[real_i, "Expiry"] = pd.to_datetime(pe_expiry).normalize()
+                                    st.session_state.df.at[real_i, "UpdatedAt"] = datetime.now().isoformat()
                                 st.session_state.df = JournalManager.save_with_backup(st.session_state.df)
                                 st.toast("💾 Operación actualizada.", icon="✅")
                                 st.rerun()

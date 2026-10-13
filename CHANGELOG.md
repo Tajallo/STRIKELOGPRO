@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Edición de Fecha de Vencimiento (`Expiry`) en Patas y Operaciones Activas**:
+  - **Formulario de Pata Individual (`✏️ Editar esta pata`)**: Se añadió el selector de `Fecha Vencimiento` para permitir corregir o actualizar la expiración de cualquier pata abierta (especialmente útil si se olvidó ajustar la fecha al ejecutar un Roll).
+  - **Sincronización Opcional Multi-Pata**: En estrategias con múltiples patas, se incluyó una casilla para aplicar el nuevo vencimiento a todas las patas de la operación simultáneamente.
+  - **Edición a Nivel de Operación (`✏️ Editar`)**: Se integró el campo `Fecha Vencimiento` en el popover general de edición de la operación para posiciones con vencimiento unificado, con control estricto de inicialización (`pe_expiry`).
+  - **Persistencia y Reactividad Inmediata**: Guarda con backup automático (`JournalManager.save_with_backup`), actualizando `UpdatedAt` y recalculando al instante el DTE y los indicadores visuales.
 - **Cálculo de Margen Tradier (Reg-T) vs Asignación 100% Cash y Resumen Ejecutivo en Cartera Activa**:
   - **Margen Real de Tradier (Reg-T Margin / BP Effect)**: Se añadió el cálculo del margen real retenido por Tradier (`calculate_tradier_margin`, aprox. 20% del strike en CSPs vendidas + valor de stock asignado), diferenciándolo del compromiso de asignación total en efectivo (`calculate_position_bp`).
   - **Resumen Informativo Limpio en Cartera Activa y Dashboard**: Se integraron tarjetas KPI ejecutivas directas y sin alarmas visuales:

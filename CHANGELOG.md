@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Sincronización en Vivo y Asistida con Tradier Brokerage / Sigma Trade**:
+  - **Módulo Independiente `tradier_sync.py`**: Integración segura vía API REST de Tradier con lectura de variables protegidas en `.env` (ignorado en `.gitignore`), implementando parser nativo sin requerir dependencias externas adicionales (`python-dotenv`).
+  - **Botón `🔄 Sinc. Tradier` en Cartera Activa**: Permite contrastar con un solo clic los balances de cuenta en tiempo real (`Total Equity`, `Option BP Real`, `Stock BP`) frente al cálculo interno de StrikeLog.
+  - **Reconciliación 1:1 de Posiciones**: Compara al milímetro las posiciones abiertas de StrikeLog contra las de Tradier, verificando strikes, fechas de vencimiento, lado (Sell/Buy), tipo de opción y contratos.
+  - **Gestión Asistida de Novedades**: Detección de operaciones cerradas o roladas en el broker para actualizar su cierre en la bitácora con precio real, y detección de nuevas aperturas en Tradier para agregarlas a la cartera activa con 1 solo clic.
+  - **Visor de Historial de Transacciones**: Pestaña dedicada con las últimas 25 ejecuciones (fills, montos y descripciones) directo desde Tradier.
 - **Edición de Fecha de Vencimiento (`Expiry`) en Patas y Operaciones Activas**:
   - **Formulario de Pata Individual (`✏️ Editar esta pata`)**: Se añadió el selector de `Fecha Vencimiento` para permitir corregir o actualizar la expiración de cualquier pata abierta (especialmente útil si se olvidó ajustar la fecha al ejecutar un Roll).
   - **Sincronización Opcional Multi-Pata**: En estrategias con múltiples patas, se incluyó una casilla para aplicar el nuevo vencimiento a todas las patas de la operación simultáneamente.

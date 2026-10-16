@@ -18,3 +18,7 @@ bitacora_opciones.csv
 STRIKELOG_backup*.py
 scratch/
 
+# Secrets
+.env
+.env.*
+

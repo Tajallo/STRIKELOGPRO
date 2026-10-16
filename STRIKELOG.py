@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta
 from uuid import uuid4
 import plotly.express as px
 import plotly.graph_objects as go
+from tradier_sync import render_tradier_sync_modal
 
 
 # ----------------------------
@@ -1680,15 +1681,25 @@ def render_active_portfolio(df):
         
     active_df = df[df["Estado"] == "Abierta"].copy()
     
-    col_title, col_sync = st.columns([3, 1])
+    col_title, col_sync_cal, col_sync_tradier = st.columns([2.2, 1.2, 1.2])
     with col_title:
         st.header("📂 Cartera Activa")
-    with col_sync:
+    with col_sync_cal:
         st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
         if not active_df.empty:
-            if st.button("🔄 Sincronizar Calendario", key="sync_calendar_btn", type="secondary", width="stretch", help="Sincroniza y contrasta fechas de Earnings y Dividendos con Yahoo Finance y Nasdaq"):
+            if st.button("📅 Sinc. Calendario", key="sync_calendar_btn", type="secondary", width="stretch", help="Sincroniza y contrasta fechas de Earnings y Dividendos con Yahoo Finance y Nasdaq"):
                 sync_active_portfolio_calendars(active_df)
-    
+    with col_sync_tradier:
+        st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+        if st.button("🔄 Sinc. Tradier", key="sync_tradier_btn", type="primary", width="stretch", help="Sincroniza en tiempo real con Tradier / Sigma Trade: contrasta balances, detecta cierres y nuevas operaciones"):
+            st.session_state["show_tradier_sync"] = True
+
+    # Modal interactivo de sincronización con Tradier
+    if st.session_state.get("show_tradier_sync", False):
+        with st.expander("⚡ **Asistente de Sincronización Tradier / Sigma Trade**", expanded=True):
+            render_tradier_sync_modal(JournalManager, st.session_state.df)
+        st.divider()
+
     # Informe de verificación multi-fuente si está disponible
     if "calendar_sync_report" in st.session_state and st.session_state["calendar_sync_report"]:
         with st.expander("📅 **Informe de Verificación Multi-Fuente (Yahoo Finance & Nasdaq)**", expanded=True):

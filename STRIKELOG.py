@@ -103,6 +103,43 @@ def calculate_tradier_margin(row) -> float:
         pass
     return 0.0
 
+
+def calculate_open_positions_net_otm_profit(df_full: pd.DataFrame, open_df: pd.DataFrame) -> tuple[float, float]:
+    """
+    Calcula:
+    1. open_primas_gross: Crédito bruto de primas recibidas en las patas abiertas actuales.
+    2. net_profit_if_otm: Beneficio neto real si todas las opciones expiran OTM a $0.00,
+       descontando las pérdidas contables realizadas en rolls y defensas previas de la misma cadena.
+    """
+    open_primas_gross = 0.0
+    net_profit_if_otm = 0.0
+
+    if open_df.empty:
+        return 0.0, 0.0
+
+    for _, r in open_df.iterrows():
+        if r.get("Side", "Sell") != "Sell":
+            continue
+
+        cnt = float(r.get("Contratos", 1.0) or 1.0)
+        prima_act = float(r.get("PrimaRecibida", 0.0) or 0.0) * cnt * 100
+        open_primas_gross += prima_act
+
+        # Rastrear hacia atrás por ParentID para acumular pérdidas/ganancias previas de la cadena
+        pnl_cadena = 0.0
+        curr_parent = r.get("ParentID")
+        while curr_parent and str(curr_parent) not in ["nan", "None", ""]:
+            p_rows = df_full[df_full["ID"] == curr_parent]
+            if p_rows.empty:
+                break
+            p_row = p_rows.iloc[0]
+            pnl_cadena += float(p_row.get("PnL_USD_Realizado", 0.0) or 0.0)
+            curr_parent = p_row.get("ParentID")
+
+        net_profit_if_otm += (prima_act + pnl_cadena)
+
+    return open_primas_gross, net_profit_if_otm
+
 # Columnas actualizadas
 COLUMNS = [
     "ID", "ChainID", "ParentID", "Ticker", "FechaApertura", "Expiry", 
@@ -1126,11 +1163,7 @@ def render_dashboard(df):
 
         # --- MINI-RESUMEN DE CARTERA ACTIVA HOY ---
         open_positions_count = len(open_trades["ChainID"].unique()) if not open_trades.empty else 0
-        open_primas_pending = sum(
-            float(r.get("PrimaRecibida", 0.0) or 0.0) * float(r.get("Contratos", 1.0) or 1.0) * 100
-            for _, r in open_trades.iterrows()
-            if r.get("Side", "Sell") == "Sell"
-        ) if not open_trades.empty else 0.0
+        open_primas_pending, net_profit_otm_dash = calculate_open_positions_net_otm_profit(df, open_trades) if not open_trades.empty else (0.0, 0.0)
         open_bp_total = sum(calculate_position_bp(r) for _, r in open_trades.iterrows()) if not open_trades.empty else 0.0
         open_tradier_margin = sum(calculate_tradier_margin(r) for _, r in open_trades.iterrows()) if not open_trades.empty else 0.0
         acc_cfg_dash = AccountConfig.load()
@@ -1140,7 +1173,14 @@ def render_dashboard(df):
         st.markdown("#### 🚀 Resumen Ejecutivo: Cartera Activa Hoy")
         ca1, ca2, ca3, ca4 = st.columns(4)
         ca1.metric("📦 Posiciones Abiertas", f"{open_positions_count} trade{'s' if open_positions_count != 1 else ''}", help="Operaciones que tienes actualmente en mercado")
-        ca2.metric("💵 Crédito Pendiente (Primas)", f"${open_primas_pending:,.2f}", help="Prima acumulada recibida en las posiciones que siguen abiertas")
+        deficit_dash = open_primas_pending - net_profit_otm_dash
+        ca2.metric(
+            "💵 Crédito Pendiente (Primas)",
+            f"${open_primas_pending:,.0f}",
+            delta=f"Neto OTM: +${net_profit_otm_dash:,.0f}",
+            delta_color="normal",
+            help=f"Crédito bruto de primas abiertas: ${open_primas_pending:,.2f} USD.\n\n🎯 Beneficio neto real si expiran OTM: +${net_profit_otm_dash:,.2f} USD (descontadas pérdidas previas de rolls: -${deficit_dash:,.2f} USD)."
+        )
         ca3.metric("🏦 Margen Bloqueado Tradier", f"${open_tradier_margin:,.2f}", delta=f"Option BP Libre: ${option_bp_dash:,.0f}", delta_color="normal", help=f"Margen real que Tradier/Sigma te bloquea en cuenta Reg-T (~20% en CSPs + valor de stock).\nTe deja aproximadamente ${option_bp_dash:,.0f} de Option BP libre en el broker.")
         ca4.metric("🔒 Asignación 100% Cash", f"${open_bp_total:,.2f}", help="Capital total necesario si todas tus CSPs y acciones fuesen asignadas y pagases el 100% en cash sin apalancamiento.")
 
@@ -1807,18 +1847,14 @@ def render_active_portfolio(df):
     capital_libre = max(0.0, capital_total - total_bp_reserved)
     bp_util_pct = (total_bp_reserved / capital_total * 100.0) if capital_total > 0 else 0.0
 
-    open_primas_pending = sum(
-        float(r.get("PrimaRecibida", 0.0) or 0.0) * float(r.get("Contratos", 1.0) or 1.0) * 100
-        for _, r in active_df.iterrows()
-        if r.get("Side", "Sell") == "Sell"
-    )
+    open_primas_pending, net_profit_if_otm = calculate_open_positions_net_otm_profit(df, active_df)
 
     # 1. Tarjetas KPI de Resumen Simple y Claro
     total_tradier_margin = sum(calculate_tradier_margin(r) for _, r in active_df.iterrows())
     total_cash_secured = sum(calculate_position_bp(r) for _, r in active_df.iterrows())
     option_bp_estimado = max(0.0, capital_total - total_tradier_margin)
 
-    kpi_col1, kpi_col2, kpi_col3, kpi_col4, kpi_col5 = st.columns([1.1, 1.3, 1.3, 1.1, 1.0])
+    kpi_col1, kpi_col2, kpi_col3, kpi_col4, kpi_col5 = st.columns([1.1, 1.3, 1.3, 1.2, 1.0])
     
     kpi_col1.metric(
         "📦 Posiciones Abiertas",
@@ -1840,10 +1876,13 @@ def render_active_portfolio(df):
         help=f"Capital total necesario si todas tus CSPs y acciones fuesen asignadas y pagases el 100% en cash sin apalancamiento."
     )
     
+    rolls_deficit = open_primas_pending - net_profit_if_otm
     kpi_col4.metric(
         "💵 Primas Pendientes",
-        f"${open_primas_pending:,.2f}",
-        help="Crédito acumulado en posiciones abiertas que se convertirá en beneficio si expiran OTM."
+        f"${open_primas_pending:,.0f}",
+        delta=f"Neto OTM: +${net_profit_if_otm:,.0f}",
+        delta_color="normal",
+        help=f"Crédito bruto de primas abiertas: ${open_primas_pending:,.2f} USD.\n\n🎯 BENEFICIO NETO REAL SI TODAS EXPIRAN OTM: +${net_profit_if_otm:,.2f} USD\n(Ya descontadas las pérdidas acumuladas de -${rolls_deficit:,.2f} USD en rolls/ajustes previos de estas mismas cadenas)."
     )
     
     kpi_col5.metric(

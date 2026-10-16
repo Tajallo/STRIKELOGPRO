@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Métrica de Beneficio Neto Real si las Opciones Expiran OTM (`calculate_open_positions_net_otm_profit`)**:
+  - En **Cartera Activa** y en el **Cuadro de Mando (Dashboard)**, la tarjeta **`💵 Primas Pendientes`** ahora desglosa tanto el crédito bruto ingresado (**$4,042 USD**) como el **beneficio neto real si todas expiran OTM (+${net_profit_if_otm:,.0f} USD)**.
+  - El cálculo rastrea recursivamente el árbol de `ParentID` de cada posición activa para deducir las pérdidas/costes contables asumidos en los rolls y defensas pasadas de la misma campaña, dando la cifra matemática exacta de ganancia neta libre de polvo y paja.
 - **Sincronización en Vivo y Asistida con Tradier Brokerage / Sigma Trade**:
   - **Módulo Independiente `tradier_sync.py`**: Integración segura vía API REST de Tradier con lectura de variables protegidas en `.env` (ignorado en `.gitignore`), implementando parser nativo sin requerir dependencias externas adicionales (`python-dotenv`).
   - **Botón `🔄 Sinc. Tradier` en Cartera Activa**: Permite contrastar con un solo clic los balances de cuenta en tiempo real (`Total Equity`, `Option BP Real`, `Stock BP`) frente al cálculo interno de StrikeLog.

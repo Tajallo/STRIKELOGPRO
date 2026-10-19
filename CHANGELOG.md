@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Aislamiento y Blindaje de Scalping en Acciones (Medved Trader) en Tradier Sync**:
+  - **Filtro Automático Anti-Scalping**: La reconciliación con Tradier (`tradier_sync.py`) ahora discrimina automáticamente cualquier posición de acciones puras (`is_option = False`) que no pertenezca a StrikeLog, omitiéndola automáticamente para que no aparezca en *"➕ Nuevas en Broker"* ni altere la bitácora de opciones.
+  - **Desplegable Opcional de Acciones para Covered Calls / La Rueda**: Si el trader compra 100, 200 o más acciones deliberadamente para vender Covered Calls, se muestra un desplegable opcional con el botón `➕ Añadir a Rueda (CC)` para incorporarlas con 1 solo clic como `Long Stock`, calculando contratos (múltiplos de 100) y costo base exactos.
+  - **Preservación 100% Intacta de Asignaciones de CSP**: Las acciones provenientes de asignación en la Rueda (como `GAP` y `NKE`) se siguen reconociendo y emparejando al 100% contra Tradier.
+  - **Filtro de Opciones en Historial de Órdenes**: Se añadió el filtro `🎯 Filtrar solo Opciones (ocultar compras/ventas de acciones de scalping)` (activo por defecto) y se amplió el límite a 100 eventos en la pestaña de historial reciente, evitando que órdenes de scalping de Medved saturen la vista.
+
 - **Métrica de Beneficio Neto Real si las Opciones Expiran OTM (`calculate_open_positions_net_otm_profit`)**:
   - En **Cartera Activa** y en el **Cuadro de Mando (Dashboard)**, la tarjeta **`💵 Primas Pendientes`** ahora desglosa tanto el crédito bruto ingresado (**$4,042 USD**) como el **beneficio neto real si todas expiran OTM (+${net_profit_if_otm:,.0f} USD)**.
   - El cálculo rastrea recursivamente el árbol de `ParentID` de cada posición activa para deducir las pérdidas/costes contables asumidos en los rolls y defensas pasadas de la misma campaña, dando la cifra matemática exacta de ganancia neta libre de polvo y paja.

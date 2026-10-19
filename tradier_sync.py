@@ -150,7 +150,7 @@ def fetch_open_positions(token: Optional[str] = None, account_id: Optional[str] 
         return {"error": f"Error de conexión con Tradier: {e}"}
 
 
-def fetch_recent_history(token: Optional[str] = None, account_id: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
+def fetch_recent_history(token: Optional[str] = None, account_id: Optional[str] = None, limit: int = 100) -> Dict[str, Any]:
     """Obtiene el historial de transacciones (fills, assignments, fees) recientes de Tradier."""
     t = token or TRADIER_TOKEN
     acc = account_id or ACCOUNT_ID
@@ -247,13 +247,17 @@ def reconcile_tradier_with_strikelog(strikelog_open_df: pd.DataFrame, tradier_po
                 "log_record": log_pos.to_dict()
             })
             
-    # Las que quedaron en tradier_pool no existen en StrikeLog
-    new_in_tradier = tradier_pool
+    # Las que quedaron en tradier_pool no existen en StrikeLog:
+    # Filtramos para que SOLO las OPCIONES se consideren 'nuevas en broker' a incorporar en StrikeLog.
+    # Cualquier acción de scalping (Medved Trader, etc.) se omite de 'new_in_tradier' para mantener StrikeLog 100% puro de opciones.
+    new_in_tradier = [tp for tp in tradier_pool if tp.get("is_option", False)]
+    ignored_stocks = [tp for tp in tradier_pool if not tp.get("is_option", False)]
     
     return {
         "matched": matched,
         "missing_in_tradier": missing_in_tradier,
-        "new_in_tradier": new_in_tradier
+        "new_in_tradier": new_in_tradier,
+        "ignored_stocks": ignored_stocks
     }
 
 
@@ -316,8 +320,63 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame):
     tab_status, tab_history = st.tabs(["📊 Estado de Posiciones", "📜 Historial Reciente de Órdenes"])
 
     with tab_status:
+        n_ignored = len(recon.get("ignored_stocks", []))
+        if n_ignored > 0:
+            st.info(f"🛡️ **Filtro de Opciones Activo:** Se detectaron {n_ignored} posición(es) de acciones en Tradier (ej: scalping en Medved Trader) que han sido omitidas automáticamente para mantener StrikeLog enfocado exclusivamente en opciones.")
+            with st.expander(f"👁️ Ver {n_ignored} posición(es) de acciones en broker (opcional: añadir para Covered Calls)", expanded=False):
+                st.caption("Estas acciones están omitidas para no mezclar scalping con opciones. Si compraste 100 acciones expresamente para vender Covered Calls en la Rueda, puedes incorporarlas aquí:")
+                for idx_ig, ig in enumerate(recon["ignored_stocks"]):
+                    c_ig1, c_ig2 = st.columns([3, 1.5])
+                    c_ig1.markdown(f"**{ig['ticker']}** | {ig['quantity']:.0f} acciones @ ${ig['unit_premium']:.2f} (Total: ${abs(ig['cost_basis']):,.2f})")
+                    if c_ig2.button(f"➕ Añadir a Rueda (CC)", key=f"btn_add_stock_wheel_{idx_ig}"):
+                        new_id = str(uuid4())[:8]
+                        new_rec = {
+                            "ID": new_id,
+                            "ChainID": new_id,
+                            "ParentID": pd.NA,
+                            "Ticker": ig["ticker"],
+                            "FechaApertura": pd.to_datetime(ig["date_acquired"]).normalize() if ig["date_acquired"] else pd.Timestamp.now().normalize(),
+                            "Expiry": pd.to_datetime("2099-12-31").normalize(),
+                            "Estrategia": "Long Stock (Asignación)",
+                            "Setup": "La Rueda (The Wheel)",
+                            "Tags": "la-rueda,covered-call",
+                            "Side": "Buy",
+                            "OptionType": "Stock",
+                            "Strike": ig["unit_premium"],
+                            "Delta": 1.0,
+                            "PrimaRecibida": 0.0,
+                            "CostoCierre": 0.0,
+                            "Contratos": ig["contratos"],
+                            "BuyingPower": ig["unit_premium"] * 100 * ig["contratos"],
+                            "BreakEven": ig["unit_premium"],
+                            "BreakEven_Upper": 0.0,
+                            "POP": 0.0,
+                            "Estado": "Abierta",
+                            "Notas": f"{int(ig['quantity'])} acciones incorporadas desde Tradier para Covered Calls ({ig['raw_symbol']})",
+                            "UpdatedAt": datetime.now().isoformat(),
+                            "FechaCierre": pd.NA,
+                            "MaxProfitUSD": 0.0,
+                            "ProfitPct": 0.0,
+                            "PnL_Capital_Pct": 0.0,
+                            "PrecioAccionCierre": 0.0,
+                            "PnL_USD_Realizado": 0.0,
+                            "Comisiones": 0.0,
+                            "EarningsDate": pd.NA,
+                            "DividendosDate": pd.NA,
+                            "Broker": "Tradier",
+                            "WheelParentChainID": pd.NA,
+                            "CostBaseReal": ig["unit_premium"],
+                            "CoveredCallChainID": pd.NA,
+                            "CoveredCallPrima": 0.0,
+                            "WheelLeg": "long_stock"
+                        }
+                        new_df = pd.concat([df.dropna(how='all', axis=0), pd.DataFrame([new_rec])], ignore_index=True)
+                        st.session_state.df = JournalManager.save_with_backup(new_df)
+                        st.success(f"Acciones de {ig['ticker']} agregadas a la cartera para Covered Calls.")
+                        st.rerun()
+
         if n_missing == 0 and n_new == 0:
-            st.success("🎉 **¡Sincronización Perfecta!** Todas las posiciones abiertas en StrikeLog coinciden exactamente con tu cartera de Tradier / Sigma Trade.")
+            st.success("🎉 **¡Sincronización Perfecta!** Todas las posiciones abiertas en StrikeLog coinciden exactamente con tu cartera de opciones en Tradier / Sigma Trade.")
         
         # Tabla de coincidentes
         if n_matched > 0:
@@ -417,22 +476,40 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame):
                     st.rerun()
 
     with tab_history:
-        st.caption("Últimas 25 operaciones ejecutadas en Tradier / Sigma Trade.")
-        hist_res = fetch_recent_history(limit=25)
+        st.caption("Últimas órdenes ejecutadas en Tradier / Sigma Trade.")
+        filter_options_only = st.checkbox(
+            "🎯 Filtrar solo Opciones (ocultar compras/ventas de acciones de scalping)",
+            value=True,
+            key="tradier_filter_options_only",
+            help="Al estar activo, oculta todas las transacciones de acciones para que tus operaciones de scalping en Medved Trader no saturen el historial de opciones."
+        )
+        hist_res = fetch_recent_history(limit=100)
         if hist_res.get("success"):
             events = hist_res.get("events", [])
             h_rows = []
             for ev in events:
                 trade = ev.get("trade") or {}
+                trade_type = str(trade.get("trade_type", "")).lower()
+                sym = str(trade.get("symbol", "")).strip().upper()
+                is_opt = (trade_type == "option") or bool(re.match(r"^[A-Z]+\d{6}[CP]\d{8}$", sym))
+                
+                if filter_options_only and not is_opt:
+                    continue
+                
+                tipo_display = "Opción" if is_opt else (trade_type.capitalize() if trade_type else "Acción")
                 h_rows.append({
                     "Fecha": ev.get("date", "")[:10],
-                    "Tipo": ev.get("type"),
+                    "Instrumento": tipo_display,
+                    "Tipo": ev.get("type", "-"),
                     "Descripción": trade.get("description") or ev.get("description", "-"),
                     "Cantidad": trade.get("quantity", "-"),
                     "Precio": f"${trade.get('price', 0.0):.2f}" if trade.get("price") is not None else "-",
                     "Monto ($)": f"${float(ev.get('amount', 0.0)):,.2f}"
                 })
-            st.dataframe(pd.DataFrame(h_rows), use_container_width=True, hide_index=True)
+            if h_rows:
+                st.dataframe(pd.DataFrame(h_rows), use_container_width=True, hide_index=True)
+            else:
+                st.info("No se encontraron transacciones de opciones en los eventos recientes.")
         else:
             st.info("No se pudieron cargar eventos recientes de historial.")
 

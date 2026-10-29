@@ -2339,7 +2339,7 @@ def render_active_portfolio(df):
         if alerts_list:
             title_parts.append(" ".join(alerts_list))
             
-        header_title = " • ".join(title_parts)
+        header_title = " • ".join(title_parts).replace("$", r"\$")
         
         # Layout de Tarjeta
         c_dte, c_card = st.columns([1, 10])

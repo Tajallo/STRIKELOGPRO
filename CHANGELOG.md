@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Indicador de P/L del Broker para Break-Even Global en Posiciones Roladas (`P/L Tradier/IB BE`)**:
+  - **Claridad Total en Posiciones Defendidas/Roladas**: Al rolar opciones, los brokers (como Tradier o Interactive Brokers) reinician el P/L no realizado a cero en el nuevo contrato, lo que suele generar la falsa ilusión de estar ganando cuando la posición general aún arrastra pérdidas previas.
+  - **Etiqueta en el Encabezado de Cartera Activa**: Para cualquier posición con rolls activos (`num_rolls > 0`), se añade automáticamente junto a `🎯 Cierre BE Opción` el P/L exacto que debe verse en la pantalla del broker para alcanzar el Break-Even global (ej: `🎯 Cierre BE Opción: $0.42 (P/L Tradier BE: +$923)`).
+  - **Métrica y Tooltip Enriquecidos**: La métrica `Cierre BE Opción` dentro de la tarjeta ahora incorpora el subtítulo `Tradier BE: +$923` con un tooltip explicativo que desglosa el número de rolls compensados y el importe total en dólares de los ajustes previos.
+
 - **Aislamiento y Blindaje de Scalping en Acciones (Medved Trader) en Tradier Sync**:
   - **Filtro Automático Anti-Scalping**: La reconciliación con Tradier (`tradier_sync.py`) ahora discrimina automáticamente cualquier posición de acciones puras (`is_option = False`) que no pertenezca a StrikeLog, omitiéndola automáticamente para que no aparezca en *"➕ Nuevas en Broker"* ni altere la bitácora de opciones.
   - **Desplegable Opcional de Acciones para Covered Calls / La Rueda**: Si el trader compra 100, 200 o más acciones deliberadamente para vender Covered Calls, se muestra un desplegable opcional con el botón `➕ Añadir a Rueda (CC)` para incorporarlas con 1 solo clic como `Long Stock`, calculando contratos (múltiplos de 100) y costo base exactos.

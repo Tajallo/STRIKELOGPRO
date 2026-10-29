@@ -2290,13 +2290,31 @@ def render_active_portfolio(df):
         else:
             strategy_display = f"{effective_strategy}"
         
+        # Broker de la posición
+        broker_name = str(first_row.get("Broker") or "Tradier").strip()
+        if broker_name not in ["IB", "Tradier"]:
+            broker_name = "Tradier"
+
+        # P/L que debes ver en el broker en la pata actual para estar en Break-Even global de la campaña
+        tradier_pnl_str = ""
+        if num_rolls > 0 and abs(realized_pnl_chain) > 0.01:
+            tradier_pnl_be = -realized_pnl_chain
+            if tradier_pnl_be > 0:
+                tradier_pnl_str = f"+${tradier_pnl_be:,.0f}" if abs(tradier_pnl_be - round(tradier_pnl_be)) < 0.005 else f"+${tradier_pnl_be:,.2f}"
+            elif tradier_pnl_be < 0:
+                tradier_pnl_str = f"-${abs(tradier_pnl_be):,.0f}" if abs(tradier_pnl_be - round(tradier_pnl_be)) < 0.005 else f"-${abs(tradier_pnl_be):,.2f}"
+
         # Etiqueta de Break Even según tipo de posición
         if is_stock_position:
             be_opt_label = f"📌 BE Venta Stock: **${calculated_be:.2f}**"
         elif is_dual_be and calculated_be_upper > 0:
             be_opt_label = f"🎯 BE Subyacente: **${calculated_be:.2f} – ${calculated_be_upper:.2f}**"
         else:
-            be_opt_label = f"🎯 Cierre BE Opción: **${net_credit_chain:.2f}**"
+            if tradier_pnl_str:
+                be_opt_label = f"🎯 Cierre BE Opción: **${net_credit_chain:.2f}** (P/L {broker_name} BE: **{tradier_pnl_str}**)"
+            else:
+                be_opt_label = f"🎯 Cierre BE Opción: **${net_credit_chain:.2f}**"
+
 
         # Construir partes del encabezado con viñetas limpias (•)
         title_parts = [f"**{ticker}**"]
@@ -2374,7 +2392,20 @@ def render_active_portfolio(df):
                 if is_stock_position:
                     m3.metric("BE Venta Stock", f"${calculated_be:,.2f}", help="Precio por acción para vender las acciones y quedar en $0.00 PnL global")
                 else:
-                    m3.metric("Cierre BE Opción", f"${net_credit_chain:,.2f}/acc", help="Precio máximo de la opción para recomprar hoy sin pérdidas en la campaña total")
+                    if tradier_pnl_str:
+                        m3.metric(
+                            "Cierre BE Opción",
+                            f"${net_credit_chain:,.2f}/acc",
+                            delta=f"{broker_name} BE: {tradier_pnl_str}",
+                            delta_color="off",
+                            help=(
+                                f"Precio máximo de recompra para no perder en la campaña total.\n"
+                                f"En {broker_name} (P/L Posición) necesitas ver {tradier_pnl_str} para compensar "
+                                f"el resultado de los {num_rolls} rolls anteriores (${abs(realized_pnl_chain):,.2f} USD)."
+                            )
+                        )
+                    else:
+                        m3.metric("Cierre BE Opción", f"${net_credit_chain:,.2f}/acc", help="Precio máximo de la opción para recomprar hoy sin pérdidas en la campaña total")
                     
                 m4.metric("100% Cash Asignación", f"${total_bp:,.2f}", help="Efectivo necesario si se asigna la posición y compras las acciones al 100% en cash.")
                 

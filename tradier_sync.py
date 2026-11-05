@@ -261,13 +261,37 @@ def reconcile_tradier_with_strikelog(strikelog_open_df: pd.DataFrame, tradier_po
     }
 
 
-def render_tradier_sync_modal(JournalManager, df: pd.DataFrame):
+DEFAULT_ESTRATEGIAS = [
+    "CSP (Cash Secured Put)",
+    "La Rueda (The Wheel)",
+    "CC (Covered Call)", "PMCC (Poor Man's Covered Call)",
+    "Collar",
+    "Put Credit Spread", "Call Credit Spread", 
+    "Put Debit Spread", "Call Debit Spread",
+    "Iron Condor", "Iron Fly",
+    "Jade Lizard", "Big Lizard",
+    "Butterfly", "Broken Wing Butterfly (BWB)", "Flyagonal",
+    "Strangle", "Straddle",
+    "Long Strangle", "Long Straddle",
+    "Calendar", "Diagonal",
+    "Ratio Spread", "Backspread", 
+    "Covered Put",
+    "Short Put (Naked)", "Short Call (Naked)",
+    "Long Call", "Long Put",
+    "Long Stock", "Long Stock (Asignación)",
+    "Custom / Other"
+]
+
+
+def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, estrategias: Optional[List[str]] = None):
     """
     Renderiza el diálogo modal / asistente interactivo de sincronización con Tradier.
     Permite contrastar balances, verificar coincidencia 1:1 e importar o conciliar posiciones.
     """
     import streamlit as st
     from uuid import uuid4
+
+    strat_list = list(estrategias) if estrategias else DEFAULT_ESTRATEGIAS
 
     st.markdown("### 🔄 Sincronización en Vivo con Tradier / Sigma Trade")
     st.caption("Contrasta tus posiciones y balances en tiempo real contra la API oficial de Tradier Brokerage.")
@@ -394,7 +418,7 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame):
                         "Contratos": tp["contratos"],
                         "Prima / Base": f"${tp['unit_premium']:.2f}"
                     })
-                st.dataframe(pd.DataFrame(matched_rows), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(matched_rows), width="stretch", hide_index=True)
 
         # Discrepancias: Faltan en Tradier
         if n_missing > 0:
@@ -421,15 +445,29 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame):
         if n_new > 0:
             st.info(f"➕ **{n_new} posición(es) nueva(s) en Tradier listas para incorporar a StrikeLog:**")
             for idx_n, nw in enumerate(recon["new_in_tradier"]):
-                c_n1, c_n2, c_n3 = st.columns([3, 1.5, 1.5])
+                c_n1, c_n2, c_n3 = st.columns([2.5, 2.0, 1.2])
                 c_n1.markdown(f"**{nw['ticker']}** | {nw['side']} {nw['option_type']} Strike ${nw['strike']} Exp: {nw['expiry']} (x{nw['contratos']} @ ${nw['unit_premium']})")
                 
-                # Sugerir estrategia
-                strat_suggest = "CSP (Cash Secured Put)" if nw["side"] == "Sell" and nw["option_type"] == "Put" else ("CC (Covered Call)" if nw["side"] == "Sell" and nw["option_type"] == "Call" else "Long Stock")
-                sel_strat = c_n2.selectbox("Estrategia", ["CSP (Cash Secured Put)", "CC (Covered Call)", "Long Stock", "Otro"], index=0, key=f"rec_strat_{idx_n}")
+                # Sugerir estrategia inteligente según Side y OptionType
+                if nw["side"] == "Sell" and nw["option_type"] == "Put":
+                    strat_suggest = "CSP (Cash Secured Put)"
+                elif nw["side"] == "Sell" and nw["option_type"] == "Call":
+                    strat_suggest = "CC (Covered Call)"
+                elif nw["side"] == "Buy" and nw["option_type"] == "Call":
+                    strat_suggest = "Long Call"
+                elif nw["side"] == "Buy" and nw["option_type"] == "Put":
+                    strat_suggest = "Long Put"
+                elif nw["option_type"] == "Stock":
+                    strat_suggest = "Long Stock"
+                else:
+                    strat_suggest = "CSP (Cash Secured Put)"
+                
+                default_idx = strat_list.index(strat_suggest) if strat_suggest in strat_list else 0
+                sel_strat = c_n2.selectbox("Estrategia", strat_list, index=default_idx, key=f"rec_strat_{idx_n}")
                 
                 if c_n3.button("➕ Añadir a Cartera", key=f"btn_add_rec_{idx_n}", type="primary"):
                     new_id = str(uuid4())[:8]
+                    setup_val = "La Rueda (The Wheel)" if ("CSP" in sel_strat or "Rueda" in sel_strat or "CC (" in sel_strat) else "Otro"
                     new_rec = {
                         "ID": new_id,
                         "ChainID": new_id,
@@ -438,7 +476,7 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame):
                         "FechaApertura": pd.to_datetime(nw["date_acquired"]).normalize() if nw["date_acquired"] else pd.Timestamp.now().normalize(),
                         "Expiry": pd.to_datetime(nw["expiry"]).normalize() if nw["expiry"] else pd.Timestamp.now().normalize(),
                         "Estrategia": sel_strat,
-                        "Setup": "La Rueda (The Wheel)",
+                        "Setup": setup_val,
                         "Tags": "TradierSync",
                         "Side": nw["side"],
                         "OptionType": nw["option_type"],
@@ -507,7 +545,7 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame):
                     "Monto ($)": f"${float(ev.get('amount', 0.0)):,.2f}"
                 })
             if h_rows:
-                st.dataframe(pd.DataFrame(h_rows), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(h_rows), width="stretch", hide_index=True)
             else:
                 st.info("No se encontraron transacciones de opciones en los eventos recientes.")
         else:

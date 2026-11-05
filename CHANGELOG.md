@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Corrección de Error en Sincronización con Tradier y Manejo Seguro de Nulos (`TypeError: boolean value of NA is ambiguous`)**:
+  - **Soporte Robusto para `pd.NA`**: En `calculate_open_positions_net_otm_profit` y en el árbol genealógico de campañas de `JournalManager`, se corrigió la evaluación booleana directa sobre `ParentID` (`while curr_parent and ...`), sustituyéndola por comprobaciones seguras con `pd.notna(...)` y un registro de identificadores visitados (`seen_parents`).
+  - **Catálogo Completo de Estrategias al Añadir desde Tradier**: Al incorporar nuevas posiciones detectadas en Tradier, el desplegable de `Estrategia` ahora despliega las **32 estrategias completas** de StrikeLog (Put/Call Credit Spreads, Iron Condor, Strangle, Straddle, Butterflies, Diagonales, etc.) con preselección inteligente según lado y tipo de opción, en lugar de estar restringido únicamente a 4 opciones básicas.
+  - **Helpers de Conversión Segura (`safe_float`, `safe_int`, `safe_str`)**: Centralización de funciones auxiliares seguras ante `pd.NA`, `np.nan` y `None` para evitar que campos nulos procedentes de la importación o sincronización provoquen excepciones de ambigüedad booleana en Streamlit.
+  - **Deprecación de Streamlit `use_container_width` en DataFrames**: Se actualizaron las tablas interactivas de `tradier_sync.py` y `STRIKELOG.py` a `width="stretch"` según los nuevos estándares de Streamlit para eliminar advertencias en consola.
+
 - **Indicador de P/L del Broker para Break-Even Global en Posiciones Roladas (`P/L Tradier/IB BE`)**:
   - **Claridad Total en Posiciones Defendidas/Roladas**: Al rolar opciones, los brokers (como Tradier o Interactive Brokers) reinician el P/L no realizado a cero en el nuevo contrato, lo que suele generar la falsa ilusión de estar ganando cuando la posición general aún arrastra pérdidas previas.
   - **Etiqueta en el Encabezado de Cartera Activa**: Para cualquier posición con rolls activos (`num_rolls > 0`), se añade automáticamente junto a `🎯 Cierre BE Opción` el P/L exacto que debe verse en la pantalla del broker para alcanzar el Break-Even global (ej: `🎯 Cierre BE Opción: $0.42 (P/L Tradier BE: +$923)`).

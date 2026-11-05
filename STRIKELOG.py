@@ -51,6 +51,31 @@ class AccountConfig:
             pass
 
 
+def safe_float(val, default=0.0) -> float:
+    if pd.isna(val) or val is None or val == "":
+        return default
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
+
+def safe_int(val, default=1) -> int:
+    if pd.isna(val) or val is None or val == "":
+        return default
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return default
+
+
+def safe_str(val, default="") -> str:
+    if pd.isna(val) or val is None:
+        return default
+    s = str(val)
+    return default if s.strip().lower() in ["<na>", "nan", "none", ""] else s
+
+
 def calculate_position_bp(row) -> float:
     """
     Calcula el Buying Power / Capital Reservado real de una posición.
@@ -60,15 +85,15 @@ def calculate_position_bp(row) -> float:
     - Si el registro ya tiene un BuyingPower > 0 definido explícitamente, se respeta ese valor.
     """
     try:
-        bp_val = float(row.get("BuyingPower", 0.0) or 0.0)
+        bp_val = safe_float(row.get("BuyingPower"), 0.0)
         if bp_val > 0.0:
             return bp_val
         
-        strat = str(row.get("Estrategia", ""))
-        side = str(row.get("Side", ""))
-        opt_type = str(row.get("OptionType", ""))
-        strike = float(row.get("Strike", 0.0) or 0.0)
-        contratos = int(row.get("Contratos", 1) or 1)
+        strat = safe_str(row.get("Estrategia"))
+        side = safe_str(row.get("Side"))
+        opt_type = safe_str(row.get("OptionType"))
+        strike = safe_float(row.get("Strike"), 0.0)
+        contratos = safe_int(row.get("Contratos"), 1)
         
         # CSP o Venta de Put simple (que requiere colateral en efectivo)
         if ("CSP" in strat or (side == "Sell" and opt_type == "Put" and "Spread" not in strat and "Iron" not in strat)) and strike > 0:
@@ -89,11 +114,11 @@ def calculate_tradier_margin(row) -> float:
     - Covered Calls: $0 (cubierto por las acciones poseídas).
     """
     try:
-        strat = str(row.get("Estrategia", ""))
-        side = str(row.get("Side", ""))
-        opt_type = str(row.get("OptionType", ""))
-        strike = float(row.get("Strike", 0.0) or 0.0)
-        contratos = int(row.get("Contratos", 1) or 1)
+        strat = safe_str(row.get("Estrategia"))
+        side = safe_str(row.get("Side"))
+        opt_type = safe_str(row.get("OptionType"))
+        strike = safe_float(row.get("Strike"), 0.0)
+        contratos = safe_int(row.get("Contratos"), 1)
         
         if ("CSP" in strat or (side == "Sell" and opt_type == "Put" and "Spread" not in strat and "Iron" not in strat)) and strike > 0:
             return strike * 100.0 * contratos * 0.20
@@ -118,22 +143,24 @@ def calculate_open_positions_net_otm_profit(df_full: pd.DataFrame, open_df: pd.D
         return 0.0, 0.0
 
     for _, r in open_df.iterrows():
-        if r.get("Side", "Sell") != "Sell":
+        if safe_str(r.get("Side"), "Sell") != "Sell" or safe_str(r.get("OptionType")) == "Stock":
             continue
 
-        cnt = float(r.get("Contratos", 1.0) or 1.0)
-        prima_act = float(r.get("PrimaRecibida", 0.0) or 0.0) * cnt * 100
+        cnt = safe_float(r.get("Contratos"), 1.0)
+        prima_act = safe_float(r.get("PrimaRecibida"), 0.0) * cnt * 100
         open_primas_gross += prima_act
 
         # Rastrear hacia atrás por ParentID para acumular pérdidas/ganancias previas de la cadena
         pnl_cadena = 0.0
         curr_parent = r.get("ParentID")
-        while curr_parent and str(curr_parent) not in ["nan", "None", ""]:
+        seen_parents = set()
+        while pd.notna(curr_parent) and str(curr_parent).strip() not in ["", "nan", "None", "<NA>"] and curr_parent not in seen_parents:
+            seen_parents.add(curr_parent)
             p_rows = df_full[df_full["ID"] == curr_parent]
             if p_rows.empty:
                 break
             p_row = p_rows.iloc[0]
-            pnl_cadena += float(p_row.get("PnL_USD_Realizado", 0.0) or 0.0)
+            pnl_cadena += safe_float(p_row.get("PnL_USD_Realizado"), 0.0)
             curr_parent = p_row.get("ParentID")
 
         net_profit_if_otm += (prima_act + pnl_cadena)
@@ -283,7 +310,7 @@ class JournalManager:
             old_len = len(related_ids)
             children = df[df["ParentID"].isin(related_ids)]["ID"].dropna().tolist()
             parents = df[df["ID"].isin(related_ids)]["ParentID"].dropna().tolist()
-            parents = [p for p in parents if p and str(p) != 'nan']
+            parents = [p for p in parents if pd.notna(p) and str(p).strip() not in ['', 'nan', 'None', '<NA>']]
             chains = df[df["ID"].isin(related_ids)]["ChainID"].dropna().tolist()
             wheel_chains = df[df["ID"].isin(related_ids)]["WheelParentChainID"].dropna().tolist()
             
@@ -1737,7 +1764,7 @@ def render_active_portfolio(df):
     # Modal interactivo de sincronización con Tradier
     if st.session_state.get("show_tradier_sync", False):
         with st.expander("⚡ **Asistente de Sincronización Tradier / Sigma Trade**", expanded=True):
-            render_tradier_sync_modal(JournalManager, st.session_state.df)
+            render_tradier_sync_modal(JournalManager, st.session_state.df, estrategias=ESTRATEGIAS)
         st.divider()
 
     # Informe de verificación multi-fuente si está disponible
@@ -1745,7 +1772,7 @@ def render_active_portfolio(df):
         with st.expander("📅 **Informe de Verificación Multi-Fuente (Yahoo Finance & Nasdaq)**", expanded=True):
             st.caption("ℹ️ Datos contrastados automáticamente entre Yahoo Finance y Nasdaq. En empresas que reparten dividendos sin fecha oficial publicada para el próximo trimestre, se calcula la proyección del ciclo trimestral.")
             rep_df = pd.DataFrame(st.session_state["calendar_sync_report"])
-            st.dataframe(rep_df, use_container_width=True, hide_index=True)
+            st.dataframe(rep_df, width="stretch", hide_index=True)
             if st.button("✕ Ocultar Informe", key="close_sync_report_btn"):
                 del st.session_state["calendar_sync_report"]
                 st.rerun()
@@ -2241,12 +2268,12 @@ def render_active_portfolio(df):
 
         # Long Stock: no tiene lógica de opciones — usar el BE guardado (CostBaseReal)
         if is_stock_position:
-            calculated_be = float(first_row.get("BreakEven", 0) or 0)
+            calculated_be = safe_float(first_row.get("BreakEven"), 0.0)
             calculated_be_upper = 0.0
         elif is_cc_rueda:
             # CC vinculado a acciones: BE = Strike + prima de ESTA pata únicamente.
-            strike_cc = float(first_row.get("Strike", 0) or 0)
-            prima_actual_cc = abs(float(first_row.get("PrimaRecibida", 0) or 0))
+            strike_cc = safe_float(first_row.get("Strike"), 0.0)
+            prima_actual_cc = abs(safe_float(first_row.get("PrimaRecibida"), 0.0))
             calculated_be = strike_cc + prima_actual_cc   # BE pata individual
             calculated_be_upper = 0.0
             legs_for_be = [{"Side": first_row["Side"], "Type": first_row["OptionType"],
@@ -2256,15 +2283,15 @@ def render_active_portfolio(df):
                 if is_dual_be:
                     calculated_be, calculated_be_upper = suggest_breakeven(effective_strategy, legs_for_be, net_credit_chain)
                     if calculated_be == 0.0 and calculated_be_upper == 0.0:
-                        calculated_be = float(first_row["BreakEven"] or 0)
-                        calculated_be_upper = float(first_row.get("BreakEven_Upper", 0) or 0)
+                        calculated_be = safe_float(first_row.get("BreakEven"), 0.0)
+                        calculated_be_upper = safe_float(first_row.get("BreakEven_Upper"), 0.0)
                 else:
                     calculated_be, _ = suggest_breakeven(effective_strategy, legs_for_be, net_credit_chain)
                     if calculated_be == 0.0:
-                        calculated_be = float(first_row["BreakEven"] or 0)
+                        calculated_be = safe_float(first_row.get("BreakEven"), 0.0)
             except Exception as e:
-                calculated_be = float(first_row["BreakEven"] or 0)
-                calculated_be_upper = float(first_row.get("BreakEven_Upper", 0) or 0)
+                calculated_be = safe_float(first_row.get("BreakEven"), 0.0)
+                calculated_be_upper = safe_float(first_row.get("BreakEven_Upper"), 0.0)
 
         formatted_net = f"${net_credit_chain:,.2f}"
         
@@ -2291,7 +2318,7 @@ def render_active_portfolio(df):
             strategy_display = f"{effective_strategy}"
         
         # Broker de la posición
-        broker_name = str(first_row.get("Broker") or "Tradier").strip()
+        broker_name = safe_str(first_row.get("Broker"), "Tradier").strip()
         if broker_name not in ["IB", "Tradier"]:
             broker_name = "Tradier"
 
@@ -2812,7 +2839,7 @@ def render_active_portfolio(df):
                             pe_ticker = st.text_input("Ticker", r_edit["Ticker"])
                             pe_strat = st.selectbox("Estrategia", ESTRATEGIAS, index=ESTRATEGIAS.index(r_edit["Estrategia"]) if r_edit["Estrategia"] in ESTRATEGIAS else 0)
                             pe_setup = st.selectbox("Setup", SETUPS, index=SETUPS.index(r_edit["Setup"]) if "Setup" in r_edit and r_edit["Setup"] in SETUPS else 0)
-                            pe_tags = st.text_input("Tags", value=str(r_edit.get("Tags", "") or ""))
+                            pe_tags = st.text_input("Tags", value=safe_str(r_edit.get("Tags"), ""))
                             
                             pe_expiry = None
                             has_diff_exp = group["Expiry"].nunique() > 1
@@ -2825,7 +2852,7 @@ def render_active_portfolio(df):
                                     cur_op_exp = date.today()
                                 pe_expiry = st.date_input("Fecha Vencimiento", value=cur_op_exp)
 
-                            pe_notas = st.text_area("Notas", str(r_edit.get("Notas", "") or ""))
+                            pe_notas = st.text_area("Notas", safe_str(r_edit.get("Notas"), ""))
                             if st.form_submit_button("💾 Guardar Cambios", type="primary", use_container_width=True):
                                 for g_idx, g_row in group.iterrows():
                                     real_i = st.session_state.df.index[st.session_state.df["ID"] == g_row["ID"]][0]
@@ -5744,8 +5771,8 @@ def render_history(df):
             "Prima_Neta": prima_total,
             "Contratos":  int(main_leg["Contratos"]),
             "DIT":        dit,
-            "Setup":      main_leg.get("Setup", "") or "",
-            "Tags":       main_leg.get("Tags", "") or "",
+            "Setup":      safe_str(main_leg.get("Setup"), ""),
+            "Tags":       safe_str(main_leg.get("Tags"), ""),
             "StrikesStr": strikes_str,
             "_group":     group,
             "_legs":      len(group),
@@ -6033,7 +6060,7 @@ def render_inline_edit(trade_id, in_dialog=False):
         ce1, ce2, ce3, ce4 = st.columns(4)
         n_setup = ce1.selectbox("Setup", SETUPS, index=SETUPS.index(row["Setup"]) if "Setup" in row and row["Setup"] in SETUPS else 0)
         n_estrategia = ce2.selectbox("Estrategia", ESTRATEGIAS, index=ESTRATEGIAS.index(row["Estrategia"]) if row["Estrategia"] in ESTRATEGIAS else 0)
-        n_tags = ce3.text_input("Tags", value=str(row.get("Tags", "") or ""), help="Etiquetas separadas por coma")
+        n_tags = ce3.text_input("Tags", value=safe_str(row.get("Tags"), ""), help="Etiquetas separadas por coma")
         
         curr_broker = row.get("Broker", "IB")
         if pd.isna(curr_broker) or curr_broker == "" or str(curr_broker) == "nan":
@@ -6043,11 +6070,11 @@ def render_inline_edit(trade_id, in_dialog=False):
         n_broker = ce4.selectbox("Broker", broker_options, index=broker_idx)
         
         c6, c7, c8, c8_2, c8_3 = st.columns(5)
-        n_prima = c6.number_input("Prima Neta (por acción)", value=float(row["PrimaRecibida"]))
-        n_costo = c7.number_input("Cierre Neto (por acción)", value=float(row["CostoCierre"]))
-        n_contracts = c8.number_input("Contratos", value=int(row["Contratos"]), min_value=1)
-        n_bp = c8_2.number_input("Buying Power", value=float(row["BuyingPower"]))
-        n_stock_close = c8_3.number_input("Precio Acción Cierre", value=float(row["PrecioAccionCierre"]))
+        n_prima = c6.number_input("Prima Neta (por acción)", value=safe_float(row.get("PrimaRecibida")))
+        n_costo = c7.number_input("Cierre Neto (por acción)", value=safe_float(row.get("CostoCierre")))
+        n_contracts = c8.number_input("Contratos", value=safe_int(row.get("Contratos"), 1), min_value=1)
+        n_bp = c8_2.number_input("Buying Power", value=safe_float(row.get("BuyingPower")))
+        n_stock_close = c8_3.number_input("Precio Acción Cierre", value=safe_float(row.get("PrecioAccionCierre")))
         
         cd1, cd2, cd3, cd4, cd5 = st.columns(5)
         n_fecha_ap = cd1.date_input("Fecha Apertura", value=pd.to_datetime(row["FechaApertura"]).date())
@@ -6057,18 +6084,18 @@ def render_inline_edit(trade_id, in_dialog=False):
         n_dividendos_date = cd5.date_input("Fecha Dividendos", value=pd.to_datetime(row["DividendosDate"]).date() if not pd.isna(row.get("DividendosDate")) else None)
         
         c9, c10, c10b, c11, c12, c13 = st.columns(6)
-        n_pnl_usd = c9.number_input("PnL USD", value=float(row.get("PnL_USD_Realizado", 0) or 0))
-        n_be = c10.number_input("BE (Inf)", value=float(row.get("BreakEven", 0) or 0))
-        n_be_upper = c10b.number_input("BE Sup", value=float(row.get("BreakEven_Upper", 0) or 0))
-        n_pop = c11.number_input("POP %", value=float(row.get("POP", 0) or 0))
-        n_comisiones = c12.number_input("Comisiones ($)", value=float(row.get("Comisiones", 0) or 0))
+        n_pnl_usd = c9.number_input("PnL USD", value=safe_float(row.get("PnL_USD_Realizado"), 0.0))
+        n_be = c10.number_input("BE (Inf)", value=safe_float(row.get("BreakEven"), 0.0))
+        n_be_upper = c10b.number_input("BE Sup", value=safe_float(row.get("BreakEven_Upper"), 0.0))
+        n_pop = c11.number_input("POP %", value=safe_float(row.get("POP"), 0.0))
+        n_comisiones = c12.number_input("Comisiones ($)", value=safe_float(row.get("Comisiones"), 0.0))
         n_estado = c13.selectbox("Estado", ESTADOS, index=ESTADOS.index(row["Estado"]) if row["Estado"] in ESTADOS else 0)
 
         if str(row["Estado"]) != "Abierta":
-            pct = float(row.get("ProfitPct", 0) or 0)
+            pct = safe_float(row.get("ProfitPct"), 0.0)
             st.info(f"💡 Este trade tiene un beneficio del **{pct:.1f}%** sobre la prima original.")
         
-        n_notas = st.text_area("Notas", str(row.get("Notas", "") or ""))
+        n_notas = st.text_area("Notas", safe_str(row.get("Notas"), ""))
         
         st.warning("⚠️ Revisa los cambios antes de guardar. Se creará un backup automático del CSV actual.")
         

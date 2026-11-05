@@ -8,6 +8,9 @@ from datetime import date, datetime, timedelta
 from uuid import uuid4
 import plotly.express as px
 import plotly.graph_objects as go
+import importlib
+import tradier_sync
+importlib.reload(tradier_sync)
 from tradier_sync import render_tradier_sync_modal
 
 
@@ -1764,7 +1767,7 @@ def render_active_portfolio(df):
     # Modal interactivo de sincronización con Tradier
     if st.session_state.get("show_tradier_sync", False):
         with st.expander("⚡ **Asistente de Sincronización Tradier / Sigma Trade**", expanded=True):
-            render_tradier_sync_modal(JournalManager, st.session_state.df, estrategias=ESTRATEGIAS)
+            render_tradier_sync_modal(JournalManager, st.session_state.df)
         st.divider()
 
     # Informe de verificación multi-fuente si está disponible

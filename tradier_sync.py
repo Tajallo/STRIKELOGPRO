@@ -283,7 +283,7 @@ DEFAULT_ESTRATEGIAS = [
 ]
 
 
-def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, estrategias: Optional[List[str]] = None):
+def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs):
     """
     Renderiza el diálogo modal / asistente interactivo de sincronización con Tradier.
     Permite contrastar balances, verificar coincidencia 1:1 e importar o conciliar posiciones.
@@ -291,6 +291,7 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, estrategias: Opt
     import streamlit as st
     from uuid import uuid4
 
+    estrategias = kwargs.get("estrategias") or (args[0] if args else None)
     strat_list = list(estrategias) if estrategias else DEFAULT_ESTRATEGIAS
 
     st.markdown("### 🔄 Sincronización en Vivo con Tradier / Sigma Trade")
@@ -444,6 +445,104 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, estrategias: Opt
         # Discrepancias: Nuevas en Tradier
         if n_new > 0:
             st.info(f"➕ **{n_new} posición(es) nueva(s) en Tradier listas para incorporar a StrikeLog:**")
+            
+            # 1. Detección automática de Combos Multi-Pata (Spreads / Iron Condor / Strangles)
+            from collections import defaultdict
+            grouped_new = defaultdict(list)
+            for nw in recon["new_in_tradier"]:
+                key = (nw["ticker"], nw["expiry"])
+                grouped_new[key].append(nw)
+
+            for (tkr, exp), legs in grouped_new.items():
+                if len(legs) > 1:
+                    combo_strat = "Spread"
+                    sell_calls = [l for l in legs if l["side"] == "Sell" and l["option_type"] == "Call"]
+                    buy_calls = [l for l in legs if l["side"] == "Buy" and l["option_type"] == "Call"]
+                    sell_puts = [l for l in legs if l["side"] == "Sell" and l["option_type"] == "Put"]
+                    buy_puts = [l for l in legs if l["side"] == "Buy" and l["option_type"] == "Put"]
+
+                    if len(sell_calls) == 1 and len(buy_calls) == 1 and len(legs) == 2:
+                        combo_strat = "Call Credit Spread" if sell_calls[0]["strike"] < buy_calls[0]["strike"] else "Call Debit Spread"
+                    elif len(sell_puts) == 1 and len(buy_puts) == 1 and len(legs) == 2:
+                        combo_strat = "Put Credit Spread" if sell_puts[0]["strike"] > buy_puts[0]["strike"] else "Put Debit Spread"
+                    elif len(sell_puts) == 1 and len(sell_calls) == 1 and len(legs) == 2:
+                        combo_strat = "Strangle"
+                    elif len(sell_puts) == 1 and len(buy_puts) == 1 and len(sell_calls) == 1 and len(buy_calls) == 1 and len(legs) == 4:
+                        combo_strat = "Iron Condor"
+
+                    combo_id_key = f"combo_{tkr}_{exp}".replace("-", "_")
+                    with st.container():
+                        st.markdown(f"📦 **Combo Multi-Pata detectado:** `{tkr}` Exp `{exp}` ({len(legs)} patas)")
+                        c_cb1, c_cb2 = st.columns([2.5, 1.5])
+                        default_combo_idx = strat_list.index(combo_strat) if combo_strat in strat_list else 0
+                        sel_combo_strat = c_cb1.selectbox(f"Estrategia Combo {tkr}", strat_list, index=default_combo_idx, key=f"sel_combo_{combo_id_key}")
+                        if c_cb2.button(f"➕ Añadir Combo ({len(legs)} patas)", key=f"btn_combo_{combo_id_key}", type="primary"):
+                            new_chain_id = str(uuid4())[:8]
+                            combo_recs = []
+                            net_credit = sum(l["unit_premium"] * (1 if l["side"] == "Sell" else -1) for l in legs)
+                            strikes = [l["strike"] for l in legs]
+                            width = (max(strikes) - min(strikes)) if len(strikes) >= 2 else 0.0
+                            cnt = legs[0]["contratos"]
+                            risk_bp = max(0.0, (width - net_credit) * 100 * cnt) if net_credit > 0 else (abs(net_credit) * 100 * cnt)
+                            
+                            for idx_l, leg in enumerate(legs):
+                                leg_id = str(uuid4())[:8]
+                                be_calc = 0.0
+                                if "Call" in sel_combo_strat and sell_calls:
+                                    be_calc = sell_calls[0]["strike"] + net_credit
+                                elif "Put" in sel_combo_strat and sell_puts:
+                                    be_calc = sell_puts[0]["strike"] - net_credit
+                                else:
+                                    be_calc = leg["strike"]
+
+                                combo_recs.append({
+                                    "ID": leg_id,
+                                    "ChainID": new_chain_id,
+                                    "ParentID": pd.NA,
+                                    "Ticker": leg["ticker"],
+                                    "FechaApertura": pd.to_datetime(leg["date_acquired"]).normalize() if leg["date_acquired"] else pd.Timestamp.now().normalize(),
+                                    "Expiry": pd.to_datetime(leg["expiry"]).normalize() if leg["expiry"] else pd.Timestamp.now().normalize(),
+                                    "Estrategia": sel_combo_strat,
+                                    "Setup": "VIX alto / IV Crush" if "VIX" in tkr else "Otro",
+                                    "Tags": "TradierSync",
+                                    "Side": leg["side"],
+                                    "OptionType": leg["option_type"],
+                                    "Strike": leg["strike"],
+                                    "Delta": 0.0,
+                                    "PrimaRecibida": leg["unit_premium"],
+                                    "CostoCierre": 0.0,
+                                    "Contratos": leg["contratos"],
+                                    "BuyingPower": risk_bp if idx_l == 0 else 0.0,
+                                    "BreakEven": be_calc,
+                                    "BreakEven_Upper": 0.0,
+                                    "POP": 70.0,
+                                    "Estado": "Abierta",
+                                    "Notas": f"Combo {sel_combo_strat} importado desde Tradier ({leg['raw_symbol']})",
+                                    "UpdatedAt": datetime.now().isoformat(),
+                                    "FechaCierre": pd.NA,
+                                    "MaxProfitUSD": max(0.0, net_credit * 100 * cnt),
+                                    "ProfitPct": 0.0,
+                                    "PnL_Capital_Pct": 0.0,
+                                    "PrecioAccionCierre": 0.0,
+                                    "PnL_USD_Realizado": 0.0,
+                                    "Comisiones": 0.0,
+                                    "EarningsDate": pd.NA,
+                                    "DividendosDate": pd.NA,
+                                    "Broker": "Tradier",
+                                    "WheelParentChainID": pd.NA,
+                                    "CostBaseReal": 0.0,
+                                    "CoveredCallChainID": pd.NA,
+                                    "CoveredCallPrima": 0.0,
+                                    "WheelLeg": pd.NA
+                                })
+                            new_comb_df = pd.concat([df.dropna(how='all', axis=0), pd.DataFrame(combo_recs)], ignore_index=True)
+                            st.session_state.df = JournalManager.save_with_backup(new_comb_df)
+                            st.success(f"Combo {sel_combo_strat} añadido exitosamente ({len(legs)} patas).")
+                            st.rerun()
+                        st.markdown("---")
+
+            # 2. Incorporación de patas individuales
+            st.caption("O si prefieres, añade cada pata individualmente:")
             for idx_n, nw in enumerate(recon["new_in_tradier"]):
                 c_n1, c_n2, c_n3 = st.columns([2.5, 2.0, 1.2])
                 c_n1.markdown(f"**{nw['ticker']}** | {nw['side']} {nw['option_type']} Strike ${nw['strike']} Exp: {nw['expiry']} (x{nw['contratos']} @ ${nw['unit_premium']})")
@@ -452,7 +551,7 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, estrategias: Opt
                 if nw["side"] == "Sell" and nw["option_type"] == "Put":
                     strat_suggest = "CSP (Cash Secured Put)"
                 elif nw["side"] == "Sell" and nw["option_type"] == "Call":
-                    strat_suggest = "CC (Covered Call)"
+                    strat_suggest = "Short Call (Naked)" if "VIX" in nw["ticker"] else "CC (Covered Call)"
                 elif nw["side"] == "Buy" and nw["option_type"] == "Call":
                     strat_suggest = "Long Call"
                 elif nw["side"] == "Buy" and nw["option_type"] == "Put":
@@ -467,7 +566,7 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, estrategias: Opt
                 
                 if c_n3.button("➕ Añadir a Cartera", key=f"btn_add_rec_{idx_n}", type="primary"):
                     new_id = str(uuid4())[:8]
-                    setup_val = "La Rueda (The Wheel)" if ("CSP" in sel_strat or "Rueda" in sel_strat or "CC (" in sel_strat) else "Otro"
+                    setup_val = "VIX alto / IV Crush" if "VIX" in nw["ticker"] else ("La Rueda (The Wheel)" if ("CSP" in sel_strat or "Rueda" in sel_strat or "CC (" in sel_strat) else "Otro")
                     new_rec = {
                         "ID": new_id,
                         "ChainID": new_id,
@@ -506,7 +605,7 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, estrategias: Opt
                         "CostBaseReal": 0.0,
                         "CoveredCallChainID": pd.NA,
                         "CoveredCallPrima": 0.0,
-                        "WheelLeg": "sell_put" if nw["option_type"] == "Put" else ("covered_call" if nw["option_type"] == "Call" else "long_stock")
+                        "WheelLeg": "sell_put" if "CSP" in sel_strat else ("covered_call" if "CC (" in sel_strat else pd.NA)
                     }
                     new_df = pd.concat([df.dropna(how='all', axis=0), pd.DataFrame([new_rec])], ignore_index=True)
                     st.session_state.df = JournalManager.save_with_backup(new_df)

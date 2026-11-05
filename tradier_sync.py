@@ -70,6 +70,19 @@ def parse_occ_symbol(occ: str) -> Dict[str, Any]:
     }
 
 
+def build_occ_symbol(ticker: str, expiry: str, option_type: str, strike: float) -> str:
+    """Construye un símbolo OCC estándar (ej: DRAM261127P00051000)."""
+    try:
+        t = str(ticker).strip().upper()
+        exp_dt = pd.to_datetime(expiry)
+        exp_str = exp_dt.strftime("%y%m%d")
+        ot = "C" if str(option_type).upper().startswith("C") else "P"
+        strike_int = int(round(float(strike) * 1000))
+        return f"{t}{exp_str}{ot}{strike_int:08d}"
+    except Exception:
+        return ""
+
+
 def fetch_account_balances(token: Optional[str] = None, account_id: Optional[str] = None) -> Dict[str, Any]:
     """Obtiene balances en vivo desde Tradier."""
     t = token or TRADIER_TOKEN
@@ -172,6 +185,77 @@ def fetch_recent_history(token: Optional[str] = None, account_id: Optional[str] 
         return {"success": True, "events": events_raw}
     except Exception as e:
         return {"error": f"Error de conexión con Tradier: {e}"}
+
+
+def fetch_recent_orders(token: Optional[str] = None, account_id: Optional[str] = None) -> Dict[str, Any]:
+    """Obtiene las órdenes recientes (fills de cierres, aperturas y rolls multileg) de Tradier."""
+    t = token or TRADIER_TOKEN
+    acc = account_id or ACCOUNT_ID
+    if not t or not acc:
+        return {"error": "Credenciales no configuradas"}
+    
+    url = f"{BASE_URL}/accounts/{acc}/orders"
+    try:
+        resp = requests.get(url, headers=get_headers(t), timeout=10)
+        if resp.status_code != 200:
+            return {"error": f"Error Tradier ({resp.status_code}): {resp.text}"}
+        
+        orders_raw = resp.json().get("orders", {}).get("order", [])
+        if isinstance(orders_raw, dict):
+            orders_raw = [orders_raw]
+        elif not orders_raw or orders_raw == "null":
+            orders_raw = []
+            
+        return {"success": True, "orders": orders_raw}
+    except Exception as e:
+        return {"error": f"Error de conexión con Tradier: {e}"}
+
+
+def extract_recent_fills_and_rolls(orders: List[Dict[str, Any]]) -> Tuple[Dict[str, float], List[Dict[str, Any]]]:
+    """Extrae precios de cierre y detecta parejas de rolls desde órdenes ejecutadas."""
+    fills_by_symbol = {}
+    roll_pairs = []
+
+    for o in orders:
+        if o.get("status") != "filled":
+            continue
+        
+        legs = o.get("leg", [])
+        if isinstance(legs, dict):
+            legs = [legs]
+        
+        closing_legs = []
+        opening_legs = []
+        
+        for l in legs:
+            side = str(l.get("side", ""))
+            sym = l.get("option_symbol") or l.get("symbol")
+            price = float(l.get("avg_fill_price", 0.0) or 0.0)
+            
+            if "close" in side and sym:
+                closing_legs.append(l)
+                fills_by_symbol[sym] = price
+            elif "open" in side and sym:
+                opening_legs.append(l)
+                fills_by_symbol[sym] = price
+                
+        # Roll multileg: tiene pata de cierre y pata de apertura
+        if closing_legs and opening_legs:
+            for cl in closing_legs:
+                for op in opening_legs:
+                    roll_pairs.append({
+                        "order_id": o.get("id"),
+                        "close_symbol": cl.get("option_symbol"),
+                        "close_price": float(cl.get("avg_fill_price", 0.0) or 0.0),
+                        "close_side": cl.get("side"),
+                        "open_symbol": op.get("option_symbol"),
+                        "open_price": float(op.get("avg_fill_price", 0.0) or 0.0),
+                        "open_side": op.get("side"),
+                        "net_price": float(o.get("avg_fill_price", 0.0) or 0.0),
+                        "date": cl.get("transaction_date") or o.get("transaction_date")
+                    })
+
+    return fills_by_symbol, roll_pairs
 
 
 def reconcile_tradier_with_strikelog(strikelog_open_df: pd.DataFrame, tradier_positions: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -297,10 +381,11 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
     st.markdown("### 🔄 Sincronización en Vivo con Tradier / Sigma Trade")
     st.caption("Contrasta tus posiciones y balances en tiempo real contra la API oficial de Tradier Brokerage.")
 
-    # 1. Obtener Balances
+    # 1. Obtener Balances, Posiciones y Órdenes
     with st.spinner("Conectando con Tradier..."):
         bal_res = fetch_account_balances()
         pos_res = fetch_open_positions()
+        orders_res = fetch_recent_orders()
 
     if not bal_res.get("success") or not pos_res.get("success"):
         err = bal_res.get("error") or pos_res.get("error")
@@ -310,6 +395,9 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
             st.session_state["show_tradier_sync"] = False
             st.rerun()
         return
+
+    orders_list = orders_res.get("orders", []) if orders_res.get("success") else []
+    fills_by_symbol, roll_pairs = extract_recent_fills_and_rolls(orders_list)
 
     balances = bal_res.get("balances", {})
     t_equity = float(balances.get("total_equity", 0.0) or 0.0)
@@ -424,22 +512,55 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
         # Discrepancias: Faltan en Tradier
         if n_missing > 0:
             st.warning(f"⚠️ **{n_missing} posición(es) registradas como abiertas en StrikeLog no se encuentran en Tradier:**")
-            st.caption("Estas operaciones pueden haber sido cerradas, asignadas o roladas en Sigma Trade. Puedes marcarlas como cerradas aquí:")
+            st.caption("Estas operaciones pueden haber sido cerradas, asignadas o roladas en Sigma Trade. Puedes marcarlas como cerradas o roladas aquí:")
             for idx_m, mis in enumerate(recon["missing_in_tradier"]):
+                occ_sym = build_occ_symbol(mis["ticker"], mis["expiry"], mis["option_type"], mis["strike"])
+                sug_close = fills_by_symbol.get(occ_sym, 0.0)
+                matched_roll = next((rp for rp in roll_pairs if rp["close_symbol"] == occ_sym), None)
+
+                if matched_roll:
+                    st.info(f"🔄 **Roll Detectado en Tradier:** Cerrado @ `${matched_roll['close_price']:.2f}` ➔ Rolado a `{matched_roll['open_symbol']}` @ `${matched_roll['open_price']:.2f}` (Neto: `${abs(matched_roll['net_price']):.2f}`)")
+
                 c_m1, c_m2, c_m3 = st.columns([3, 1.5, 1.5])
                 c_m1.markdown(f"**{mis['ticker']}** | {mis['strategy']} | {mis['side']} {mis['option_type']} Strike ${mis['strike']} Exp: {mis['expiry']}")
-                close_price = c_m2.number_input("Precio Cierre ($)", value=0.0, step=0.01, key=f"rec_close_price_{mis['strikelog_id']}")
-                if c_m3.button("Marcar Cerrada", key=f"btn_close_rec_{mis['strikelog_id']}", type="secondary"):
-                    # Aplicar cierre con backup
+                close_price = c_m2.number_input(
+                    "Precio Cierre ($)",
+                    value=float(sug_close),
+                    step=0.01,
+                    key=f"rec_close_price_{mis['strikelog_id']}",
+                    help="Precio de ejecución detectado automáticamente en las órdenes de Tradier" if sug_close > 0 else "Introduce el precio de recompra"
+                )
+                btn_label = "🔄 Aplicar Roll" if matched_roll else "Marcar Cerrada"
+                if c_m3.button(btn_label, key=f"btn_close_rec_{mis['strikelog_id']}", type="primary" if matched_roll else "secondary"):
+                    # Aplicar cierre o roll con backup
                     rec_idx = df.index[df["ID"] == mis["strikelog_id"]]
                     if len(rec_idx) > 0:
                         real_i = rec_idx[0]
-                        df.at[real_i, "Estado"] = "Cerrada"
+                        df.at[real_i, "Estado"] = "Rolada" if matched_roll else "Cerrada"
                         df.at[real_i, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         df.at[real_i, "CostoCierre"] = close_price
+                        p_rec = float(df.at[real_i, "PrimaRecibida"] or 0.0)
+                        cnt = float(df.at[real_i, "Contratos"] or 1.0)
+                        side_val = str(df.at[real_i, "Side"])
+                        pnl_realizado = (p_rec - close_price) * 100 * cnt if side_val == "Sell" else (close_price - p_rec) * 100 * cnt
+                        df.at[real_i, "PnL_USD_Realizado"] = pnl_realizado
                         df.at[real_i, "UpdatedAt"] = datetime.now().isoformat()
+                        
+                        # Si es un roll, enlazar ParentID con la nueva posición si ya existe en df
+                        if matched_roll:
+                            open_parsed = parse_occ_symbol(matched_roll["open_symbol"])
+                            new_leg_idx = df.index[
+                                (df["Ticker"] == open_parsed["ticker"]) &
+                                (df["Strike"] == open_parsed["strike"]) &
+                                (df["Expiry"] == open_parsed["expiry"]) &
+                                (df["Estado"] == "Abierta")
+                            ]
+                            if len(new_leg_idx) > 0:
+                                df.at[new_leg_idx[0], "ParentID"] = mis["strikelog_id"]
+
                         st.session_state.df = JournalManager.save_with_backup(df)
-                        st.success(f"Posición {mis['ticker']} marcada como cerrada.")
+                        msg = f"Posición {mis['ticker']} actualizada como Rolada y enlazada." if matched_roll else f"Posición {mis['ticker']} marcada como cerrada."
+                        st.success(msg)
                         st.rerun()
 
         # Discrepancias: Nuevas en Tradier

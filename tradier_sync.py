@@ -269,8 +269,12 @@ def reconcile_tradier_with_strikelog(strikelog_open_df: pd.DataFrame, tradier_po
     matched = []
     missing_in_tradier = []
     
-    # Creamos copia para ir emparejando
-    tradier_pool = list(tradier_positions)
+    # Creamos copia para ir emparejando con contabilidad de contratos
+    tradier_pool = []
+    for tp in tradier_positions:
+        item = dict(tp)
+        item["remaining_contratos"] = int(item.get("contratos", 1))
+        tradier_pool.append(item)
     
     for _, log_pos in strikelog_open_df.iterrows():
         # Ignorar si es de otro broker explícito que no sea Tradier
@@ -293,31 +297,51 @@ def reconcile_tradier_with_strikelog(strikelog_open_df: pd.DataFrame, tradier_po
         if pd.notna(l_expiry_val):
             l_expiry = pd.to_datetime(l_expiry_val).strftime("%Y-%m-%d")
             
-        # Buscar match en Tradier
+        # Buscar match en Tradier con contratos disponibles
         match_idx = -1
         for i, tp in enumerate(tradier_pool):
+            if tp.get("remaining_contratos", 0) <= 0:
+                continue
             if tp["ticker"] == l_ticker and tp["option_type"] == l_opt_type:
                 if l_opt_type == "Stock":
                     # Coincidencia de acciones
                     match_idx = i
                     break
                 else:
-                    # Coincidencia de opción: comparar strike y fecha
+                    # Coincidencia de opción: comparar strike, fecha y lado
                     if abs(tp["strike"] - l_strike) < 0.01:
-                        # Si ambas tienen fecha, comparar
                         if tp["expiry"] == l_expiry:
-                            match_idx = i
-                            break
+                            # Preferir mismo lado si está disponible
+                            if tp.get("side", "").strip().capitalize() == l_side:
+                                match_idx = i
+                                break
+                            elif match_idx < 0:
+                                match_idx = i
                         
         if match_idx >= 0:
-            matched_tp = tradier_pool.pop(match_idx)
+            matched_tp = tradier_pool[match_idx]
+            c_matched = min(l_contratos, matched_tp["remaining_contratos"])
+            matched_tp["remaining_contratos"] -= c_matched
             matched.append({
                 "strikelog_id": log_pos["ID"],
                 "ticker": l_ticker,
                 "strategy": log_pos.get("Estrategia"),
                 "log_record": log_pos.to_dict(),
-                "tradier_position": matched_tp
+                "tradier_position": matched_tp,
+                "contratos_matched": c_matched
             })
+            if c_matched < l_contratos:
+                missing_in_tradier.append({
+                    "strikelog_id": log_pos["ID"],
+                    "ticker": l_ticker,
+                    "strategy": log_pos.get("Estrategia"),
+                    "side": l_side,
+                    "option_type": l_opt_type,
+                    "strike": l_strike,
+                    "expiry": l_expiry,
+                    "contratos": l_contratos - c_matched,
+                    "log_record": log_pos.to_dict()
+                })
         else:
             missing_in_tradier.append({
                 "strikelog_id": log_pos["ID"],
@@ -331,11 +355,16 @@ def reconcile_tradier_with_strikelog(strikelog_open_df: pd.DataFrame, tradier_po
                 "log_record": log_pos.to_dict()
             })
             
-    # Las que quedaron en tradier_pool no existen en StrikeLog:
+    # Las que quedaron en tradier_pool con remaining_contratos > 0 no existen (o faltan) en StrikeLog:
     # Filtramos para que SOLO las OPCIONES se consideren 'nuevas en broker' a incorporar en StrikeLog.
-    # Cualquier acción de scalping (Medved Trader, etc.) se omite de 'new_in_tradier' para mantener StrikeLog 100% puro de opciones.
-    new_in_tradier = [tp for tp in tradier_pool if tp.get("is_option", False)]
-    ignored_stocks = [tp for tp in tradier_pool if not tp.get("is_option", False)]
+    new_in_tradier = []
+    for tp in tradier_pool:
+        if tp.get("remaining_contratos", 0) > 0 and tp.get("is_option", False):
+            tp_rem = dict(tp)
+            tp_rem["contratos"] = tp_rem["remaining_contratos"]
+            new_in_tradier.append(tp_rem)
+
+    ignored_stocks = [tp for tp in tradier_pool if tp.get("remaining_contratos", 0) > 0 and not tp.get("is_option", False)]
     
     return {
         "matched": matched,
@@ -504,7 +533,7 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
                         "Tipo": tp["option_type"],
                         "Strike": f"${tp['strike']:.2f}" if tp["strike"] > 0 else "-",
                         "Vencimiento": tp["expiry"] or "-",
-                        "Contratos": tp["contratos"],
+                        "Contratos": m.get("contratos_matched", tp.get("contratos", 1)),
                         "Prima / Base": f"${tp['unit_premium']:.2f}"
                     })
                 st.dataframe(pd.DataFrame(matched_rows), width="stretch", hide_index=True)
@@ -530,24 +559,23 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
                     key=f"rec_close_price_{mis['strikelog_id']}",
                     help="Precio de ejecución detectado automáticamente en las órdenes de Tradier" if sug_close > 0 else "Introduce el precio de recompra"
                 )
-                btn_label = "🔄 Aplicar Roll" if matched_roll else "Marcar Cerrada"
-                if c_m3.button(btn_label, key=f"btn_close_rec_{mis['strikelog_id']}", type="primary" if matched_roll else "secondary"):
-                    # Aplicar cierre o roll con backup
-                    rec_idx = df.index[df["ID"] == mis["strikelog_id"]]
-                    if len(rec_idx) > 0:
-                        real_i = rec_idx[0]
-                        df.at[real_i, "Estado"] = "Rolada" if matched_roll else "Cerrada"
-                        df.at[real_i, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        df.at[real_i, "CostoCierre"] = close_price
-                        p_rec = float(df.at[real_i, "PrimaRecibida"] or 0.0)
-                        cnt = float(df.at[real_i, "Contratos"] or 1.0)
-                        side_val = str(df.at[real_i, "Side"])
-                        pnl_realizado = (p_rec - close_price) * 100 * cnt if side_val == "Sell" else (close_price - p_rec) * 100 * cnt
-                        df.at[real_i, "PnL_USD_Realizado"] = pnl_realizado
-                        df.at[real_i, "UpdatedAt"] = datetime.now().isoformat()
-                        
-                        # Si es un roll, enlazar ParentID con la nueva posición si ya existe en df
-                        if matched_roll:
+                
+                is_short_put = (mis.get("side") == "Sell" and mis.get("option_type") == "Put")
+                if matched_roll:
+                    if c_m3.button("🔄 Aplicar Roll", key=f"btn_close_rec_{mis['strikelog_id']}", type="primary"):
+                        rec_idx = df.index[df["ID"] == mis["strikelog_id"]]
+                        if len(rec_idx) > 0:
+                            real_i = rec_idx[0]
+                            df.at[real_i, "Estado"] = "Rolada"
+                            df.at[real_i, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            df.at[real_i, "CostoCierre"] = close_price
+                            p_rec = float(df.at[real_i, "PrimaRecibida"] or 0.0)
+                            cnt = float(df.at[real_i, "Contratos"] or 1.0)
+                            side_val = str(df.at[real_i, "Side"])
+                            pnl_realizado = (p_rec - close_price) * 100 * cnt if side_val == "Sell" else (close_price - p_rec) * 100 * cnt
+                            df.at[real_i, "PnL_USD_Realizado"] = pnl_realizado
+                            df.at[real_i, "UpdatedAt"] = datetime.now().isoformat()
+                            
                             open_parsed = parse_occ_symbol(matched_roll["open_symbol"])
                             new_leg_idx = df.index[
                                 (df["Ticker"] == open_parsed["ticker"]) &
@@ -558,10 +586,58 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
                             if len(new_leg_idx) > 0:
                                 df.at[new_leg_idx[0], "ParentID"] = mis["strikelog_id"]
 
-                        st.session_state.df = JournalManager.save_with_backup(df)
-                        msg = f"Posición {mis['ticker']} actualizada como Rolada y enlazada." if matched_roll else f"Posición {mis['ticker']} marcada como cerrada."
-                        st.success(msg)
-                        st.rerun()
+                            st.session_state.df = JournalManager.save_with_backup(df)
+                            st.success(f"Posición {mis['ticker']} actualizada como Rolada y enlazada.")
+                            st.rerun()
+                elif is_short_put:
+                    c_btn1, c_btn2 = c_m3.columns(2)
+                    if c_btn1.button("Cerrar", key=f"btn_close_rec_{mis['strikelog_id']}", help="Marcar como cerrada normalmente (a precio de mercado o $0 si expiró OTM)"):
+                        rec_idx = df.index[df["ID"] == mis["strikelog_id"]]
+                        if len(rec_idx) > 0:
+                            real_i = rec_idx[0]
+                            df.at[real_i, "Estado"] = "Cerrada"
+                            df.at[real_i, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            df.at[real_i, "CostoCierre"] = close_price
+                            p_rec = float(df.at[real_i, "PrimaRecibida"] or 0.0)
+                            cnt = float(df.at[real_i, "Contratos"] or 1.0)
+                            pnl_realizado = (p_rec - close_price) * 100 * cnt
+                            df.at[real_i, "PnL_USD_Realizado"] = pnl_realizado
+                            df.at[real_i, "UpdatedAt"] = datetime.now().isoformat()
+                            st.session_state.df = JournalManager.save_with_backup(df)
+                            st.success(f"Posición {mis['ticker']} marcada como cerrada.")
+                            st.rerun()
+                    if c_btn2.button("📜 Asignada", key=f"btn_assign_rec_{mis['strikelog_id']}", help="Marcar como asignada (te quedaste las acciones). Puedes incorporar las acciones a la Rueda abajo."):
+                        rec_idx = df.index[df["ID"] == mis["strikelog_id"]]
+                        if len(rec_idx) > 0:
+                            real_i = rec_idx[0]
+                            df.at[real_i, "Estado"] = "Asignada"
+                            df.at[real_i, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            df.at[real_i, "CostoCierre"] = 0.0
+                            p_rec = float(df.at[real_i, "PrimaRecibida"] or 0.0)
+                            cnt = float(df.at[real_i, "Contratos"] or 1.0)
+                            df.at[real_i, "PnL_USD_Realizado"] = p_rec * 100 * cnt
+                            df.at[real_i, "Notas"] = str(df.at[real_i, "Notas"] or "") + " [Asignada en Tradier]"
+                            df.at[real_i, "UpdatedAt"] = datetime.now().isoformat()
+                            st.session_state.df = JournalManager.save_with_backup(df)
+                            st.success(f"Posición {mis['ticker']} marcada como Asignada. Puedes incorporar las acciones resultantes a la Rueda abajo.")
+                            st.rerun()
+                else:
+                    if c_m3.button("Marcar Cerrada", key=f"btn_close_rec_{mis['strikelog_id']}"):
+                        rec_idx = df.index[df["ID"] == mis["strikelog_id"]]
+                        if len(rec_idx) > 0:
+                            real_i = rec_idx[0]
+                            df.at[real_i, "Estado"] = "Cerrada"
+                            df.at[real_i, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            df.at[real_i, "CostoCierre"] = close_price
+                            p_rec = float(df.at[real_i, "PrimaRecibida"] or 0.0)
+                            cnt = float(df.at[real_i, "Contratos"] or 1.0)
+                            side_val = str(df.at[real_i, "Side"])
+                            pnl_realizado = (p_rec - close_price) * 100 * cnt if side_val == "Sell" else (close_price - p_rec) * 100 * cnt
+                            df.at[real_i, "PnL_USD_Realizado"] = pnl_realizado
+                            df.at[real_i, "UpdatedAt"] = datetime.now().isoformat()
+                            st.session_state.df = JournalManager.save_with_backup(df)
+                            st.success(f"Posición {mis['ticker']} marcada como cerrada.")
+                            st.rerun()
 
         # Discrepancias: Nuevas en Tradier
         if n_new > 0:

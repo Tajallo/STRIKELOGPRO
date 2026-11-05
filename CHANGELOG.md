@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Conciliación Inteligente por Contratos y Flujos de Cierre / Asignación en Tradier Sync**:
+  - **Desglose Exacto de Operaciones VIX**: Separación del spread de VIX 20/24C en dos operaciones independientes de 1 contrato cada una con sus primas de ejecución reales desde el historial de órdenes de Tradier: Orden #156561713 ($1.08 crédito neto, BP $292, BE $21.08, MaxProfit $108) y Orden #156564261 ($1.05 crédito neto, BP $295, BE $21.05, MaxProfit $105).
+  - **Contabilidad de Contratos Parciales / Agrupados**: Algoritmo de reconciliación en `tradier_sync.py` actualizado para llevar contabilidad por contratos disponibles (`remaining_contratos`), permitiendo que múltiples entradas o coberturas individuales en StrikeLog concilien al 100% contra posiciones consolidadas en el broker sin falsas advertencias de "faltantes".
+  - **Soporte Nativo de Asignación en Sincronización**: En el panel de discrepancias, cuando una opción Short Put / CSP ya no está abierta en Tradier, se ofrece tanto el botón para cierre estándar (con precio de fill precargado u OTM a $0) como el botón `📜 Asignada` para registrar la asignación y coordinar la incorporación de las 100 acciones a La Rueda (`Long Stock (Asignación)`).
+
 - **Detección Automática de Precios de Cierre y Rolls en Tradier Sync**:
   - **Auto-relleno de Precios de Cierre desde Órdenes Reales**: El asistente de sincronización ahora consulta las órdenes ejecutadas en Tradier (`/accounts/{id}/orders`) para buscar la pata de cierre (`buy_to_close` o `sell_to_close`) de cualquier posición faltante, rellenando automáticamente el precio de recompra exacto (ej. `$12.61` y `$13.20` en DRAM) en lugar de mostrar `$0.00`.
   - **Identificación Automática de Rolls Multileg**: Al detectar órdenes de tipo roll (cierre de un contrato antiguo y apertura simultánea de un nuevo vencimiento/strike), la interfaz notifica el roll detectado, muestra el crédito neto del ajuste y ofrece el botón `🔄 Aplicar Roll`. Al pulsarlo, marca la posición previa como `Rolada`, registra el costo de cierre real y enlaza automáticamente el `ParentID` en la nueva pata abierta para conservar intacta la cadena histórica de la campaña.

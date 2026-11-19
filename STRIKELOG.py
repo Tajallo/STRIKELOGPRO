@@ -2891,7 +2891,8 @@ def render_active_portfolio(df):
                                 </div>
                             </div>
                             """
-                            st.markdown(breakdown_html, unsafe_allow_html=True)
+                            clean_breakdown_html = "\n".join(l.strip() for l in breakdown_html.split("\n"))
+                            st.markdown(clean_breakdown_html, unsafe_allow_html=True)
                         else:
                             if not is_dual_be:
                                 main_strike = float(first_row.get("Strike", 0.0))
@@ -3453,34 +3454,35 @@ def render_active_portfolio(df):
                 d4.metric("− Spreads / Defensivos", f"${pds_pnl_per_share + extra_campana_pnl_per_share:.2f}",
                            help="Beneficios netos por acción de Put Debit Spreads u otras estrategias de cobertura vinculadas.")
 
-                # Fórmula visual BE completa
-                formula_html = f"""
-                <div style='background: linear-gradient(135deg, rgba(15, 23, 42, 0.8), rgba(30, 41, 59, 0.6)); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 10px 14px; margin: 12px 0; font-size: 12.5px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-family: monospace;'>
-                <b style='color: #e2e8f0; font-family: sans-serif; font-size: 12px;'>📐 Fórmula BE:</b>
-                <span style='background: rgba(245, 158, 11, 0.15); color: #f59e0b; padding: 2px 6px; border-radius: 4px; border: 1px solid rgba(245, 158, 11, 0.3);'>Compra ${precio_compra:.2f}</span>
-                <span style='color: #ef4444; font-weight: bold;'>−</span>
-                <span style='background: rgba(239, 68, 68, 0.12); color: #fca5a5; padding: 2px 6px; border-radius: 4px;'>PCS/CSP ${abs(prima_neta_pcs):.2f}</span>
-                <span style='color: #ef4444; font-weight: bold;'>−</span>
-                <span style='background: rgba(239, 68, 68, 0.12); color: #fca5a5; padding: 2px 6px; border-radius: 4px;'>CC ${cc_acumulado_final:.2f}</span>
-                """
+                # Fórmula visual BE completa en chips horizontales (sin saltos de línea con sangría)
+                formula_chips = [
+                    "<div style='background: linear-gradient(135deg, rgba(15, 23, 42, 0.8), rgba(30, 41, 59, 0.6)); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 10px 14px; margin: 12px 0; font-size: 12.5px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-family: monospace;'>",
+                    "<b style='color: #e2e8f0; font-family: sans-serif; font-size: 12px;'>📐 Fórmula BE:</b>",
+                    f"<span style='background: rgba(245, 158, 11, 0.15); color: #f59e0b; padding: 2px 6px; border-radius: 4px; border: 1px solid rgba(245, 158, 11, 0.3);'>Compra ${precio_compra:.2f}</span>",
+                    "<span style='color: #ef4444; font-weight: bold;'>−</span>",
+                    f"<span style='background: rgba(239, 68, 68, 0.12); color: #fca5a5; padding: 2px 6px; border-radius: 4px;'>PCS/CSP ${abs(prima_neta_pcs):.2f}</span>",
+                    "<span style='color: #ef4444; font-weight: bold;'>−</span>",
+                    f"<span style='background: rgba(239, 68, 68, 0.12); color: #fca5a5; padding: 2px 6px; border-radius: 4px;'>CC ${cc_acumulado_final:.2f}</span>"
+                ]
                 if buy_put_prima_extra > 0:
-                    formula_html += f"""
-                    <span style='color: #ef4444; font-weight: bold;'>−</span>
-                    <span style='background: rgba(239, 68, 68, 0.12); color: #fca5a5; padding: 2px 6px; border-radius: 4px;'>BP ${buy_put_prima_extra:.2f}</span>
-                    """
+                    formula_chips.extend([
+                        "<span style='color: #ef4444; font-weight: bold;'>−</span>",
+                        f"<span style='background: rgba(239, 68, 68, 0.12); color: #fca5a5; padding: 2px 6px; border-radius: 4px;'>BP ${buy_put_prima_extra:.2f}</span>"
+                    ])
                 if (pds_pnl_per_share + extra_campana_pnl_per_share) > 0:
-                    formula_html += f"""
-                    <span style='color: #ef4444; font-weight: bold;'>−</span>
-                    <span style='background: rgba(239, 68, 68, 0.12); color: #fca5a5; padding: 2px 6px; border-radius: 4px;'>Defensas ${pds_pnl_per_share + extra_campana_pnl_per_share:.2f}</span>
-                    """
+                    formula_chips.extend([
+                        "<span style='color: #ef4444; font-weight: bold;'>−</span>",
+                        f"<span style='background: rgba(239, 68, 68, 0.12); color: #fca5a5; padding: 2px 6px; border-radius: 4px;'>Defensas ${pds_pnl_per_share + extra_campana_pnl_per_share:.2f}</span>"
+                    ])
                 
-                formula_html += f"""
-                <span style='color: #38bdf8; font-weight: bold;'>+</span>
-                <span style='background: rgba(56, 189, 248, 0.12); color: #7dd3fc; padding: 2px 6px; border-radius: 4px;'>Fees ${total_comisiones_campana / acciones_st:.4f}</span>
-                <span style='color: #10b981; font-weight: bold;'>=</span>
-                <span style='background: rgba(16, 185, 129, 0.2); color: #34d399; padding: 3px 10px; border-radius: 6px; font-weight: 700; border: 1px solid rgba(16, 185, 129, 0.4);'>🎯 BE Real ${costo_base_dinamico:.4f}</span>
-                </div>
-                """
+                formula_chips.extend([
+                    "<span style='color: #38bdf8; font-weight: bold;'>+</span>",
+                    f"<span style='background: rgba(56, 189, 248, 0.12); color: #7dd3fc; padding: 2px 6px; border-radius: 4px;'>Fees ${total_comisiones_campana / acciones_st:.4f}</span>",
+                    "<span style='color: #10b981; font-weight: bold;'>=</span>",
+                    f"<span style='background: rgba(16, 185, 129, 0.2); color: #34d399; padding: 3px 10px; border-radius: 6px; font-weight: 700; border: 1px solid rgba(16, 185, 129, 0.4);'>🎯 BE Real ${costo_base_dinamico:.4f}</span>",
+                    "</div>"
+                ])
+                formula_html = "".join(formula_chips)
                 st.markdown(formula_html, unsafe_allow_html=True)
 
                 # Collapsible timeline for the campaign history

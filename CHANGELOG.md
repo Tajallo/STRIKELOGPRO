@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Corrección de Renderizado en Fórmula Visual de Break-Even (La Rueda)**:
+  - **Eliminación de Bloque de Código Indentado**: Se eliminó la sangría accidental de espacios en la cadena HTML de la fórmula que provocaba que Markdown la interpretara erróneamente como un bloque de código `<pre><code>`. Los chips de cálculo (Compra, PCS/CSP, Covered Calls, Buy Put, Defensas, Fees y BE Final) ahora se ensamblan en una línea horizontal continua limpia.
+
 - **Modernización y Organización Visual del Interior de Posiciones y Panel de La Rueda**:
   - **Encabezados Tabulados en La Rueda**: Las posiciones de asignación en La Rueda adoptan el mismo sistema de recuadros tabulados (`:violet-background`, `:blue-background`, `:green-background`, `:orange-background`), integrando el estado del Covered Call (`Covered Call: SÍ ✅` / `NO ⚠️`), el BE Base y el precio de compra en badges alineados.
   - **Tarjetas Métricas KPI Interiores**: Enriquecimiento visual de `st.metric` dentro de todas las tarjetas colapsables con fondos oscuros translúcidos, bordes sutiles, hover dinámico y etiquetas tipográficas de estilo terminal financiero.

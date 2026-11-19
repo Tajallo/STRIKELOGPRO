@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Diseño Visual con Badges y Tabulación en 8 Columnas para Historial de Operaciones**:
+  - **Alineación Vertical Continua**: Las tarjetas de operaciones en el Historial se organizan ahora en una cuadrícula de 8 columnas fijas con recuadros redondeados, facilitando el escaneo visual de operaciones pasadas:
+    - **Columna 1 (Ticker)**: Ancho fijo (68px), centrado con recuadro violeta.
+    - **Columna 2 (Vencimiento)**: Ancho fijo (90px), centrado con recuadro azul (`📅 20 Nov` o `∞ Stock`).
+    - **Columna 3 (Estrategia y Strikes)**: Ancho fijo (220px), centrado con recuadro gris y nomenclatura compacta (`12.5 CSP`, `7610/7660 IC`, etc.).
+    - **Columna 4 (Estado)**: Ancho fijo (105px), centrado con código de color (`🔄 Rolada` en azul, `🔒 Cerrada` en verde, `📜 Asignada` en naranja).
+    - **Columna 5 (Fecha de Cierre)**: Ancho fijo (115px), centrado en gris (`📅 YYYY-MM-DD`).
+    - **Columna 6 (PnL Realizado)**: Ancho fijo (130px), centrado con fondo verde (`💵 +$XX.XX`) para beneficios o rojo (`💵 -$XX.XX`) para pérdidas.
+    - **Columna 7 (% Captura / Retorno)**: Ancho fijo (95px), centrado con verde (`📈 +XX%`) o rojo (`📉 -XX%`).
+    - **Columna 8 (Patas y Contratos)**: Ancho fijo (115px), centrado en gris (`1 pata (x1)`, `4 patas (x1)`).
+  - **Interior de Tarjetas de Historial**: Métricas en tarjetas oscuras translúcidas con hover, y barra de encabezado dedicada para el desglose de patas cerradas.
+
 - **Corrección de Renderizado en Fórmula Visual de Break-Even (La Rueda)**:
   - **Eliminación de Bloque de Código Indentado**: Se eliminó la sangría accidental de espacios en la cadena HTML de la fórmula que provocaba que Markdown la interpretara erróneamente como un bloque de código `<pre><code>`. Los chips de cálculo (Compra, PCS/CSP, Covered Calls, Buy Put, Defensas, Fees y BE Final) ahora se ensamblan en una línea horizontal continua limpia.
 

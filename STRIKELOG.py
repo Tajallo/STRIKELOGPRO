@@ -5795,6 +5795,143 @@ def render_history(df):
     st.header("📜 Historial de Operaciones")
     if "hist_success_msg" in st.session_state:
         st.success(st.session_state.pop("hist_success_msg"), icon="✅")
+
+    # CSS personalizado para badges, tabulación y tarjetas en Historial
+    st.markdown("""
+    <style>
+    div[data-testid="stExpander"] details {
+        border: 1px solid rgba(255, 255, 255, 0.08) !important;
+        border-radius: 8px !important;
+        background-color: rgba(255, 255, 255, 0.015) !important;
+        margin-bottom: 6px !important;
+    }
+    div[data-testid="stExpander"] summary {
+        padding: 6px 10px !important;
+        border-radius: 8px !important;
+    }
+    div[data-testid="stExpander"] summary:hover {
+        background-color: rgba(255, 255, 255, 0.03) !important;
+    }
+    div[data-testid="stExpander"] summary p {
+        display: inline-flex !important;
+        flex-direction: row !important;
+        align-items: center !important;
+        flex-wrap: nowrap !important;
+        gap: 6px !important;
+        width: 100% !important;
+        margin: 0 !important;
+        overflow-x: auto !important;
+        white-space: nowrap !important;
+    }
+    div[data-testid="stExpander"] summary p > span[style*="background-color"] {
+        display: inline-flex !important;
+        align-items: center !important;
+        padding: 3px 8px !important;
+        border-radius: 6px !important;
+        font-size: 12px !important;
+        font-weight: 600 !important;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.2) !important;
+        white-space: nowrap !important;
+        flex-shrink: 0 !important;
+        box-sizing: border-box !important;
+    }
+    /* Tabulación en 8 Columnas fijas para Historial */
+    /* Col 1: Ticker */
+    div[data-testid="stExpander"] summary p > span[style*="background-color"]:nth-of-type(1) {
+        min-width: 68px !important;
+        max-width: 68px !important;
+        justify-content: center !important;
+        text-align: center !important;
+    }
+    /* Col 2: Vencimiento */
+    div[data-testid="stExpander"] summary p > span[style*="background-color"]:nth-of-type(2) {
+        min-width: 90px !important;
+        max-width: 90px !important;
+        justify-content: center !important;
+        text-align: center !important;
+    }
+    /* Col 3: Estrategia & Strikes */
+    div[data-testid="stExpander"] summary p > span[style*="background-color"]:nth-of-type(3) {
+        min-width: 220px !important;
+        max-width: 220px !important;
+        justify-content: center !important;
+        text-align: center !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+    }
+    /* Col 4: Estado */
+    div[data-testid="stExpander"] summary p > span[style*="background-color"]:nth-of-type(4) {
+        min-width: 105px !important;
+        max-width: 105px !important;
+        justify-content: center !important;
+        text-align: center !important;
+    }
+    /* Col 5: Fecha Cierre */
+    div[data-testid="stExpander"] summary p > span[style*="background-color"]:nth-of-type(5) {
+        min-width: 115px !important;
+        max-width: 115px !important;
+        justify-content: center !important;
+        text-align: center !important;
+    }
+    /* Col 6: PnL Realizado */
+    div[data-testid="stExpander"] summary p > span[style*="background-color"]:nth-of-type(6) {
+        min-width: 130px !important;
+        max-width: 130px !important;
+        justify-content: center !important;
+        text-align: center !important;
+    }
+    /* Col 7: % Captura / Retorno */
+    div[data-testid="stExpander"] summary p > span[style*="background-color"]:nth-of-type(7) {
+        min-width: 95px !important;
+        max-width: 95px !important;
+        justify-content: center !important;
+        text-align: center !important;
+    }
+    /* Col 8: Patas y Contratos */
+    div[data-testid="stExpander"] summary p > span[style*="background-color"]:nth-of-type(8) {
+        min-width: 115px !important;
+        max-width: 115px !important;
+        justify-content: center !important;
+        text-align: center !important;
+    }
+    /* Estilos interiores para expanders (Métricas y Detalles) */
+    div[data-testid="stExpanderDetails"] [data-testid="stMetric"] {
+        background-color: rgba(255, 255, 255, 0.02) !important;
+        border: 1px solid rgba(255, 255, 255, 0.06) !important;
+        border-radius: 8px !important;
+        padding: 8px 12px !important;
+        transition: all 0.2s ease-in-out !important;
+    }
+    div[data-testid="stExpanderDetails"] [data-testid="stMetric"]:hover {
+        background-color: rgba(255, 255, 255, 0.035) !important;
+        border-color: rgba(255, 255, 255, 0.12) !important;
+    }
+    div[data-testid="stExpanderDetails"] [data-testid="stMetricLabel"] {
+        font-size: 11px !important;
+        color: #94a3b8 !important;
+        font-weight: 600 !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.5px !important;
+    }
+    div[data-testid="stExpanderDetails"] [data-testid="stMetricValue"] {
+        font-size: 17px !important;
+        font-weight: 700 !important;
+        color: #f8fafc !important;
+    }
+    .leg-table-header {
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 6px;
+        padding: 6px 10px;
+        font-size: 11.5px;
+        font-weight: 700;
+        color: #94a3b8;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin: 14px 0 6px 0;
+    }
+    </style>
+    """, unsafe_allow_html=True)
     
     # --- Datos de base ---
     hist_df = df[df["Estado"] != "Abierta"].copy()
@@ -6140,14 +6277,10 @@ def render_history(df):
     if total_ops > PAGE_SIZES[0]:
         _hist_pager("top")
 
-    ESTADO_ICON = {"Cerrada": "🔒", "Rolada": "🔄", "Asignada": "📜"}
-
     for c_data in page_chains:
         pnl   = c_data["PnL_Total"]
         pct   = c_data["ProfitPct"]
-        pnl_icon = "🟢" if pnl >= 0 else "🔴"
         legs_label = f"{c_data['_legs']} patas" if c_data["_legs"] > 1 else "1 pata"
-        estado_icon = ESTADO_ICON.get(c_data["Estado"], "❓")
 
         try:
             fecha_str = pd.to_datetime(c_data["FechaCierre"]).strftime("%Y-%m-%d")
@@ -6162,13 +6295,60 @@ def render_history(df):
 
         strikes_short = " / ".join(f"{float(r['Strike']):g}" for _, r in c_data["_group"].iterrows())
 
-        label = (
-            f"{pnl_icon} {c_data['Ticker']} {exp_str_title} {strikes_short} {c_data['Estrategia']} "
-            f"| {estado_icon} {c_data['Estado']} "
-            f"| 📅 {fecha_str} "
-            f"| 💵 **${pnl:,.2f}** ({pct:.1f}%) "
-            f"| {legs_label}"
+        # Limpieza y formateo compacto de la estrategia
+        clean_strat = (
+            c_data["Estrategia"]
+            .replace(" (Cash Secured Put)", "")
+            .replace(" (Covered Call)", "")
+            .replace(" (Asignación)", "")
+            .strip()
         )
+        if clean_strat == "Iron Condor" and strikes_short:
+            strat_lbl = f"{strikes_short} IC"
+        elif strikes_short and clean_strat not in ["Long Stock", "Long Stock (Asignación)"]:
+            strat_lbl = f"{strikes_short} {clean_strat}"
+        else:
+            strat_lbl = clean_strat
+
+        # Col 2: Vencimiento
+        exp_badge = f":blue-background[**📅 {exp_str_title}**]" if exp_str_title else ":blue-background[**∞ Stock**]"
+
+        # Col 4: Estado
+        if c_data["Estado"] == "Rolada":
+            estado_badge = ":blue-background[**🔄 Rolada**]"
+        elif c_data["Estado"] == "Cerrada":
+            estado_badge = ":green-background[**🔒 Cerrada**]"
+        elif c_data["Estado"] == "Asignada":
+            estado_badge = ":orange-background[**📜 Asignada**]"
+        else:
+            estado_badge = f":gray-background[**{c_data['Estado']}**]"
+
+        # Col 6 & 7: PnL y %
+        if pnl > 0:
+            pnl_badge = f":green-background[**💵 +${pnl:,.2f}**]"
+            pct_badge = f":green-background[**📈 {pct:+.1f}%**]"
+        elif pnl < 0:
+            pnl_badge = f":red-background[**💵 -${abs(pnl):,.2f}**]"
+            pct_badge = f":red-background[**📉 {pct:.1f}%**]"
+        else:
+            pnl_badge = ":gray-background[**💵 $0.00**]"
+            pct_badge = ":gray-background[**0.0%**]"
+
+        # Col 8: Patas / Contratos
+        patas_badge = f":gray-background[**{legs_label} (x{c_data['Contratos']})**]"
+
+        # Construcción del encabezado tabulado en 8 columnas
+        hist_title_parts = [
+            f":violet-background[**{c_data['Ticker']}**]",  # Col 1: Ticker
+            exp_badge,                                      # Col 2: Vencimiento
+            f":gray-background[**{strat_lbl}**]",           # Col 3: Estrategia
+            estado_badge,                                   # Col 4: Estado
+            f":gray-background[**📅 {fecha_str}**]",         # Col 5: Fecha Cierre
+            pnl_badge,                                      # Col 6: PnL Realizado
+            pct_badge,                                      # Col 7: % Captura
+            patas_badge,                                    # Col 8: Patas/Contratos
+        ]
+        label = " ".join(hist_title_parts).replace("$", r"\$")
 
         with st.expander(label, expanded=False):
             # Métricas de la operación
@@ -6191,13 +6371,20 @@ def render_history(df):
                 st.caption(f"🦵 Strikes: `{c_data['StrikesStr']}`")
 
             # Desglose de patas
-            st.markdown("**📋 Desglose de patas:**")
+            st.markdown(
+                "<div class='leg-table-header'>"
+                "<div style='display: flex; justify-content: space-between; align-items: center;'>"
+                "<span>📋 Desglose de Patas de la Operación</span>"
+                "<span style='font-size: 10.5px; font-weight: normal; color: #64748b; text-transform: none;'>Precios de ejecución y resultado por pata</span>"
+                "</div></div>",
+                unsafe_allow_html=True
+            )
             group = c_data["_group"]
             
             leg_cols = st.columns([1, 1, 1.5, 1.5, 1.5, 1.5, 2, 1])
             fields = ["Side", "Tipo", "Strike", "Prima", "Cierre", "PnL", "Venc.", "Edit"]
             for i, f in enumerate(fields):
-                leg_cols[i].markdown(f"**{f}**")
+                leg_cols[i].markdown(f"<span style='font-size:11.5px; color:#94a3b8; font-weight:600;'>{f}</span>", unsafe_allow_html=True)
                 
             for _, leg in group.iterrows():
                 l_c1, l_c2, l_c3, l_c4, l_c5, l_c6, l_c7, l_c8 = st.columns([1, 1, 1.5, 1.5, 1.5, 1.5, 2, 1])

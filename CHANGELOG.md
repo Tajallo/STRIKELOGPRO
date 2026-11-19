@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Diseño Visual con Badges y Recuadros en Encabezados de Cartera Activa**:
+  - **Transformación de Líneas de Texto en Cuadros Visuales**: Los encabezados de las tarjetas en Cartera Activa pasan de ser texto plano separado por puntos a componerse de recuadros visuales independientes (badges/chips) con esquinas redondeadas, sombra sutil y códigos de color según el tipo de dato.
+  - **Paleta de Colores por Información**:
+    - **Ticker**: Recuadro morado `:violet-background` para rápida identificación del subyacente.
+    - **Fecha de Expiración**: Recuadro azul `:blue-background` con icono de calendario (`📅 15 Jan` o `∞ Stock`).
+    - **Estrategia y Strikes**: Recuadro gris oscuro `:gray-background` con strike y estrategia.
+    - **Contratos**: Recuadro gris `:gray-background` con la cantidad activa.
+    - **Rolls**: Recuadro azul `:blue-background` destacando la cantidad de rolls acumulados (`🔄 X rolls`).
+    - **BE Subyacente**: Recuadro verde `:green-background` con el precio de equilibrio del subyacente (`🎯 BE Suby: $XX.XX`).
+    - **Cierre BE Opción / Broker BE**: Recuadro naranja `:orange-background` con el precio de cierre y P/L Tradier BE (`🎯 Cierre BE: $X.XX`).
+    - **Alertas**: Recuadros rojo (`🚨 EARNINGS`) y amarillo (`💰 DIVIDENDOS`) para eventos corporativos inminentes.
+  - **CSS Premium para Expander**: Estilo personalizado que aporta espaciado uniforme, hover reactivo y profundidad visual a la cabecera.
+
 - **Visualización de BE Subyacente en Líneas de Cartera Activa**:
   - **Doble Indicador de Break-Even en Encabezados**: Cada tarjeta colapsable de Cartera Activa ahora muestra visiblemente el **`🎯 BE Subyacente: $XX.XX`** (precio de la acción para estar en tablas a vencimiento) además de **`🎯 Cierre BE Opción: $X.XX`** y el punto de equilibrio en broker (`P/L Tradier BE: $YYY`).
   - **Cobertura Universal de Estrategias**: Visible en todas las operaciones de opciones individuales (CSPs, Covered Calls) y spreads, permitiendo ver de un vistazo el precio del activo subyacente sin necesidad de abrir la tarjeta.

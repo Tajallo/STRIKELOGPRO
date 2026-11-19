@@ -1836,6 +1836,29 @@ def render_active_portfolio(df):
         border-bottom: 1px solid rgba(255,255,255,0.05);
         padding: 4px 0;
     }
+    /* Recuadros / Badges para encabezados de posición */
+    div[data-testid="stExpander"] details {
+        border: 1px solid rgba(255, 255, 255, 0.08) !important;
+        border-radius: 8px !important;
+        background-color: rgba(255, 255, 255, 0.015) !important;
+        margin-bottom: 6px !important;
+    }
+    div[data-testid="stExpander"] summary {
+        padding: 6px 10px !important;
+        border-radius: 8px !important;
+    }
+    div[data-testid="stExpander"] summary:hover {
+        background-color: rgba(255, 255, 255, 0.03) !important;
+    }
+    div[data-testid="stExpander"] summary span[style*="background-color"] {
+        padding: 3px 8px !important;
+        border-radius: 6px !important;
+        font-size: 12.5px !important;
+        font-weight: 600 !important;
+        display: inline-block !important;
+        margin: 2px 2px !important;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.2) !important;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -2334,47 +2357,47 @@ def render_active_portfolio(df):
             elif tradier_pnl_be < 0:
                 tradier_pnl_str = f"-${abs(tradier_pnl_be):,.0f}" if abs(tradier_pnl_be - round(tradier_pnl_be)) < 0.005 else f"-${abs(tradier_pnl_be):,.2f}"
 
-        # Etiquetas de Break Even según tipo de posición
+        # Etiquetas de Break Even según tipo de posición en formato Badge / Recuadro
         be_labels = []
         if is_stock_position:
-            be_labels.append(f"📌 BE Venta Stock: **${calculated_be:.2f}**")
+            be_labels.append(f":violet-background[**📌 BE Stock: ${calculated_be:.2f}**]")
         elif is_dual_be and calculated_be_upper > 0:
-            be_labels.append(f"🎯 BE Subyacente: **${calculated_be:.2f} – ${calculated_be_upper:.2f}**")
+            be_labels.append(f":green-background[**🎯 BE Suby: ${calculated_be:.2f} – ${calculated_be_upper:.2f}**]")
             if tradier_pnl_str:
-                be_labels.append(f"🎯 Cierre BE Opción: **${net_credit_chain:.2f}** (P/L {broker_name} BE: **{tradier_pnl_str}**)")
+                be_labels.append(f":orange-background[**🎯 Cierre BE: ${net_credit_chain:.2f} ({broker_name}: {tradier_pnl_str})**]")
         else:
             if calculated_be > 0:
-                be_labels.append(f"🎯 BE Subyacente: **${calculated_be:.2f}**")
+                be_labels.append(f":green-background[**🎯 BE Suby: ${calculated_be:.2f}**]")
             if tradier_pnl_str:
-                be_labels.append(f"🎯 Cierre BE Opción: **${net_credit_chain:.2f}** (P/L {broker_name} BE: **{tradier_pnl_str}**)")
+                be_labels.append(f":orange-background[**🎯 Cierre BE: ${net_credit_chain:.2f} ({broker_name}: {tradier_pnl_str})**]")
             else:
-                be_labels.append(f"🎯 Cierre BE Opción: **${net_credit_chain:.2f}**")
+                be_labels.append(f":orange-background[**🎯 Cierre BE: ${net_credit_chain:.2f}**]")
 
 
-        # Construir partes del encabezado con viñetas limpias (•)
-        title_parts = [f"**{ticker}**"]
+        # Construir partes del encabezado en recuadros visuales (Badges)
+        strikes_clean = " / ".join(strikes_list) if strikes_list and not is_stock_position else ""
+        strat_lbl = f"{strikes_clean} {strategy_display}" if strikes_clean else strategy_display
+
+        title_parts = [f":violet-background[**{ticker}**]"]
         if exp_str_title:
-            title_parts.append(exp_str_title)
+            title_parts.append(f":blue-background[**📅 {exp_str_title}**]")
+        elif is_stock_position:
+            title_parts.append(":blue-background[**∞ Stock**]")
         
-        if strikes_short:
-            title_parts.append(f"{strikes_short} {strategy_display}")
-        else:
-            title_parts.append(strategy_display)
-            
-        title_parts.append(f"({int(qty_active)} contr.)")
+        title_parts.append(f":gray-background[**{strat_lbl}**]")
+        title_parts.append(f":gray-background[**{int(qty_active)} contr.**]")
         
         if roll_label:
-            title_parts.append(roll_label)
+            title_parts.append(f":blue-background[**{roll_label.strip()}**]")
             
         title_parts.extend(be_labels)
         
-        alerts_list = []
-        if earnings_txt: alerts_list.append(f"🚨 {earnings_txt} 🚨")
-        if div_txt: alerts_list.append(f"🚨 {div_txt} 🚨")
-        if alerts_list:
-            title_parts.append(" ".join(alerts_list))
+        if earnings_txt:
+            title_parts.append(f":red-background[**🚨 {earnings_txt}**]")
+        if div_txt:
+            title_parts.append(f":yellow-background[**💰 {div_txt}**]")
             
-        header_title = " • ".join(title_parts).replace("$", r"\$")
+        header_title = " ".join(title_parts).replace("$", r"\$")
         
         # Layout de Tarjeta
         c_dte, c_card = st.columns([1, 10])

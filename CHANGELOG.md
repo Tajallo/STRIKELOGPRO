@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Modernización y Organización Visual del Interior de Posiciones y Panel de La Rueda**:
+  - **Encabezados Tabulados en La Rueda**: Las posiciones de asignación en La Rueda adoptan el mismo sistema de recuadros tabulados (`:violet-background`, `:blue-background`, `:green-background`, `:orange-background`), integrando el estado del Covered Call (`Covered Call: SÍ ✅` / `NO ⚠️`), el BE Base y el precio de compra en badges alineados.
+  - **Tarjetas Métricas KPI Interiores**: Enriquecimiento visual de `st.metric` dentro de todas las tarjetas colapsables con fondos oscuros translúcidos, bordes sutiles, hover dinámico y etiquetas tipográficas de estilo terminal financiero.
+  - **Línea de Tiempo del Historial de la Campaña Reestilizada**: Las tarjetas de eventos de La Rueda incorporan `backdrop-filter`, bordes de precisión, chips monospace para cada parámetro de ejecución (`Strike`, `Contratos`, `Prima`) y badges de PnL iluminados en verde/rojo según el resultado.
+  - **Fórmula de Break-Even de Alta Precisión**: Presentación visual tipo bloque de cómputo financiero con términos coloreados por concepto (compra, créditos de put, CCs, fees) y resultado final destacado en verde esmeralda.
+  - **Gestión Visual de Covered Calls Activos**: Recuadros dedicados con acento lateral cyan, métricas ordenadas y botón de expiración OTM estilizado.
+  - **Interior de Cartera Activa**: Badges modernos para las fases de vencimiento Theta, tarjeta destacada para el escenario de asignación Reg-T, sustitución de `st.table` por `st.dataframe` nativo para el historial de rolls y barra de encabezado dedicada para las patas de la estrategia.
+
 - **Tabulación Perfecta en Columnas Fijas para Encabezados de Cartera Activa**:
   - **Alineación Vertical Continua**: Las tarjetas colapsables de Cartera Activa ahora organizan sus recuadros en un sistema de 7 columnas fijas y tabuladas verticalmente, garantizando que todos los datos coincidan fila tras fila:
     - **Columna 1 (Ticker)**: Ancho fijo (68px), centrado con recuadro violeta.

@@ -1933,6 +1933,53 @@ def render_active_portfolio(df):
         justify-content: center !important;
         text-align: center !important;
     }
+    /* Estilos interiores para expanders (Métricas, Tarjetas, Secciones) */
+    div[data-testid="stExpanderDetails"] [data-testid="stMetric"] {
+        background-color: rgba(255, 255, 255, 0.02) !important;
+        border: 1px solid rgba(255, 255, 255, 0.06) !important;
+        border-radius: 8px !important;
+        padding: 8px 12px !important;
+        transition: all 0.2s ease-in-out !important;
+    }
+    div[data-testid="stExpanderDetails"] [data-testid="stMetric"]:hover {
+        background-color: rgba(255, 255, 255, 0.035) !important;
+        border-color: rgba(255, 255, 255, 0.12) !important;
+    }
+    div[data-testid="stExpanderDetails"] [data-testid="stMetricLabel"] {
+        font-size: 11px !important;
+        color: #94a3b8 !important;
+        font-weight: 600 !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.5px !important;
+    }
+    div[data-testid="stExpanderDetails"] [data-testid="stMetricValue"] {
+        font-size: 17px !important;
+        font-weight: 700 !important;
+        color: #f8fafc !important;
+    }
+    .assignment-scenario-card {
+        background: rgba(14, 165, 233, 0.06);
+        border: 1px solid rgba(14, 165, 233, 0.25);
+        border-left: 4px solid #0ea5e9;
+        border-radius: 6px;
+        padding: 10px 14px;
+        font-size: 13px;
+        color: #e0f2fe;
+        margin: 8px 0 12px 0;
+        line-height: 1.5;
+    }
+    .leg-table-header {
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 6px;
+        padding: 6px 10px;
+        font-size: 11.5px;
+        font-weight: 700;
+        color: #94a3b8;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin: 14px 0 6px 0;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -2581,20 +2628,48 @@ def render_active_portfolio(df):
                 # --- GUÍA CONTEXTUAL DTE Y ESCENARIO DE ASIGNACIÓN ---
                 if not is_stock_position:
                     if dte > 30:
-                        st.caption("🟢 **Fase Theta (DTE > 30d):** Destrucción gradual de tiempo. Mantén la posición tranquila; evalúa cerrar si alcanzas 50%-75% de beneficio máximo.")
+                        phase_icon = "🟢"
+                        phase_title = "Fase Theta (DTE > 30d):"
+                        phase_desc = "Destrucción gradual de tiempo. Mantén la posición tranquila; evalúa cerrar si alcanzas 50%-75% de beneficio máximo."
+                        phase_bg = "rgba(16, 185, 129, 0.08)"
+                        phase_border = "rgba(16, 185, 129, 0.25)"
                     elif 21 < dte <= 30:
-                        st.caption("🟡 **Fase Dulce (21-30d):** Máxima aceleración de Theta. Zona óptima para asegurar beneficios o planificar roll si está comprometida.")
+                        phase_icon = "🟡"
+                        phase_title = "Fase Dulce (21-30d):"
+                        phase_desc = "Máxima aceleración de Theta. Zona óptima para asegurar beneficios o planificar roll si está comprometida."
+                        phase_bg = "rgba(245, 158, 11, 0.08)"
+                        phase_border = "rgba(245, 158, 11, 0.25)"
                     elif 7 < dte <= 21:
-                        st.caption("🟠 **Fase de Gestión (7-21d):** Riesgo Gamma creciente. Se recomienda cerrar/rolar posiciones vendidas ITM para evitar asignación imprevista.")
+                        phase_icon = "🟠"
+                        phase_title = "Fase de Gestión (7-21d):"
+                        phase_desc = "Riesgo Gamma creciente. Se recomienda cerrar/rolar posiciones vendidas ITM para evitar asignación imprevista."
+                        phase_bg = "rgba(249, 115, 22, 0.08)"
+                        phase_border = "rgba(249, 115, 22, 0.25)"
                     else:
-                        st.caption("🔴 **Fase Final (DTE ≤ 7d):** Alto riesgo de asignación y volatilidad. Considera liquidar o rolar hoy.")
+                        phase_icon = "🔴"
+                        phase_title = "Fase Final (DTE ≤ 7d):"
+                        phase_desc = "Alto riesgo de asignación y volatilidad. Considera liquidar o rolar hoy."
+                        phase_bg = "rgba(239, 68, 68, 0.08)"
+                        phase_border = "rgba(239, 68, 68, 0.25)"
+
+                    st.markdown(
+                        f"<div style='background: {phase_bg}; border: 1px solid {phase_border}; border-radius: 6px; padding: 7px 12px; margin-top: 10px; margin-bottom: 8px; font-size: 12px; color: #e2e8f0; display: flex; align-items: center; gap: 8px;'>"
+                        f"<span>{phase_icon}</span> <b>{phase_title}</b> <span style='color: #cbd5e1;'>{phase_desc}</span>"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
 
                     if first_row.get("OptionType") == "Put" and first_row.get("Side") == "Sell":
                         short_strike = float(first_row.get("Strike", 0.0))
                         costo_base_asignacion = short_strike - net_credit_chain
-                        st.info(
-                            f"🛡️ **Si te ejercen la opción hoy:** Comprarías **{int(qty_active * 100)} acciones** a **${short_strike:.2f}** "
-                            f"(${short_strike * qty_active * 100:,.2f} USD). Tras descontar tus primas acumuladas (**${net_credit_chain:.2f}/acc**), tu **Costo Base Real de las acciones** sería **${costo_base_asignacion:.2f}/acción**."
+                        st.markdown(
+                            f"""
+                            <div class="assignment-scenario-card">
+                                🛡️ <b>Si te ejercen la opción hoy:</b> Comprarías <b>{int(qty_active * 100)} acciones</b> a <b>${short_strike:.2f}</b> (${short_strike * qty_active * 100:,.2f} USD).<br>
+                                Tras descontar tus primas acumuladas (<b>${net_credit_chain:.2f}/acc</b>), tu <b>Costo Base Real de las acciones</b> sería <b style='color:#38bdf8;'>${costo_base_asignacion:.2f}/acción</b>.
+                            </div>
+                            """,
+                            unsafe_allow_html=True
                         )
 
                 # --- SECCIÓN DE HISTORIAL DE ROLLS (BFS Detallado) ---
@@ -2698,8 +2773,8 @@ def render_active_portfolio(df):
                                 "PnL Realizado": pnl_val
                             })
                         
-                        # Mostrar tabla
-                        st.table(pd.DataFrame(hist_data))
+                        # Mostrar tabla histórica
+                        st.dataframe(pd.DataFrame(hist_data), use_container_width=True, hide_index=True)
                         
                         # Mostrar evolución del BE
                         if len(campaign_steps) >= 2:
@@ -2843,10 +2918,18 @@ def render_active_portfolio(df):
                                 )
                 
                 # Tabla de Legs Custom para mejor alineación
+                st.markdown(
+                    "<div class='leg-table-header'>"
+                    "<div style='display: flex; justify-content: space-between; align-items: center;'>"
+                    "<span>📐 Patas de la Posición</span>"
+                    "<span style='font-size: 10.5px; font-weight: normal; color: #64748b; text-transform: none;'>Estructura y edición rápida</span>"
+                    "</div></div>",
+                    unsafe_allow_html=True
+                )
                 leg_cols = st.columns([1.5, 1, 1.2, 0.8, 1, 1.2, 1.8, 1])
                 fields = ["Lado", "Tipo", "Strike", "Cnt", "Delta", "Prima", "Venc.", "Edit"]
                 for i, f in enumerate(fields):
-                    leg_cols[i].markdown(f"**{f}**")
+                    leg_cols[i].markdown(f"<span style='font-size:11.5px; color:#94a3b8; font-weight:600;'>{f}</span>", unsafe_allow_html=True)
                 
                 for _, leg in group.iterrows():
                     l_c1, l_c2, l_c3, l_c4, l_c5, l_c6, l_c7, l_c8 = st.columns([1.5, 1, 1.2, 0.8, 1, 1.2, 1.8, 1])
@@ -3328,34 +3411,36 @@ def render_active_portfolio(df):
             costo_base_dinamico = precio_compra - total_primas + (total_comisiones_campana / acciones_st)
 
             # --- Card de la posición ---
-            indicator_html = (
-                "<span class='cc-tag-yes'>Covered Call: SÍ ✅</span>"
-                if tiene_cc else
-                "<span class='cc-tag-no'>Covered Call: NO ⚠️</span>"
-            )
-            with st.expander(
-                f"🎡 **{stock_ticker}** • {acciones_st} acciones @ **\\${precio_compra:.2f}** • 🎯 BE Base: **\\${costo_base_dinamico:.2f}**",
-                expanded=False
-            ):
+            wheel_title_parts = [
+                f":violet-background[**{stock_ticker}**]",
+                ":blue-background[**∞ Stock**]",
+                ":gray-background[**Long Stock**]",
+                f":gray-background[**{acciones_st} acc.**]",
+                ":green-background[**Covered Call: SÍ ✅**]" if tiene_cc else ":red-background[**Covered Call: NO ⚠️**]",
+                f":violet-background[**📌 BE Base: ${costo_base_dinamico:.2f}**]",
+                f":orange-background[**💵 Compra: ${precio_compra:.2f}**]",
+            ]
+            wheel_header = " ".join(wheel_title_parts).replace("$", r"\$")
+
+            with st.expander(wheel_header, expanded=False):
                 st.markdown(f"""
-                <div style='margin-bottom:10px;'>
-                {indicator_html}
-                &nbsp;&nbsp;
-                <span style='color:#95a5a6; font-size:12px;'>ChainID: {stock_chain}</span>
+                <div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.06);'>
+                    <span style='font-size: 13px; color: #94a3b8;'>Campaña La Rueda &nbsp;•&nbsp; <code style='color:#38bdf8; font-size:12px;'>ChainID: {stock_chain}</code></span>
+                    <span style='font-size: 12px; color: #64748b;'>{f"Procedente de asignación (Parent: {stock_parent_id})" if pd.notna(stock_parent_id) else "Asignación directa"}</span>
                 </div>
                 """, unsafe_allow_html=True)
 
                 wc1, wc2, wc3, wc4 = st.columns(4)
-                wc1.metric("Acciones", f"{acciones_st}")
-                wc2.metric("Precio Compra (Strike SP)", f"${precio_compra:.2f}")
-                wc3.metric("Primas Acumuladas", f"${total_primas:.2f}",
+                wc1.metric("Acciones en Cartera", f"{acciones_st} acc.")
+                wc2.metric("Precio Compra Original", f"${precio_compra:.2f}", help="Strike al que se ejecutó la asignación")
+                wc3.metric("Primas Acumuladas", f"${total_primas:.2f}/acc",
                            help="PCS/CSP + Covered Calls + Spreads Defensivos + Buy Put cerrado")
                 wc4.metric("💥 Costo Base Real (BE)", f"${costo_base_dinamico:.2f}",
                            delta=f"${costo_base_dinamico - precio_compra:+.2f} vs compra",
-                           help="Precio al que estás en breakeven contando todas las primas cobradas y comisiones")
+                           help="Precio por acción necesario para quedar en $0.00 PnL global")
 
                 # Desglose de primas
-                st.markdown("**📊 Desglose: cómo se reduce tu costo base:**")
+                st.markdown("<div style='margin-top: 14px; margin-bottom: 8px; font-size: 11.5px; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px;'>📊 Desglose: Reducción de Costo Base por Acción</div>", unsafe_allow_html=True)
                 d1, d2, d3, d4 = st.columns(4)
                 d1.metric("− Prima PCS/CSP", f"${abs(prima_neta_pcs):.2f}", help="Crédito neto recibido. Reduce el costo base desde el inicio.")
                 d2.metric("− Covered Calls", f"${cc_acumulado_final:.2f}", help="Suma de todas las primas de CC cobradas (abiertas o cerradas).")
@@ -3370,21 +3455,30 @@ def render_active_portfolio(df):
 
                 # Fórmula visual BE completa
                 formula_html = f"""
-                <div style='background:#0d1117; border:1px solid #30363d; border-radius:8px;
-                            padding:10px 14px; margin-top:8px; font-size:12px; color:#8b949e;'>
-                <b style='color:#e6edf3;'>📐 Fórmula BE:</b> &nbsp;
-                <code style='color:#f39c12;'>{precio_compra:.2f}</code>
-                <span style='color:#e74c3c;'> − {abs(prima_neta_pcs):.2f} (PCS/CSP)</span>
-                <span style='color:#e74c3c;'> − {cc_acumulado_final:.2f} (CC)</span>
+                <div style='background: linear-gradient(135deg, rgba(15, 23, 42, 0.8), rgba(30, 41, 59, 0.6)); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 10px 14px; margin: 12px 0; font-size: 12.5px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-family: monospace;'>
+                <b style='color: #e2e8f0; font-family: sans-serif; font-size: 12px;'>📐 Fórmula BE:</b>
+                <span style='background: rgba(245, 158, 11, 0.15); color: #f59e0b; padding: 2px 6px; border-radius: 4px; border: 1px solid rgba(245, 158, 11, 0.3);'>Compra ${precio_compra:.2f}</span>
+                <span style='color: #ef4444; font-weight: bold;'>−</span>
+                <span style='background: rgba(239, 68, 68, 0.12); color: #fca5a5; padding: 2px 6px; border-radius: 4px;'>PCS/CSP ${abs(prima_neta_pcs):.2f}</span>
+                <span style='color: #ef4444; font-weight: bold;'>−</span>
+                <span style='background: rgba(239, 68, 68, 0.12); color: #fca5a5; padding: 2px 6px; border-radius: 4px;'>CC ${cc_acumulado_final:.2f}</span>
                 """
                 if buy_put_prima_extra > 0:
-                    formula_html += f"<span style='color:#e74c3c;'> − {buy_put_prima_extra:.2f} (BP)</span>"
+                    formula_html += f"""
+                    <span style='color: #ef4444; font-weight: bold;'>−</span>
+                    <span style='background: rgba(239, 68, 68, 0.12); color: #fca5a5; padding: 2px 6px; border-radius: 4px;'>BP ${buy_put_prima_extra:.2f}</span>
+                    """
                 if (pds_pnl_per_share + extra_campana_pnl_per_share) > 0:
-                    formula_html += f"<span style='color:#e74c3c;'> − {pds_pnl_per_share + extra_campana_pnl_per_share:.4f} (Defensas)</span>"
+                    formula_html += f"""
+                    <span style='color: #ef4444; font-weight: bold;'>−</span>
+                    <span style='background: rgba(239, 68, 68, 0.12); color: #fca5a5; padding: 2px 6px; border-radius: 4px;'>Defensas ${pds_pnl_per_share + extra_campana_pnl_per_share:.2f}</span>
+                    """
                 
                 formula_html += f"""
-                <span style='color:#2ec4b6;'> + {total_comisiones_campana / acciones_st:.4f} (Fees: &#36;{total_comisiones_campana:.2f})</span>
-                = <b style='color:#00ffa2;'>&#36;{costo_base_dinamico:.4f}</b>
+                <span style='color: #38bdf8; font-weight: bold;'>+</span>
+                <span style='background: rgba(56, 189, 248, 0.12); color: #7dd3fc; padding: 2px 6px; border-radius: 4px;'>Fees ${total_comisiones_campana / acciones_st:.4f}</span>
+                <span style='color: #10b981; font-weight: bold;'>=</span>
+                <span style='background: rgba(16, 185, 129, 0.2); color: #34d399; padding: 3px 10px; border-radius: 6px; font-weight: 700; border: 1px solid rgba(16, 185, 129, 0.4);'>🎯 BE Real ${costo_base_dinamico:.4f}</span>
                 </div>
                 """
                 st.markdown(formula_html, unsafe_allow_html=True)
@@ -3764,69 +3858,75 @@ def render_active_portfolio(df):
                         box-shadow: 0 0 8px #f39c12;
                     }}
                     .timeline-card {{
-                        background: rgba(22, 27, 34, 0.6);
-                        border: 1px solid #30363d;
-                        border-radius: 8px;
-                        padding: 12px 16px;
+                        background: rgba(15, 23, 42, 0.75);
+                        backdrop-filter: blur(6px);
+                        border: 1px solid rgba(255, 255, 255, 0.08);
+                        border-radius: 10px;
+                        padding: 12px 18px;
                         transition: all 0.2s ease-in-out;
                     }}
                     .timeline-card:hover {{
-                        background: rgba(30, 41, 59, 0.8);
-                        border-color: #00ffa2;
+                        background: rgba(30, 41, 59, 0.85);
+                        border-color: rgba(56, 189, 248, 0.5);
                         transform: translateX(3px);
                     }}
                     .timeline-header {{
                         display: flex;
                         justify-content: space-between;
                         align-items: center;
-                        margin-bottom: 6px;
+                        margin-bottom: 8px;
                     }}
                     .strategy-role-badge {{
                         font-size: 11px;
-                        font-weight: bold;
-                        padding: 2px 8px;
+                        font-weight: 700;
+                        padding: 3px 10px;
                         border-radius: 12px;
                         text-transform: uppercase;
+                        letter-spacing: 0.5px;
                     }}
-                    .role-sell-put {{ background: rgba(0, 255, 162, 0.1); color: #00ffa2; border: 1px solid rgba(0, 255, 162, 0.2); }}
-                    .role-buy-put-open {{ background: rgba(231, 76, 60, 0.1); color: #e74c3c; border: 1px solid rgba(231, 76, 60, 0.2); }}
-                    .role-covered-call {{ background: rgba(58, 134, 200, 0.1); color: #3a86c8; border: 1px solid rgba(58, 134, 200, 0.2); }}
-                    .role-defensive {{ background: rgba(155, 89, 182, 0.1); color: #9b59b6; border: 1px solid rgba(155, 89, 182, 0.2); }}
-                    .role-stock {{ background: rgba(243, 156, 18, 0.1); color: #f39c12; border: 1px solid rgba(243, 156, 18, 0.2); }}
-                    .role-flyagonal {{ background: rgba(255, 0, 127, 0.1); color: #ff007f; border: 1px solid rgba(255, 0, 127, 0.2); }}
-                    .role-generic {{ background: rgba(149, 165, 166, 0.1); color: #95a5a6; border: 1px solid rgba(149, 165, 166, 0.2); }}
+                    .role-sell-put {{ background: rgba(0, 255, 162, 0.12); color: #00ffa2; border: 1px solid rgba(0, 255, 162, 0.3); }}
+                    .role-buy-put-open {{ background: rgba(231, 76, 60, 0.12); color: #e74c3c; border: 1px solid rgba(231, 76, 60, 0.3); }}
+                    .role-covered-call {{ background: rgba(58, 134, 200, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); }}
+                    .role-defensive {{ background: rgba(155, 89, 182, 0.15); color: #c084fc; border: 1px solid rgba(192, 132, 252, 0.3); }}
+                    .role-stock {{ background: rgba(243, 156, 18, 0.15); color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.3); }}
+                    .role-flyagonal {{ background: rgba(255, 0, 127, 0.15); color: #f472b6; border: 1px solid rgba(244, 114, 182, 0.3); }}
+                    .role-generic {{ background: rgba(149, 165, 166, 0.12); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.2); }}
 
                     .timeline-date {{
-                        font-size: 11px;
-                        color: #8b949e;
+                        font-size: 11.5px;
+                        color: #94a3b8;
                     }}
                     .timeline-details {{
                         display: flex;
                         align-items: center;
-                        font-size: 13px;
-                        color: #c9d1d9;
+                        font-size: 12.5px;
+                        color: #e2e8f0;
                         margin-bottom: 6px;
                         flex-wrap: wrap;
-                        gap: 12px;
+                        gap: 8px;
                     }}
                     .detail-item {{
-                        background: rgba(255, 255, 255, 0.04);
-                        padding: 1px 6px;
+                        background: rgba(255, 255, 255, 0.05);
+                        border: 1px solid rgba(255, 255, 255, 0.08);
+                        padding: 2px 8px;
                         border-radius: 4px;
                         font-family: monospace;
+                        font-size: 12px;
                     }}
                     .timeline-pnl {{
-                        font-size: 13px;
-                        font-weight: bold;
+                        font-size: 12.5px;
+                        font-weight: 700;
+                        padding: 2px 8px;
+                        border-radius: 4px;
                     }}
-                    .pnl-positive {{ color: #2ecc71; }}
-                    .pnl-negative {{ color: #e74c3c; }}
-                    .pnl-neutral {{ color: #8b949e; }}
+                    .pnl-positive {{ color: #4ade80; background: rgba(74, 222, 128, 0.1); border: 1px solid rgba(74, 222, 128, 0.25); }}
+                    .pnl-negative {{ color: #f87171; background: rgba(248, 113, 113, 0.1); border: 1px solid rgba(248, 113, 113, 0.25); }}
+                    .pnl-neutral {{ color: #94a3b8; background: rgba(255, 255, 255, 0.05); }}
                     .timeline-notes {{
                         font-size: 12px;
-                        color: #8b949e;
+                        color: #94a3b8;
                         font-style: italic;
-                        border-top: 1px solid rgba(255, 255, 255, 0.05);
+                        border-top: 1px solid rgba(255, 255, 255, 0.06);
                         padding-top: 6px;
                         margin-top: 6px;
                     }}
@@ -3850,7 +3950,7 @@ def render_active_portfolio(df):
                 total_cc_contracts = cc_activos["Contratos"].sum() if tiene_cc else 0
 
                 if tiene_cc:
-                    st.markdown("#### 📋 Covered Calls activos")
+                    st.markdown("<div style='margin-top: 16px; margin-bottom: 8px; font-size: 12.5px; font-weight: 700; color: #38bdf8; display: flex; align-items: center; gap: 6px;'><span>📋</span> Covered Calls Activos</div>", unsafe_allow_html=True)
                     for _, cc_row in cc_activos.iterrows():
                         cc_chain_val = cc_row["ChainID"]
                         cc_linked = df[df["ChainID"] == cc_chain_val]
@@ -3864,7 +3964,11 @@ def render_active_portfolio(df):
                             except:
                                 exp_cc_str = "N/A"
                             
-                            st.markdown(f"**Covered Call Strike ${cc_strike_metric:.2f} ({cc_cnt_metric} contrato{'s' if cc_cnt_metric > 1 else ''})** (Vence: {exp_cc_str})")
+                            st.markdown(
+                                f"<div style='background: rgba(30, 41, 59, 0.35); border: 1px solid rgba(56, 189, 248, 0.25); border-left: 3px solid #38bdf8; border-radius: 8px; padding: 12px 16px; margin-bottom: 12px;'>"
+                                f"<div style='font-size: 13.5px; font-weight: 700; color: #f8fafc; margin-bottom: 8px;'>Covered Call Strike ${cc_strike_metric:.2f} ({cc_cnt_metric} contrato{'s' if cc_cnt_metric > 1 else ''}) &nbsp;•&nbsp; <span style='color: #38bdf8; font-size: 12.5px;'>Vence: {exp_cc_str}</span></div>",
+                                unsafe_allow_html=True
+                            )
                             cc_info1, cc_info2, cc_info3 = st.columns(3)
                             cc_info1.metric("Strike CC", f"${cc_strike_metric:.2f}")
                             cc_info2.metric("Prima CC", f"${cc_prima_metric:.2f}/acción")
@@ -3943,7 +4047,7 @@ def render_active_portfolio(df):
                                 if cexp2.button("❌ Cancelar", key=f"cancel_expire_cc_{cc_chain_val}"):
                                     del st.session_state[f"expire_cc_{cc_chain_val}"]
                                     st.rerun()
-                            st.markdown("---")
+                            st.markdown("</div>", unsafe_allow_html=True)
 
                 if total_cc_contracts < contratos_st:
                     st.markdown("#### ➕ Vincular Covered Call")
@@ -4021,7 +4125,7 @@ def render_active_portfolio(df):
                     st.caption("💡 Para añadir otro Covered Call tras el vencimiento, usa el botón ⌛ de arriba.")
 
                 # --- Notas Independientes (Stock & Covered Call) ---
-                st.markdown("#### 📝 Notas de la Campaña (Edición Directa)")
+                st.markdown("<div style='margin-top: 16px; margin-bottom: 8px; font-size: 12.5px; font-weight: 700; color: #94a3b8; display: flex; align-items: center; gap: 6px; text-transform: uppercase; letter-spacing: 0.5px;'><span>📝</span> Notas de la Campaña (Edición Directa)</div>", unsafe_allow_html=True)
                 
                 # Definir columnas para notas side-by-side
                 if tiene_cc:

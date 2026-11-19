@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Reconciliación y Enlace Genealógico Completo de Rolls (IREN, CIFR, DRAM, NU, F)**:
+  - **Reconstrucción Integral de Cadenas de Rolls**: Cotejo exhaustivo contra la API de historial y órdenes ejecutadas en Tradier Brokerage para restablecer los vínculos de parentesco (`ParentID`) en todas las posiciones activas de la cartera.
+  - **IREN**: Enlace de la campaña de Strike $30 (4 rolls acumulados: 32P Exp 16-Oct ➔ 32P Exp 23-Oct ➔ 30P Exp 27-Nov ➔ 30P Exp 11-Dic ➔ 30P Exp 15-Ene) y Strike $32 (3 rolls acumulados: 36P Exp 16-Oct ➔ 32P Exp 18-Dic ➔ 32P Exp 15-Ene).
+  - **CIFR**: Enlace de la campaña de Strike $11 (3 rolls acumulados: 11.5P Exp 16-Oct ➔ 11P Exp 13-Nov ➔ 11P Exp 18-Dic ➔ 11P Exp 15-Ene) y Strike $12 (4 rolls acumulados: 13.5P Exp 09-Oct ➔ 13P Exp 16-Oct ➔ 12P Exp 18-Dic ➔ 12P Exp 15-Ene ➔ 12P Exp 19-Mar).
+  - **DRAM**: Enlace completo de Strike $52 (4 rolls acumulados: 54P Exp 16-Oct ➔ 53P Exp 30-Oct ➔ 52P Exp 27-Nov ➔ 52P Exp 04-Dic ➔ 52P Exp 15-Ene) y Strike $51 (5 rolls acumulados).
+  - **NU**: Enlace del roll multileg de hoy 19-Nov (Orden #160824832, 3 contratos 12.5P Exp 20-Nov @ $0.41 ➔ 12.0P Exp 11-Dic @ $0.45).
+  - **F (Ford)**: Enlace del roll multileg de 5 contratos de Strike 12.0P Exp 20-Nov @ $0.69 ➔ Exp 27-Nov @ $0.70 (Orden #160827156), y discriminación exacta en Strike 11.5P entre los 2 contratos originales y el contrato rolado (Orden #160820920).
+  - **Exactitud en Break-Even Global y Métricas de Cartera Activa**: Con todas las cadenas conectadas, el cálculo de `P/L Tradier BE`, `Cierre BE Opción` y los badges de rolls reflejan al milímetro el resultado real consolidado.
+
 - **Validación en Lote Automática y Detección de Rolls Multi-Día en Tradier Sync**:
   - **Botón `⚡ Sincronizar Todo Automático`**: Al abrir el asistente con discrepancias detectadas, se añade un banner principal superior que permite aplicar de un solo clic todas las operaciones pendientes (rolls emparejados, cierres de posiciones faltantes e importación masiva de nuevos combos e individuales).
   - **Validación en Lote por Sección**: Botón complementario `⚡ Resolver Todas las Faltantes` en la sección de posiciones faltantes y `⚡ Importar Todas las Nuevas` en la sección de incorporaciones para operar por bloques.

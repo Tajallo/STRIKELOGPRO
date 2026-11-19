@@ -2334,16 +2334,21 @@ def render_active_portfolio(df):
             elif tradier_pnl_be < 0:
                 tradier_pnl_str = f"-${abs(tradier_pnl_be):,.0f}" if abs(tradier_pnl_be - round(tradier_pnl_be)) < 0.005 else f"-${abs(tradier_pnl_be):,.2f}"
 
-        # Etiqueta de Break Even según tipo de posición
+        # Etiquetas de Break Even según tipo de posición
+        be_labels = []
         if is_stock_position:
-            be_opt_label = f"📌 BE Venta Stock: **${calculated_be:.2f}**"
+            be_labels.append(f"📌 BE Venta Stock: **${calculated_be:.2f}**")
         elif is_dual_be and calculated_be_upper > 0:
-            be_opt_label = f"🎯 BE Subyacente: **${calculated_be:.2f} – ${calculated_be_upper:.2f}**"
-        else:
+            be_labels.append(f"🎯 BE Subyacente: **${calculated_be:.2f} – ${calculated_be_upper:.2f}**")
             if tradier_pnl_str:
-                be_opt_label = f"🎯 Cierre BE Opción: **${net_credit_chain:.2f}** (P/L {broker_name} BE: **{tradier_pnl_str}**)"
+                be_labels.append(f"🎯 Cierre BE Opción: **${net_credit_chain:.2f}** (P/L {broker_name} BE: **{tradier_pnl_str}**)")
+        else:
+            if calculated_be > 0:
+                be_labels.append(f"🎯 BE Subyacente: **${calculated_be:.2f}**")
+            if tradier_pnl_str:
+                be_labels.append(f"🎯 Cierre BE Opción: **${net_credit_chain:.2f}** (P/L {broker_name} BE: **{tradier_pnl_str}**)")
             else:
-                be_opt_label = f"🎯 Cierre BE Opción: **${net_credit_chain:.2f}**"
+                be_labels.append(f"🎯 Cierre BE Opción: **${net_credit_chain:.2f}**")
 
 
         # Construir partes del encabezado con viñetas limpias (•)
@@ -2361,7 +2366,7 @@ def render_active_portfolio(df):
         if roll_label:
             title_parts.append(roll_label)
             
-        title_parts.append(be_opt_label)
+        title_parts.extend(be_labels)
         
         alerts_list = []
         if earnings_txt: alerts_list.append(f"🚨 {earnings_txt} 🚨")

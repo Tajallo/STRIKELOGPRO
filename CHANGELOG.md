@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Visualización de BE Subyacente en Líneas de Cartera Activa**:
+  - **Doble Indicador de Break-Even en Encabezados**: Cada tarjeta colapsable de Cartera Activa ahora muestra visiblemente el **`🎯 BE Subyacente: $XX.XX`** (precio de la acción para estar en tablas a vencimiento) además de **`🎯 Cierre BE Opción: $X.XX`** y el punto de equilibrio en broker (`P/L Tradier BE: $YYY`).
+  - **Cobertura Universal de Estrategias**: Visible en todas las operaciones de opciones individuales (CSPs, Covered Calls) y spreads, permitiendo ver de un vistazo el precio del activo subyacente sin necesidad de abrir la tarjeta.
+
 - **Reconciliación y Enlace Genealógico Completo de Rolls (IREN, CIFR, DRAM, NU, F)**:
   - **Reconstrucción Integral de Cadenas de Rolls**: Cotejo exhaustivo contra la API de historial y órdenes ejecutadas en Tradier Brokerage para restablecer los vínculos de parentesco (`ParentID`) en todas las posiciones activas de la cartera.
   - **IREN**: Enlace de la campaña de Strike $30 (4 rolls acumulados: 32P Exp 16-Oct ➔ 32P Exp 23-Oct ➔ 30P Exp 27-Nov ➔ 30P Exp 11-Dic ➔ 30P Exp 15-Ene) y Strike $32 (3 rolls acumulados: 36P Exp 16-Oct ➔ 32P Exp 18-Dic ➔ 32P Exp 15-Ene).

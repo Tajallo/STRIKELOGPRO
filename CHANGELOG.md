@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Validación en Lote Automática y Detección de Rolls Multi-Día en Tradier Sync**:
+  - **Botón `⚡ Sincronizar Todo Automático`**: Al abrir el asistente con discrepancias detectadas, se añade un banner principal superior que permite aplicar de un solo clic todas las operaciones pendientes (rolls emparejados, cierres de posiciones faltantes e importación masiva de nuevos combos e individuales).
+  - **Validación en Lote por Sección**: Botón complementario `⚡ Resolver Todas las Faltantes` en la sección de posiciones faltantes y `⚡ Importar Todas las Nuevas` en la sección de incorporaciones para operar por bloques.
+  - **Preservación Total de Validación Individual**: Se mantienen 100% operativos los botones fila a fila (`Cerrar`, `🔄 Rolada`, `📜 Asignada`, `➕ Añadir Combo`, `➕ Añadir a Cartera`), permitiendo revisar minuciosamente cada operación cuando se desee.
+  - **Detección Retroactiva de Rolls desde Historial (`/history`)**: El motor de conciliación ahora inspecciona las últimas 100 transacciones del historial de Tradier además de las órdenes del día, detectando automáticamente rolls ejecutados días atrás sin obligar a sincronizar el mismo día.
+  - **Botón Manual `🔄 Rolada` en Discrepancias**: Incorporado en todas las operaciones faltantes para que el usuario pueda marcar un roll y vincular la posición padre/hijo directamente sin editar la bitácora a mano.
+
 - **Conciliación Inteligente por Contratos y Flujos de Cierre / Asignación en Tradier Sync**:
   - **Desglose Exacto de Operaciones VIX**: Separación del spread de VIX 20/24C en dos operaciones independientes de 1 contrato cada una con sus primas de ejecución reales desde el historial de órdenes de Tradier: Orden #156561713 ($1.08 crédito neto, BP $292, BE $21.08, MaxProfit $108) y Orden #156564261 ($1.05 crédito neto, BP $295, BE $21.05, MaxProfit $105).
   - **Contabilidad de Contratos Parciales / Agrupados**: Algoritmo de reconciliación en `tradier_sync.py` actualizado para llevar contabilidad por contratos disponibles (`remaining_contratos`), permitiendo que múltiples entradas o coberturas individuales en StrikeLog concilien al 100% contra posiciones consolidadas en el broker sin falsas advertencias de "faltantes".

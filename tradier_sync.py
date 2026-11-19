@@ -211,11 +211,13 @@ def fetch_recent_orders(token: Optional[str] = None, account_id: Optional[str] =
         return {"error": f"Error de conexión con Tradier: {e}"}
 
 
-def extract_recent_fills_and_rolls(orders: List[Dict[str, Any]]) -> Tuple[Dict[str, float], List[Dict[str, Any]]]:
-    """Extrae precios de cierre y detecta parejas de rolls desde órdenes ejecutadas."""
+def extract_recent_fills_and_rolls(orders: List[Dict[str, Any]], history_events: Optional[List[Dict[str, Any]]] = None) -> Tuple[Dict[str, float], List[Dict[str, Any]]]:
+    """Extrae precios de cierre y detecta parejas de rolls desde órdenes ejecutadas e historial reciente."""
+    from collections import defaultdict
     fills_by_symbol = {}
     roll_pairs = []
 
+    # 1. Analizar órdenes del día / activas
     for o in orders:
         if o.get("status") != "filled":
             continue
@@ -254,6 +256,48 @@ def extract_recent_fills_and_rolls(orders: List[Dict[str, Any]]) -> Tuple[Dict[s
                         "net_price": float(o.get("avg_fill_price", 0.0) or 0.0),
                         "date": cl.get("transaction_date") or o.get("transaction_date")
                     })
+
+    # 2. Analizar historial reciente (para rolls y cierres ejecutados en días previos)
+    if history_events:
+        by_date_and_ticker = defaultdict(lambda: {"buy": [], "sell": []})
+        for e in history_events:
+            if e.get("type") == "trade":
+                tr = e.get("trade", {})
+                if tr.get("trade_type") == "option":
+                    sym = tr.get("symbol", "")
+                    parsed = parse_occ_symbol(sym)
+                    ticker = parsed.get("ticker")
+                    dt = str(e.get("date", ""))[:10]
+                    qty = float(tr.get("quantity", 0.0) or 0.0)
+                    price = float(tr.get("price", 0.0) or 0.0)
+                    if sym and price > 0 and sym not in fills_by_symbol:
+                        fills_by_symbol[sym] = price
+                    
+                    if qty > 0:
+                        by_date_and_ticker[(dt, ticker)]["buy"].append({
+                            "symbol": sym, "price": price, "qty": qty, "date": e.get("date")
+                        })
+                    elif qty < 0:
+                        by_date_and_ticker[(dt, ticker)]["sell"].append({
+                            "symbol": sym, "price": price, "qty": abs(qty), "date": e.get("date")
+                        })
+        
+        for (dt, ticker), group in by_date_and_ticker.items():
+            for b in group["buy"]:
+                for s in group["sell"]:
+                    already = any(rp.get("close_symbol") == b["symbol"] and rp.get("open_symbol") == s["symbol"] for rp in roll_pairs)
+                    if not already:
+                        roll_pairs.append({
+                            "order_id": f"hist_{dt}_{ticker}",
+                            "close_symbol": b["symbol"],
+                            "close_price": b["price"],
+                            "close_side": "buy_to_close",
+                            "open_symbol": s["symbol"],
+                            "open_price": s["price"],
+                            "open_side": "sell_to_open",
+                            "net_price": s["price"] - b["price"],
+                            "date": b["date"]
+                        })
 
     return fills_by_symbol, roll_pairs
 
@@ -396,6 +440,236 @@ DEFAULT_ESTRATEGIAS = [
 ]
 
 
+def batch_sync_all(JournalManager, df: pd.DataFrame, recon: Dict[str, Any], roll_pairs: List[Dict[str, Any]], fills_by_symbol: Dict[str, float], strat_list: List[str]) -> Tuple[pd.DataFrame, int, int]:
+    """
+    Sincroniza en lote todas las discrepancias detectadas:
+    1. Importa nuevas posiciones (combos multi-pata e individuales).
+    2. Cierra o rola las posiciones faltantes con precio sugerido/detectado o introducido.
+    Devuelve (updated_df, count_missing_resolved, count_new_imported).
+    """
+    import streamlit as st
+    from uuid import uuid4
+    from collections import defaultdict
+    from datetime import datetime
+
+    cur_df = df.copy()
+    n_imported = 0
+    n_resolved = 0
+
+    # 1. Procesar NUEVAS en Tradier
+    new_in_tradier = recon.get("new_in_tradier", [])
+    if new_in_tradier:
+        grouped_new = defaultdict(list)
+        for nw in new_in_tradier:
+            key = (nw["ticker"], nw["expiry"])
+            grouped_new[key].append(nw)
+
+        imported_legs_raw = set()
+        new_records = []
+
+        # A) Combos multi-pata
+        for (tkr, exp), legs in grouped_new.items():
+            if len(legs) > 1:
+                combo_strat = "Spread"
+                sell_calls = [l for l in legs if l["side"] == "Sell" and l["option_type"] == "Call"]
+                buy_calls = [l for l in legs if l["side"] == "Buy" and l["option_type"] == "Call"]
+                sell_puts = [l for l in legs if l["side"] == "Sell" and l["option_type"] == "Put"]
+                buy_puts = [l for l in legs if l["side"] == "Buy" and l["option_type"] == "Put"]
+
+                if len(sell_calls) == 1 and len(buy_calls) == 1 and len(legs) == 2:
+                    combo_strat = "Call Credit Spread" if sell_calls[0]["strike"] < buy_calls[0]["strike"] else "Call Debit Spread"
+                elif len(sell_puts) == 1 and len(buy_puts) == 1 and len(legs) == 2:
+                    combo_strat = "Put Credit Spread" if sell_puts[0]["strike"] > buy_puts[0]["strike"] else "Put Debit Spread"
+                elif len(sell_puts) == 1 and len(sell_calls) == 1 and len(legs) == 2:
+                    combo_strat = "Strangle"
+                elif len(sell_puts) == 1 and len(buy_puts) == 1 and len(sell_calls) == 1 and len(buy_calls) == 1 and len(legs) == 4:
+                    combo_strat = "Iron Condor"
+
+                new_chain_id = str(uuid4())[:8]
+                net_credit = sum(l["unit_premium"] * (1 if l["side"] == "Sell" else -1) for l in legs)
+                strikes = [l["strike"] for l in legs]
+                width = (max(strikes) - min(strikes)) if len(strikes) >= 2 else 0.0
+                cnt = legs[0]["contratos"]
+                risk_bp = max(0.0, (width - net_credit) * 100 * cnt) if net_credit > 0 else (abs(net_credit) * 100 * cnt)
+
+                for idx_l, leg in enumerate(legs):
+                    leg_id = str(uuid4())[:8]
+                    be_calc = 0.0
+                    if "Call" in combo_strat and sell_calls:
+                        be_calc = sell_calls[0]["strike"] + net_credit
+                    elif "Put" in combo_strat and sell_puts:
+                        be_calc = sell_puts[0]["strike"] - net_credit
+                    else:
+                        be_calc = leg["strike"]
+
+                    new_records.append({
+                        "ID": leg_id,
+                        "ChainID": new_chain_id,
+                        "ParentID": pd.NA,
+                        "Ticker": leg["ticker"],
+                        "FechaApertura": pd.to_datetime(leg["date_acquired"]).normalize() if leg["date_acquired"] else pd.Timestamp.now().normalize(),
+                        "Expiry": pd.to_datetime(leg["expiry"]).normalize() if leg["expiry"] else pd.Timestamp.now().normalize(),
+                        "Estrategia": combo_strat,
+                        "Setup": "VIX alto / IV Crush" if "VIX" in tkr else "Otro",
+                        "Tags": "TradierSync",
+                        "Side": leg["side"],
+                        "OptionType": leg["option_type"],
+                        "Strike": leg["strike"],
+                        "Delta": 0.0,
+                        "PrimaRecibida": leg["unit_premium"],
+                        "CostoCierre": 0.0,
+                        "Contratos": leg["contratos"],
+                        "BuyingPower": risk_bp if idx_l == 0 else 0.0,
+                        "BreakEven": be_calc,
+                        "BreakEven_Upper": 0.0,
+                        "POP": 70.0,
+                        "Estado": "Abierta",
+                        "Notas": f"Combo {combo_strat} importado automáticamente desde Tradier ({leg['raw_symbol']})",
+                        "UpdatedAt": datetime.now().isoformat(),
+                        "FechaCierre": pd.NA,
+                        "MaxProfitUSD": max(0.0, net_credit * 100 * cnt),
+                        "ProfitPct": 0.0,
+                        "PnL_Capital_Pct": 0.0,
+                        "PrecioAccionCierre": 0.0,
+                        "PnL_USD_Realizado": 0.0,
+                        "Comisiones": 0.0,
+                        "EarningsDate": pd.NA,
+                        "DividendosDate": pd.NA,
+                        "Broker": "Tradier",
+                        "WheelParentChainID": pd.NA,
+                        "CostBaseReal": 0.0,
+                        "CoveredCallChainID": pd.NA,
+                        "CoveredCallPrima": 0.0,
+                        "WheelLeg": pd.NA
+                    })
+                    imported_legs_raw.add(leg.get("raw_symbol"))
+                n_imported += len(legs)
+
+        # B) Patas individuales
+        for nw in new_in_tradier:
+            if nw.get("raw_symbol") in imported_legs_raw:
+                continue
+
+            if nw["side"] == "Sell" and nw["option_type"] == "Put":
+                strat_suggest = "CSP (Cash Secured Put)"
+            elif nw["side"] == "Sell" and nw["option_type"] == "Call":
+                strat_suggest = "Short Call (Naked)" if "VIX" in nw["ticker"] else "CC (Covered Call)"
+            elif nw["side"] == "Buy" and nw["option_type"] == "Call":
+                strat_suggest = "Long Call"
+            elif nw["side"] == "Buy" and nw["option_type"] == "Put":
+                strat_suggest = "Long Put"
+            elif nw["option_type"] == "Stock":
+                strat_suggest = "Long Stock"
+            else:
+                strat_suggest = "CSP (Cash Secured Put)"
+
+            new_id = str(uuid4())[:8]
+            setup_val = "VIX alto / IV Crush" if "VIX" in nw["ticker"] else ("La Rueda (The Wheel)" if ("CSP" in strat_suggest or "Rueda" in strat_suggest or "CC (" in strat_suggest) else "Otro")
+            new_records.append({
+                "ID": new_id,
+                "ChainID": new_id,
+                "ParentID": pd.NA,
+                "Ticker": nw["ticker"],
+                "FechaApertura": pd.to_datetime(nw["date_acquired"]).normalize() if nw["date_acquired"] else pd.Timestamp.now().normalize(),
+                "Expiry": pd.to_datetime(nw["expiry"]).normalize() if nw["expiry"] else pd.Timestamp.now().normalize(),
+                "Estrategia": strat_suggest,
+                "Setup": setup_val,
+                "Tags": "TradierSync",
+                "Side": nw["side"],
+                "OptionType": nw["option_type"],
+                "Strike": nw["strike"],
+                "Delta": 0.0,
+                "PrimaRecibida": nw["unit_premium"],
+                "CostoCierre": 0.0,
+                "Contratos": nw["contratos"],
+                "BuyingPower": nw["strike"] * 100 * nw["contratos"] if nw["strike"] > 0 else 0.0,
+                "BreakEven": max(0.0, nw["strike"] - nw["unit_premium"]) if nw["option_type"] == "Put" else nw["strike"] + nw["unit_premium"],
+                "BreakEven_Upper": 0.0,
+                "POP": 70.0,
+                "Estado": "Abierta",
+                "Notas": f"Importado automáticamente desde Tradier ({nw['raw_symbol']})",
+                "UpdatedAt": datetime.now().isoformat(),
+                "FechaCierre": pd.NA,
+                "MaxProfitUSD": nw["unit_premium"] * 100 * nw["contratos"],
+                "ProfitPct": 0.0,
+                "PnL_Capital_Pct": 0.0,
+                "PrecioAccionCierre": 0.0,
+                "PnL_USD_Realizado": 0.0,
+                "Comisiones": 0.0,
+                "EarningsDate": pd.NA,
+                "DividendosDate": pd.NA,
+                "Broker": "Tradier",
+                "WheelParentChainID": pd.NA,
+                "CostBaseReal": 0.0,
+                "CoveredCallChainID": pd.NA,
+                "CoveredCallPrima": 0.0,
+                "WheelLeg": "sell_put" if "CSP" in strat_suggest else ("covered_call" if "CC (" in strat_suggest else pd.NA)
+            })
+            n_imported += 1
+
+        if new_records:
+            cur_df = pd.concat([cur_df.dropna(how='all', axis=0), pd.DataFrame(new_records)], ignore_index=True)
+
+    # 2. Procesar FALTANTES en Tradier
+    missing_in_tradier = recon.get("missing_in_tradier", [])
+    for mis in missing_in_tradier:
+        occ_sym = build_occ_symbol(mis["ticker"], mis["expiry"], mis["option_type"], mis["strike"])
+        sug_close = fills_by_symbol.get(occ_sym, 0.0)
+        user_input_val = st.session_state.get(f"rec_close_price_{mis['strikelog_id']}", None)
+        close_price = float(user_input_val) if user_input_val is not None else float(sug_close)
+
+        matched_roll = next((rp for rp in roll_pairs if rp["close_symbol"] == occ_sym), None)
+
+        rec_idx = cur_df.index[cur_df["ID"] == mis["strikelog_id"]]
+        if len(rec_idx) == 0:
+            continue
+        real_i = rec_idx[0]
+
+        p_rec = float(cur_df.at[real_i, "PrimaRecibida"] or 0.0)
+        cnt = float(cur_df.at[real_i, "Contratos"] or 1.0)
+        side_val = str(cur_df.at[real_i, "Side"])
+
+        if matched_roll:
+            cur_df.at[real_i, "Estado"] = "Rolada"
+            cur_df.at[real_i, "FechaCierre"] = str(matched_roll.get("date") or datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            roll_close_p = float(matched_roll.get("close_price", close_price) or close_price)
+            cur_df.at[real_i, "CostoCierre"] = roll_close_p
+            pnl_realizado = (p_rec - roll_close_p) * 100 * cnt if side_val == "Sell" else (roll_close_p - p_rec) * 100 * cnt
+            cur_df.at[real_i, "PnL_USD_Realizado"] = pnl_realizado
+            cur_df.at[real_i, "UpdatedAt"] = datetime.now().isoformat()
+
+            open_parsed = parse_occ_symbol(matched_roll["open_symbol"])
+            new_leg_idx = cur_df.index[
+                (cur_df["Ticker"] == open_parsed["ticker"]) &
+                (cur_df["Strike"] == open_parsed["strike"]) &
+                (cur_df["Expiry"] == open_parsed["expiry"]) &
+                (cur_df["Estado"] == "Abierta")
+            ]
+            if len(new_leg_idx) > 0:
+                cur_df.at[new_leg_idx[0], "ParentID"] = mis["strikelog_id"]
+            n_resolved += 1
+        else:
+            cands = cur_df.index[
+                (cur_df["Ticker"] == mis["ticker"]) &
+                (cur_df["Estado"] == "Abierta") &
+                (cur_df["ID"] != mis["strikelog_id"])
+            ]
+            if len(cands) > 0 and close_price > 0:
+                cur_df.at[real_i, "Estado"] = "Rolada"
+                cur_df.at[cands[-1], "ParentID"] = mis["strikelog_id"]
+            else:
+                cur_df.at[real_i, "Estado"] = "Cerrada"
+
+            cur_df.at[real_i, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cur_df.at[real_i, "CostoCierre"] = close_price
+            pnl_realizado = (p_rec - close_price) * 100 * cnt if side_val == "Sell" else (close_price - p_rec) * 100 * cnt
+            cur_df.at[real_i, "PnL_USD_Realizado"] = pnl_realizado
+            cur_df.at[real_i, "UpdatedAt"] = datetime.now().isoformat()
+            n_resolved += 1
+
+    return cur_df, n_resolved, n_imported
+
+
 def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs):
     """
     Renderiza el diálogo modal / asistente interactivo de sincronización con Tradier.
@@ -415,6 +689,7 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
         bal_res = fetch_account_balances()
         pos_res = fetch_open_positions()
         orders_res = fetch_recent_orders()
+        hist_res = fetch_recent_history(limit=100)
 
     if not bal_res.get("success") or not pos_res.get("success"):
         err = bal_res.get("error") or pos_res.get("error")
@@ -426,7 +701,8 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
         return
 
     orders_list = orders_res.get("orders", []) if orders_res.get("success") else []
-    fills_by_symbol, roll_pairs = extract_recent_fills_and_rolls(orders_list)
+    hist_events = hist_res.get("events", []) if hist_res.get("success") else []
+    fills_by_symbol, roll_pairs = extract_recent_fills_and_rolls(orders_list, hist_events)
 
     balances = bal_res.get("balances", {})
     t_equity = float(balances.get("total_equity", 0.0) or 0.0)
@@ -517,6 +793,16 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
                         st.success(f"Acciones de {ig['ticker']} agregadas a la cartera para Covered Calls.")
                         st.rerun()
 
+        # Banner de Sincronización en Lote Automática
+        if n_missing > 0 or n_new > 0:
+            c_batch_txt, c_batch_btn = st.columns([2.8, 1.2])
+            c_batch_txt.info(f"⚡ **Sincronización Inteligente:** Hay **{n_missing + n_new} operación(es)** con diferencias ({n_missing} para cerrar/rolar y {n_new} nuevas para importar). Puedes revisarlas una a una abajo, o sincronizarlas todas automáticamente si las ves correctas.")
+            if c_batch_btn.button("⚡ Sincronizar Todo Automático", key="btn_batch_sync_all", type="primary", use_container_width=True, help="Aplica automáticamente todos los rolls y cierres pendientes e incorpora todas las nuevas posiciones a tu cartera"):
+                updated_df, n_res, n_imp = batch_sync_all(JournalManager, df, recon, roll_pairs, fills_by_symbol, strat_list)
+                st.session_state.df = JournalManager.save_with_backup(updated_df)
+                st.success(f"🎉 ¡Sincronización en lote completada! Se resolvieron {n_res} operaciones y se importaron {n_imp} nuevas.")
+                st.rerun()
+
         if n_missing == 0 and n_new == 0:
             st.success("🎉 **¡Sincronización Perfecta!** Todas las posiciones abiertas en StrikeLog coinciden exactamente con tu cartera de opciones en Tradier / Sigma Trade.")
         
@@ -540,7 +826,14 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
 
         # Discrepancias: Faltan en Tradier
         if n_missing > 0:
-            st.warning(f"⚠️ **{n_missing} posición(es) registradas como abiertas en StrikeLog no se encuentran en Tradier:**")
+            c_mis_hdr, c_mis_all = st.columns([3, 1.2])
+            c_mis_hdr.warning(f"⚠️ **{n_missing} posición(es) registradas como abiertas en StrikeLog no se encuentran en Tradier:**")
+            if n_missing > 1:
+                if c_mis_all.button("⚡ Resolver Todas las Faltantes", key="btn_batch_resolve_missing", help="Aplica automáticamente los rolls detectados o cierra estas posiciones"):
+                    updated_df, n_res, _ = batch_sync_all(JournalManager, df, {"missing_in_tradier": recon["missing_in_tradier"], "new_in_tradier": []}, roll_pairs, fills_by_symbol, strat_list)
+                    st.session_state.df = JournalManager.save_with_backup(updated_df)
+                    st.success(f"Se resolvieron {n_res} posiciones faltantes.")
+                    st.rerun()
             st.caption("Estas operaciones pueden haber sido cerradas, asignadas o roladas en Sigma Trade. Puedes marcarlas como cerradas o roladas aquí:")
             for idx_m, mis in enumerate(recon["missing_in_tradier"]):
                 occ_sym = build_occ_symbol(mis["ticker"], mis["expiry"], mis["option_type"], mis["strike"])
@@ -590,7 +883,7 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
                             st.success(f"Posición {mis['ticker']} actualizada como Rolada y enlazada.")
                             st.rerun()
                 elif is_short_put:
-                    c_btn1, c_btn2 = c_m3.columns(2)
+                    c_btn1, c_btn2, c_btn3 = c_m3.columns(3)
                     if c_btn1.button("Cerrar", key=f"btn_close_rec_{mis['strikelog_id']}", help="Marcar como cerrada normalmente (a precio de mercado o $0 si expiró OTM)"):
                         rec_idx = df.index[df["ID"] == mis["strikelog_id"]]
                         if len(rec_idx) > 0:
@@ -606,7 +899,31 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
                             st.session_state.df = JournalManager.save_with_backup(df)
                             st.success(f"Posición {mis['ticker']} marcada como cerrada.")
                             st.rerun()
-                    if c_btn2.button("📜 Asignada", key=f"btn_assign_rec_{mis['strikelog_id']}", help="Marcar como asignada (te quedaste las acciones). Puedes incorporar las acciones a la Rueda abajo."):
+                    if c_btn2.button("🔄 Rolada", key=f"btn_roll_rec_{mis['strikelog_id']}", help="Marcar como Rolada y vincular a la nueva opción abierta del mismo ticker"):
+                        rec_idx = df.index[df["ID"] == mis["strikelog_id"]]
+                        if len(rec_idx) > 0:
+                            real_i = rec_idx[0]
+                            df.at[real_i, "Estado"] = "Rolada"
+                            df.at[real_i, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            df.at[real_i, "CostoCierre"] = close_price
+                            p_rec = float(df.at[real_i, "PrimaRecibida"] or 0.0)
+                            cnt = float(df.at[real_i, "Contratos"] or 1.0)
+                            pnl_realizado = (p_rec - close_price) * 100 * cnt
+                            df.at[real_i, "PnL_USD_Realizado"] = pnl_realizado
+                            df.at[real_i, "UpdatedAt"] = datetime.now().isoformat()
+                            
+                            new_cands = df.index[
+                                (df["Ticker"] == mis["ticker"]) &
+                                (df["Estado"] == "Abierta") &
+                                (df["ID"] != mis["strikelog_id"])
+                            ]
+                            if len(new_cands) > 0:
+                                df.at[new_cands[-1], "ParentID"] = mis["strikelog_id"]
+
+                            st.session_state.df = JournalManager.save_with_backup(df)
+                            st.success(f"Posición {mis['ticker']} marcada como Rolada y enlazada.")
+                            st.rerun()
+                    if c_btn3.button("📜 Asignada", key=f"btn_assign_rec_{mis['strikelog_id']}", help="Marcar como asignada (te quedaste las acciones). Puedes incorporar las acciones a la Rueda abajo."):
                         rec_idx = df.index[df["ID"] == mis["strikelog_id"]]
                         if len(rec_idx) > 0:
                             real_i = rec_idx[0]
@@ -622,7 +939,8 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
                             st.success(f"Posición {mis['ticker']} marcada como Asignada. Puedes incorporar las acciones resultantes a la Rueda abajo.")
                             st.rerun()
                 else:
-                    if c_m3.button("Marcar Cerrada", key=f"btn_close_rec_{mis['strikelog_id']}"):
+                    c_btn1, c_btn2 = c_m3.columns(2)
+                    if c_btn1.button("Cerrar", key=f"btn_close_rec_{mis['strikelog_id']}"):
                         rec_idx = df.index[df["ID"] == mis["strikelog_id"]]
                         if len(rec_idx) > 0:
                             real_i = rec_idx[0]
@@ -638,10 +956,42 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
                             st.session_state.df = JournalManager.save_with_backup(df)
                             st.success(f"Posición {mis['ticker']} marcada como cerrada.")
                             st.rerun()
+                    if c_btn2.button("🔄 Rolada", key=f"btn_roll_rec_{mis['strikelog_id']}"):
+                        rec_idx = df.index[df["ID"] == mis["strikelog_id"]]
+                        if len(rec_idx) > 0:
+                            real_i = rec_idx[0]
+                            df.at[real_i, "Estado"] = "Rolada"
+                            df.at[real_i, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            df.at[real_i, "CostoCierre"] = close_price
+                            p_rec = float(df.at[real_i, "PrimaRecibida"] or 0.0)
+                            cnt = float(df.at[real_i, "Contratos"] or 1.0)
+                            side_val = str(df.at[real_i, "Side"])
+                            pnl_realizado = (p_rec - close_price) * 100 * cnt if side_val == "Sell" else (close_price - p_rec) * 100 * cnt
+                            df.at[real_i, "PnL_USD_Realizado"] = pnl_realizado
+                            df.at[real_i, "UpdatedAt"] = datetime.now().isoformat()
+
+                            new_cands = df.index[
+                                (df["Ticker"] == mis["ticker"]) &
+                                (df["Estado"] == "Abierta") &
+                                (df["ID"] != mis["strikelog_id"])
+                            ]
+                            if len(new_cands) > 0:
+                                df.at[new_cands[-1], "ParentID"] = mis["strikelog_id"]
+
+                            st.session_state.df = JournalManager.save_with_backup(df)
+                            st.success(f"Posición {mis['ticker']} marcada como Rolada y enlazada.")
+                            st.rerun()
 
         # Discrepancias: Nuevas en Tradier
         if n_new > 0:
-            st.info(f"➕ **{n_new} posición(es) nueva(s) en Tradier listas para incorporar a StrikeLog:**")
+            c_new_hdr, c_new_all = st.columns([3, 1.2])
+            c_new_hdr.info(f"➕ **{n_new} posición(es) nueva(s) en Tradier listas para incorporar a StrikeLog:**")
+            if n_new > 1:
+                if c_new_all.button("⚡ Importar Todas las Nuevas", key="btn_batch_import_new", type="primary", help="Importa automáticamente todos los combos y opciones individuales detectadas"):
+                    updated_df, _, n_imp = batch_sync_all(JournalManager, df, {"missing_in_tradier": [], "new_in_tradier": recon["new_in_tradier"]}, roll_pairs, fills_by_symbol, strat_list)
+                    st.session_state.df = JournalManager.save_with_backup(updated_df)
+                    st.success(f"Se importaron {n_imp} nuevas posiciones con éxito.")
+                    st.rerun()
             
             # 1. Detección automática de Combos Multi-Pata (Spreads / Iron Condor / Strangles)
             from collections import defaultdict

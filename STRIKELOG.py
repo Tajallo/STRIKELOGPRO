@@ -1836,7 +1836,7 @@ def render_active_portfolio(df):
         border-bottom: 1px solid rgba(255,255,255,0.05);
         padding: 4px 0;
     }
-    /* Recuadros / Badges para encabezados de posición */
+    /* Recuadros / Badges y Tabulación para encabezados de posición */
     div[data-testid="stExpander"] details {
         border: 1px solid rgba(255, 255, 255, 0.08) !important;
         border-radius: 8px !important;
@@ -1850,14 +1850,88 @@ def render_active_portfolio(df):
     div[data-testid="stExpander"] summary:hover {
         background-color: rgba(255, 255, 255, 0.03) !important;
     }
-    div[data-testid="stExpander"] summary span[style*="background-color"] {
+    div[data-testid="stExpander"] summary p {
+        display: inline-flex !important;
+        flex-direction: row !important;
+        align-items: center !important;
+        flex-wrap: nowrap !important;
+        gap: 6px !important;
+        width: 100% !important;
+        margin: 0 !important;
+        overflow-x: auto !important;
+        white-space: nowrap !important;
+    }
+    div[data-testid="stExpander"] summary p > span[style*="background-color"] {
+        display: inline-flex !important;
+        align-items: center !important;
         padding: 3px 8px !important;
         border-radius: 6px !important;
-        font-size: 12.5px !important;
+        font-size: 12px !important;
         font-weight: 600 !important;
-        display: inline-block !important;
-        margin: 2px 2px !important;
         box-shadow: 0 1px 3px rgba(0,0,0,0.2) !important;
+        white-space: nowrap !important;
+        flex-shrink: 0 !important;
+        box-sizing: border-box !important;
+    }
+    /* Tabulación en Columnas fijas */
+    /* Col 1: Ticker */
+    div[data-testid="stExpander"] summary p > span[style*="background-color"]:nth-of-type(1) {
+        min-width: 68px !important;
+        max-width: 68px !important;
+        justify-content: center !important;
+        text-align: center !important;
+    }
+    /* Col 2: Vencimiento */
+    div[data-testid="stExpander"] summary p > span[style*="background-color"]:nth-of-type(2) {
+        min-width: 90px !important;
+        max-width: 90px !important;
+        justify-content: center !important;
+        text-align: center !important;
+    }
+    /* Col 3: Estrategia & Strikes */
+    div[data-testid="stExpander"] summary p > span[style*="background-color"]:nth-of-type(3) {
+        min-width: 220px !important;
+        max-width: 220px !important;
+        justify-content: center !important;
+        text-align: center !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+    }
+    /* Col 4: Contratos / Acciones */
+    div[data-testid="stExpander"] summary p > span[style*="background-color"]:nth-of-type(4) {
+        min-width: 75px !important;
+        max-width: 75px !important;
+        justify-content: center !important;
+        text-align: center !important;
+    }
+    /* Col 5: Rolls */
+    div[data-testid="stExpander"] summary p > span[style*="background-color"]:nth-of-type(5) {
+        min-width: 90px !important;
+        max-width: 90px !important;
+        justify-content: center !important;
+        text-align: center !important;
+    }
+    /* Col 6: BE Subyacente */
+    div[data-testid="stExpander"] summary p > span[style*="background-color"]:nth-of-type(6) {
+        min-width: 175px !important;
+        max-width: 175px !important;
+        justify-content: center !important;
+        text-align: center !important;
+    }
+    /* Col 7: Cierre BE / Broker */
+    div[data-testid="stExpander"] summary p > span[style*="background-color"]:nth-of-type(7) {
+        min-width: 245px !important;
+        max-width: 245px !important;
+        justify-content: flex-start !important;
+        text-align: left !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+    }
+    /* Col 8+: Alertas (Earnings, Dividendos) */
+    div[data-testid="stExpander"] summary p > span[style*="background-color"]:nth-of-type(n+8) {
+        min-width: auto !important;
+        justify-content: center !important;
+        text-align: center !important;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -2357,40 +2431,67 @@ def render_active_portfolio(df):
             elif tradier_pnl_be < 0:
                 tradier_pnl_str = f"-${abs(tradier_pnl_be):,.0f}" if abs(tradier_pnl_be - round(tradier_pnl_be)) < 0.005 else f"-${abs(tradier_pnl_be):,.2f}"
 
-        # Etiquetas de Break Even según tipo de posición en formato Badge / Recuadro
-        be_labels = []
+        # Etiquetas de las 7 columnas tabuladas en formato Badge / Recuadro
+        # Col 4: Contratos o Acciones
         if is_stock_position:
-            be_labels.append(f":violet-background[**📌 BE Stock: ${calculated_be:.2f}**]")
-        elif is_dual_be and calculated_be_upper > 0:
-            be_labels.append(f":green-background[**🎯 BE Suby: ${calculated_be:.2f} – ${calculated_be_upper:.2f}**]")
-            if tradier_pnl_str:
-                be_labels.append(f":orange-background[**🎯 Cierre BE: ${net_credit_chain:.2f} ({broker_name}: {tradier_pnl_str})**]")
+            contr_badge = f":gray-background[**{int(qty_active)} acc.**]"
         else:
-            if calculated_be > 0:
-                be_labels.append(f":green-background[**🎯 BE Suby: ${calculated_be:.2f}**]")
+            contr_badge = f":gray-background[**{int(qty_active)} contr.**]"
+
+        # Col 5: Rolls (siempre presente para mantener la tabulación fija)
+        if num_rolls > 0:
+            roll_badge = f":blue-background[**🔄 {num_rolls} roll{'s' if num_rolls != 1 else ''}**]"
+        else:
+            roll_badge = ":gray-background[**🔄 0 rolls**]"
+
+        # Col 6: BE Subyacente (siempre presente)
+        if is_stock_position:
+            be_suby_badge = f":violet-background[**📌 BE Stock: ${calculated_be:.2f}**]"
+        elif is_dual_be and calculated_be_upper > 0:
+            be_suby_badge = f":green-background[**🎯 BE: ${calculated_be:.2f} – ${calculated_be_upper:.2f}**]"
+        elif calculated_be > 0:
+            be_suby_badge = f":green-background[**🎯 BE Suby: ${calculated_be:.2f}**]"
+        else:
+            be_suby_badge = ":gray-background[**🎯 BE Suby: --**]"
+
+        # Col 7: Cierre BE / Tradier BE (siempre presente)
+        if is_stock_position:
+            cierre_be_badge = ":gray-background[**🎯 Cierre: --**]"
+        else:
             if tradier_pnl_str:
-                be_labels.append(f":orange-background[**🎯 Cierre BE: ${net_credit_chain:.2f} ({broker_name}: {tradier_pnl_str})**]")
+                cierre_be_badge = f":orange-background[**🎯 Cierre: ${net_credit_chain:.2f} ({broker_name}: {tradier_pnl_str})**]"
             else:
-                be_labels.append(f":orange-background[**🎯 Cierre BE: ${net_credit_chain:.2f}**]")
+                cierre_be_badge = f":orange-background[**🎯 Cierre: ${net_credit_chain:.2f}**]"
 
-
-        # Construir partes del encabezado en recuadros visuales (Badges)
+        # Col 3: Estrategia limpia y compacta
+        clean_strat = (
+            strategy_display
+            .replace(" (Cash Secured Put)", "")
+            .replace(" (Covered Call)", "")
+            .replace(" (Asignación)", "")
+            .strip()
+        )
         strikes_clean = " / ".join(strikes_list) if strikes_list and not is_stock_position else ""
-        strat_lbl = f"{strikes_clean} {strategy_display}" if strikes_clean else strategy_display
+        if clean_strat == "Iron Condor" and strikes_clean:
+            strat_lbl = f"{strikes_clean} IC"
+        elif strikes_clean:
+            strat_lbl = f"{strikes_clean} {clean_strat}"
+        else:
+            strat_lbl = clean_strat
 
-        title_parts = [f":violet-background[**{ticker}**]"]
-        if exp_str_title:
-            title_parts.append(f":blue-background[**📅 {exp_str_title}**]")
-        elif is_stock_position:
-            title_parts.append(":blue-background[**∞ Stock**]")
-        
-        title_parts.append(f":gray-background[**{strat_lbl}**]")
-        title_parts.append(f":gray-background[**{int(qty_active)} contr.**]")
-        
-        if roll_label:
-            title_parts.append(f":blue-background[**{roll_label.strip()}**]")
-            
-        title_parts.extend(be_labels)
+        # Col 2: Vencimiento
+        exp_badge = f":blue-background[**📅 {exp_str_title}**]" if exp_str_title else ":blue-background[**∞ Stock**]"
+
+        # Construir partes del encabezado tabulado en 7 columnas alineadas
+        title_parts = [
+            f":violet-background[**{ticker}**]",  # Col 1: Ticker
+            exp_badge,                            # Col 2: Vto
+            f":gray-background[**{strat_lbl}**]", # Col 3: Estrategia & Strikes
+            contr_badge,                          # Col 4: Contratos/Acciones
+            roll_badge,                           # Col 5: Rolls
+            be_suby_badge,                        # Col 6: BE Subyacente
+            cierre_be_badge,                      # Col 7: Cierre BE
+        ]
         
         if earnings_txt:
             title_parts.append(f":red-background[**🚨 {earnings_txt}**]")
@@ -2400,7 +2501,7 @@ def render_active_portfolio(df):
         header_title = " ".join(title_parts).replace("$", r"\$")
         
         # Layout de Tarjeta
-        c_dte, c_card = st.columns([1, 10])
+        c_dte, c_card = st.columns([1, 11])
         
         with c_dte:
             st.markdown(dte_html, unsafe_allow_html=True)

@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Tabulación Perfecta en Columnas Fijas para Encabezados de Cartera Activa**:
+  - **Alineación Vertical Continua**: Las tarjetas colapsables de Cartera Activa ahora organizan sus recuadros en un sistema de 7 columnas fijas y tabuladas verticalmente, garantizando que todos los datos coincidan fila tras fila:
+    - **Columna 1 (Ticker)**: Ancho fijo (68px), centrado con recuadro violeta.
+    - **Columna 2 (Vencimiento)**: Ancho fijo (90px), centrado con recuadro azul (`📅 20 Nov` o `∞ Stock`).
+    - **Columna 3 (Estrategia y Strikes)**: Ancho fijo (220px), centrado con recuadro gris y nomenclatura limpia y compacta (`11.5 CSP`, `23 CC`, `7385/7395/7025/7035 IC`, `19/21 Put Debit Spread`, etc.).
+    - **Columna 4 (Contratos/Acciones)**: Ancho fijo (75px), centrado con recuadro gris (`X contr.` o `X acc.`).
+    - **Columna 5 (Rolls)**: Ancho fijo (90px), centrado. Siempre presente (`🔄 X rolls` o `🔄 0 rolls`) para que ninguna fila sufra desfase de columnas.
+    - **Columna 6 (BE Subyacente)**: Ancho fijo (175px), centrado con recuadro verde o morado (`🎯 BE Suby: $XX.XX` o `📌 BE Stock: $XX.XX`).
+    - **Columna 7 (Cierre BE / Broker)**: Ancho fijo (245px), alineado a la izquierda con recuadro naranja (`🎯 Cierre: $X.XX (Tradier: +$YYY)` o `🎯 Cierre: --` para acciones).
+    - **Columna 8+ (Alertas)**: Ancho adaptable al final para eventos inminentes (`🚨 EARNINGS`, `💰 DIVIDENDOS`).
+  - **CSS Flexbox Avanzado**: Reglas de estilizado `:nth-of-type(1)` a `:nth-of-type(7)` inyectadas en `summary p` con `nowrap` y scroll horizontal de seguridad, logrando una presentación estética tipo tabla moderna interactiva.
+
 - **Diseño Visual con Badges y Recuadros en Encabezados de Cartera Activa**:
   - **Transformación de Líneas de Texto en Cuadros Visuales**: Los encabezados de las tarjetas en Cartera Activa pasan de ser texto plano separado por puntos a componerse de recuadros visuales independientes (badges/chips) con esquinas redondeadas, sombra sutil y códigos de color según el tipo de dato.
   - **Paleta de Colores por Información**:

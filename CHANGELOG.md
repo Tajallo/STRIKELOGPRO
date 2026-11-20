@@ -2,8 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Fila de Encabezados y Tabulación en La Rueda (Posiciones de Acciones Asignadas)**:
+  - **Cabecera de Columnas Dedicada**: Se incorporó una barra superior con estilo de panel/tarjeta (`background: rgba(255,255,255,0.025)`, borde sutil y esquinas redondeadas) situada justo sobre las posiciones de acciones en La Rueda, definiendo con exactitud sus 7 columnas:
+    - `Ticker` (68px, centrado)
+    - `Vencimiento` (90px, centrado)
+    - `Estrategia` (120px, centrado)
+    - `Acciones` (85px, centrado)
+    - `Covered Call` (160px, centrado)
+    - `BE Base` (175px, centrado)
+    - `Precio Compra` (150px, centrado)
+  - **Aislamiento CSS Específico (`.wheel-position-anchor`)**: Mediante la regla `:has(.wheel-position-anchor)`, se aplicó el dimensionamiento y centrado milimétrico a los badges de los expanders de La Rueda de forma completamente aislada, evitando que hereden el ancho de la columna de opciones de Cartera Activa y garantizando que el indicador de Covered Call (`Covered Call: SÍ ✅` / `Covered Call: NO ⚠️`) no se trunque.
+
 - **Fila de Encabezados de Columna para Cartera Activa e Historial de Operaciones**:
-  - **Alineación Perfecta con los Badges Tabulados**: Se añadió una barra superior de encabezados estilizada justo encima de la lista de tarjetas de Cartera Activa y del Historial de Operaciones, indicando claramente el concepto de cada columna:
+  - **Alineación Perfecta con los Badges Tabulados**: Se añadió una barra superior de encabezados estilizada tipo tarjeta justo encima de la lista de Cartera Activa y del Historial de Operaciones, indicando claramente el concepto de cada columna:
     - **Cartera Activa**:
       - `DTE` (encima del badge lateral de vencimiento)
       - `Ticker` (68px, centrado)
@@ -23,7 +34,7 @@ All notable changes to this project will be documented in this file.
       - `PnL Realizado` (130px, centrado)
       - `% Retorno` (95px, centrado)
       - `Patas / Contr.` (115px, centrado)
-  - **Diseño Moderno Tipo Terminal Financiero**: Tipografía en mayúsculas pequeñas (`11px`, `font-weight: 700`, color `#8b949e`), espaciado exacto (`gap: 6px`) y padding que compensa la flecha desplegable del expander (`padding-left: 34px`) con borde inferior sutil (`border-bottom: 1px solid rgba(255,255,255,0.08)`).
+  - **Diseño Moderno Tipo Terminal Financiero**: Tipografía en mayúsculas pequeñas (`11px`, `font-weight: 700`, color `#8b949e`), espaciado exacto (`gap: 6px`) y padding que compensa la flecha desplegable del expander (`padding-left: 34px`) con contenedor semitransparente estilizado.
 
 - **Sincronización Inteligente con Tradier / Sigma Trade y Corrección de Rolls y Timezone**:
   - **Corrección de Error Crítico de Timezone en `batch_sync_all`**: Solucionado el fallo `TypeError: Invalid value '...Z' for dtype 'datetime64[us]'` / `ValueError: Passed data is timezone-aware, incompatible with 'tz=None'`. Se implementó el helper `sanitize_date_for_df()` para limpiar fechas ISO con sufijo 'Z' provenientes de la API de Tradier y convertirlas en formato compatible tz-naive antes de almacenarlas en `FechaCierre`.

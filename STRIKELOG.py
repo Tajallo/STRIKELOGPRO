@@ -2285,8 +2285,9 @@ def render_active_portfolio(df):
             st.markdown(
                 """
                 <div style="text-align: center; font-size: 11px; font-weight: 700; color: #8b949e; 
-                            text-transform: uppercase; letter-spacing: 0.5px; padding: 6px 0;
-                            border-bottom: 1px solid rgba(255,255,255,0.08); margin-bottom: 8px;">
+                            text-transform: uppercase; letter-spacing: 0.5px; padding: 7px 0;
+                            background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.06); 
+                            border-radius: 8px; margin-bottom: 8px;">
                     DTE
                 </div>
                 """,
@@ -2296,9 +2297,10 @@ def render_active_portfolio(df):
             st.markdown(
                 """
                 <div style="display: flex; flex-direction: row; align-items: center; gap: 6px; 
-                            padding: 6px 10px 6px 34px; font-size: 11px; font-weight: 700; color: #8b949e; 
+                            padding: 7px 10px 7px 34px; font-size: 11px; font-weight: 700; color: #8b949e; 
                             text-transform: uppercase; letter-spacing: 0.5px; 
-                            border-bottom: 1px solid rgba(255,255,255,0.08); margin-bottom: 8px; 
+                            background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.06); 
+                            border-radius: 8px; margin-bottom: 8px; 
                             overflow-x: auto; white-space: nowrap;">
                     <span style="min-width: 68px; max-width: 68px; text-align: center; flex-shrink: 0;">Ticker</span>
                     <span style="min-width: 90px; max-width: 90px; text-align: center; flex-shrink: 0;">Vencimiento</span>
@@ -3279,6 +3281,28 @@ def render_active_portfolio(df):
             background: #e74c3c; color: white; padding: 4px 12px;
             border-radius: 20px; font-weight: bold; font-size: 13px;
         }
+        /* Estilos específicos para la tabulación de posiciones de La Rueda */
+        div[data-testid="stExpander"]:has(.wheel-position-anchor) summary p > span[style*="background-color"]:nth-of-type(1) {
+            min-width: 68px !important; max-width: 68px !important; justify-content: center !important; text-align: center !important;
+        }
+        div[data-testid="stExpander"]:has(.wheel-position-anchor) summary p > span[style*="background-color"]:nth-of-type(2) {
+            min-width: 90px !important; max-width: 90px !important; justify-content: center !important; text-align: center !important;
+        }
+        div[data-testid="stExpander"]:has(.wheel-position-anchor) summary p > span[style*="background-color"]:nth-of-type(3) {
+            min-width: 120px !important; max-width: 120px !important; justify-content: center !important; text-align: center !important;
+        }
+        div[data-testid="stExpander"]:has(.wheel-position-anchor) summary p > span[style*="background-color"]:nth-of-type(4) {
+            min-width: 85px !important; max-width: 85px !important; justify-content: center !important; text-align: center !important;
+        }
+        div[data-testid="stExpander"]:has(.wheel-position-anchor) summary p > span[style*="background-color"]:nth-of-type(5) {
+            min-width: 160px !important; max-width: 160px !important; justify-content: center !important; text-align: center !important;
+        }
+        div[data-testid="stExpander"]:has(.wheel-position-anchor) summary p > span[style*="background-color"]:nth-of-type(6) {
+            min-width: 175px !important; max-width: 175px !important; justify-content: center !important; text-align: center !important;
+        }
+        div[data-testid="stExpander"]:has(.wheel-position-anchor) summary p > span[style*="background-color"]:nth-of-type(7) {
+            min-width: 150px !important; max-width: 150px !important; justify-content: center !important; text-align: center !important;
+        }
         </style>
         """, unsafe_allow_html=True)
 
@@ -3361,6 +3385,27 @@ def render_active_portfolio(df):
                     st.session_state.df = JournalManager.save_with_backup(df_copy)
                     st.success("✅ ¡Posiciones de La Rueda unificadas con éxito!")
                     st.rerun()
+
+        if not wheel_stocks.empty:
+            st.markdown(
+                """
+                <div style="display: flex; flex-direction: row; align-items: center; gap: 6px; 
+                            padding: 7px 10px 7px 34px; font-size: 11px; font-weight: 700; color: #8b949e; 
+                            text-transform: uppercase; letter-spacing: 0.5px; 
+                            background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.06); 
+                            border-radius: 8px; margin-bottom: 8px; margin-top: 6px; 
+                            overflow-x: auto; white-space: nowrap;">
+                    <span style="min-width: 68px; max-width: 68px; text-align: center; flex-shrink: 0;">Ticker</span>
+                    <span style="min-width: 90px; max-width: 90px; text-align: center; flex-shrink: 0;">Vencimiento</span>
+                    <span style="min-width: 120px; max-width: 120px; text-align: center; flex-shrink: 0;">Estrategia</span>
+                    <span style="min-width: 85px; max-width: 85px; text-align: center; flex-shrink: 0;">Acciones</span>
+                    <span style="min-width: 160px; max-width: 160px; text-align: center; flex-shrink: 0;">Covered Call</span>
+                    <span style="min-width: 175px; max-width: 175px; text-align: center; flex-shrink: 0;">BE Base</span>
+                    <span style="min-width: 150px; max-width: 150px; text-align: center; flex-shrink: 0;">Precio Compra</span>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
 
         for _, stock_row in wheel_stocks.iterrows():
             stock_ticker = stock_row["Ticker"]
@@ -3458,6 +3503,7 @@ def render_active_portfolio(df):
             wheel_header = " ".join(wheel_title_parts).replace("$", r"\$")
 
             with st.expander(wheel_header, expanded=False):
+                st.markdown('<div class="wheel-position-anchor" style="display:none;"></div>', unsafe_allow_html=True)
                 st.markdown(f"""
                 <div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.06);'>
                     <span style='font-size: 13px; color: #94a3b8;'>Campaña La Rueda &nbsp;•&nbsp; <code style='color:#38bdf8; font-size:12px;'>ChainID: {stock_chain}</code></span>
@@ -6315,9 +6361,10 @@ def render_history(df):
         st.markdown(
             """
             <div style="display: flex; flex-direction: row; align-items: center; gap: 6px; 
-                        padding: 6px 10px 6px 34px; font-size: 11px; font-weight: 700; color: #8b949e; 
+                        padding: 7px 10px 7px 34px; font-size: 11px; font-weight: 700; color: #8b949e; 
                         text-transform: uppercase; letter-spacing: 0.5px; 
-                        border-bottom: 1px solid rgba(255,255,255,0.08); margin-bottom: 8px; margin-top: 6px;
+                        background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.06); 
+                        border-radius: 8px; margin-bottom: 8px; margin-top: 6px; 
                         overflow-x: auto; white-space: nowrap;">
                 <span style="min-width: 68px; max-width: 68px; text-align: center; flex-shrink: 0;">Ticker</span>
                 <span style="min-width: 90px; max-width: 90px; text-align: center; flex-shrink: 0;">Vencimiento</span>

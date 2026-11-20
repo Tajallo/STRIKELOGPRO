@@ -2279,6 +2279,40 @@ def render_active_portfolio(df):
     
     sorted_chains = sorted(chain_dte.keys(), key=lambda x: chain_dte[x])
     
+    if sorted_chains:
+        c_dte_hdr, c_card_hdr = st.columns([1, 11])
+        with c_dte_hdr:
+            st.markdown(
+                """
+                <div style="text-align: center; font-size: 11px; font-weight: 700; color: #8b949e; 
+                            text-transform: uppercase; letter-spacing: 0.5px; padding: 6px 0;
+                            border-bottom: 1px solid rgba(255,255,255,0.08); margin-bottom: 8px;">
+                    DTE
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+        with c_card_hdr:
+            st.markdown(
+                """
+                <div style="display: flex; flex-direction: row; align-items: center; gap: 6px; 
+                            padding: 6px 10px 6px 34px; font-size: 11px; font-weight: 700; color: #8b949e; 
+                            text-transform: uppercase; letter-spacing: 0.5px; 
+                            border-bottom: 1px solid rgba(255,255,255,0.08); margin-bottom: 8px; 
+                            overflow-x: auto; white-space: nowrap;">
+                    <span style="min-width: 68px; max-width: 68px; text-align: center; flex-shrink: 0;">Ticker</span>
+                    <span style="min-width: 90px; max-width: 90px; text-align: center; flex-shrink: 0;">Vencimiento</span>
+                    <span style="min-width: 220px; max-width: 220px; text-align: center; flex-shrink: 0;">Estrategia & Strikes</span>
+                    <span style="min-width: 75px; max-width: 75px; text-align: center; flex-shrink: 0;">Contratos</span>
+                    <span style="min-width: 90px; max-width: 90px; text-align: center; flex-shrink: 0;">Rolls</span>
+                    <span style="min-width: 175px; max-width: 175px; text-align: center; flex-shrink: 0;">BE Subyacente</span>
+                    <span style="min-width: 245px; max-width: 245px; text-align: left; padding-left: 6px; flex-shrink: 0;">Cierre BE (Broker)</span>
+                    <span style="min-width: auto; text-align: left; flex-shrink: 0;">Alertas</span>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
     for chain_id in sorted_chains:
         group = active_df[active_df["ChainID"] == chain_id]
         first_row = group.iloc[0]
@@ -6276,6 +6310,27 @@ def render_history(df):
 
     if total_ops > PAGE_SIZES[0]:
         _hist_pager("top")
+
+    if page_chains:
+        st.markdown(
+            """
+            <div style="display: flex; flex-direction: row; align-items: center; gap: 6px; 
+                        padding: 6px 10px 6px 34px; font-size: 11px; font-weight: 700; color: #8b949e; 
+                        text-transform: uppercase; letter-spacing: 0.5px; 
+                        border-bottom: 1px solid rgba(255,255,255,0.08); margin-bottom: 8px; margin-top: 6px;
+                        overflow-x: auto; white-space: nowrap;">
+                <span style="min-width: 68px; max-width: 68px; text-align: center; flex-shrink: 0;">Ticker</span>
+                <span style="min-width: 90px; max-width: 90px; text-align: center; flex-shrink: 0;">Vencimiento</span>
+                <span style="min-width: 220px; max-width: 220px; text-align: center; flex-shrink: 0;">Estrategia & Strikes</span>
+                <span style="min-width: 105px; max-width: 105px; text-align: center; flex-shrink: 0;">Estado</span>
+                <span style="min-width: 115px; max-width: 115px; text-align: center; flex-shrink: 0;">Fecha Cierre</span>
+                <span style="min-width: 130px; max-width: 130px; text-align: center; flex-shrink: 0;">PnL Realizado</span>
+                <span style="min-width: 95px; max-width: 95px; text-align: center; flex-shrink: 0;">% Retorno</span>
+                <span style="min-width: 115px; max-width: 115px; text-align: center; flex-shrink: 0;">Patas / Contr.</span>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
     for c_data in page_chains:
         pnl   = c_data["PnL_Total"]

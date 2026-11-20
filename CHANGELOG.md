@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Fila de Encabezados de Columna para Cartera Activa e Historial de Operaciones**:
+  - **Alineación Perfecta con los Badges Tabulados**: Se añadió una barra superior de encabezados estilizada justo encima de la lista de tarjetas de Cartera Activa y del Historial de Operaciones, indicando claramente el concepto de cada columna:
+    - **Cartera Activa**:
+      - `DTE` (encima del badge lateral de vencimiento)
+      - `Ticker` (68px, centrado)
+      - `Vencimiento` (90px, centrado)
+      - `Estrategia & Strikes` (220px, centrado)
+      - `Contratos` (75px, centrado)
+      - `Rolls` (90px, centrado)
+      - `BE Subyacente` (175px, centrado)
+      - `Cierre BE (Broker)` (245px, alineado a la izquierda)
+      - `Alertas` (ancho dinámico)
+    - **Historial de Operaciones**:
+      - `Ticker` (68px, centrado)
+      - `Vencimiento` (90px, centrado)
+      - `Estrategia & Strikes` (220px, centrado)
+      - `Estado` (105px, centrado)
+      - `Fecha Cierre` (115px, centrado)
+      - `PnL Realizado` (130px, centrado)
+      - `% Retorno` (95px, centrado)
+      - `Patas / Contr.` (115px, centrado)
+  - **Diseño Moderno Tipo Terminal Financiero**: Tipografía en mayúsculas pequeñas (`11px`, `font-weight: 700`, color `#8b949e`), espaciado exacto (`gap: 6px`) y padding que compensa la flecha desplegable del expander (`padding-left: 34px`) con borde inferior sutil (`border-bottom: 1px solid rgba(255,255,255,0.08)`).
+
 - **Sincronización Inteligente con Tradier / Sigma Trade y Corrección de Rolls y Timezone**:
   - **Corrección de Error Crítico de Timezone en `batch_sync_all`**: Solucionado el fallo `TypeError: Invalid value '...Z' for dtype 'datetime64[us]'` / `ValueError: Passed data is timezone-aware, incompatible with 'tz=None'`. Se implementó el helper `sanitize_date_for_df()` para limpiar fechas ISO con sufijo 'Z' provenientes de la API de Tradier y convertirlas en formato compatible tz-naive antes de almacenarlas en `FechaCierre`.
   - **Eliminación de Falsos Rolls en Cierres Multileg (Spreads e Iron Condors)**:

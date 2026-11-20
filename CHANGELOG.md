@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Sincronización Inteligente con Tradier / Sigma Trade y Corrección de Rolls y Timezone**:
+  - **Corrección de Error Crítico de Timezone en `batch_sync_all`**: Solucionado el fallo `TypeError: Invalid value '...Z' for dtype 'datetime64[us]'` / `ValueError: Passed data is timezone-aware, incompatible with 'tz=None'`. Se implementó el helper `sanitize_date_for_df()` para limpiar fechas ISO con sufijo 'Z' provenientes de la API de Tradier y convertirlas en formato compatible tz-naive antes de almacenarlas en `FechaCierre`.
+  - **Eliminación de Falsos Rolls en Cierres Multileg (Spreads e Iron Condors)**:
+    - Se restringió la detección de rolls para no confundir órdenes de cierre complejas (como el cierre del Iron Condor de SPXW) con rolls. Si todas las patas de una orden tienen side `_to_close`, se tratan exclusivamente como ejecuciones de cierre y se capturan sus precios reales de ejecución (`fills_by_symbol`) sin generar emparejamientos espurios de roll.
+    - Se sanearon los eventos de historial para exigir que cualquier pata de apertura pertenezca a las posiciones actualmente abiertas en Tradier y cuente con distinta fecha de expiración, evitando el emparejamiento indebido entre patas de spreads cerradas el mismo día.
+  - **Detección y Reconstrucción Automática de Rolls Encadenados (Multi-Hop / Doble Roll Intradía)**:
+    - Reconocimiento de secuencias de roll en el mismo día (ej. RKLB: `27-Nov -> 04-Dic -> 11-Dic`). El sistema detecta la pata intermedia abierta y cerrada en el mismo día (`04-Dic`), calcula su PnL realizado independiente, la registra como `Rolada` con su genealogía completa (`3ef54406 -> 04-Dic -> 11-Dic`) y mantiene la trazabilidad intacta sin dejar posiciones huérfanas ni duplicadas.
+  - **Sincronización de Órdenes Individuales (Single-Leg Rolls)**:
+    - Soporte completo para órdenes individuales `class: option` (ej. roll manual de Covered Call de GAP: cierre de 23C y apertura de 22C). Se extraen fills de patas individuales y se emparejan automáticamente como roll al coincidir ticker, tipo de opción y encontrarse abierta la nueva pata.
+  - **Vinculación Automática con La Rueda para Covered Calls Importados**:
+    - Al incorporar un Covered Call desde Tradier (como GAP 22C 31-Dic), se detecta la tenencia de acciones subyacentes en cartera y se asocia automáticamente con `ParentID`, `WheelParentChainID` y `WheelLeg = 'covered_call'`, activando de inmediato el bloque de Covered Call activo y la actualización del Costo Base Real.
+  - **Conciliación Total de Cartera**: Posiciones de SPXW, RKLB, GAP e IREN perfectamente sincronizadas y cuadradas al 100% (20 posiciones activas en StrikeLog correspondientes a las 18 de Tradier, 0 discrepancias).
+
 - **Diseño Visual con Badges y Tabulación en 8 Columnas para Historial de Operaciones**:
   - **Alineación Vertical Continua**: Las tarjetas de operaciones en el Historial se organizan ahora en una cuadrícula de 8 columnas fijas con recuadros redondeados, facilitando el escaneo visual de operaciones pasadas:
     - **Columna 1 (Ticker)**: Ancho fijo (68px), centrado con recuadro violeta.

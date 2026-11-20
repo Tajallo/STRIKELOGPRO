@@ -211,13 +211,39 @@ def fetch_recent_orders(token: Optional[str] = None, account_id: Optional[str] =
         return {"error": f"Error de conexión con Tradier: {e}"}
 
 
-def extract_recent_fills_and_rolls(orders: List[Dict[str, Any]], history_events: Optional[List[Dict[str, Any]]] = None) -> Tuple[Dict[str, float], List[Dict[str, Any]]]:
+def sanitize_date_for_df(dt_val: Any) -> str:
+    """Sanitiza fechas provenientes de Tradier evitando dtypes tz-aware ('Z') incompatibles con tz-naive de Pandas."""
+    if dt_val is None or pd.isna(dt_val) or not str(dt_val).strip():
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    s = str(dt_val).strip()
+    try:
+        ts = pd.to_datetime(s)
+        if hasattr(ts, "tz") and ts.tz is not None:
+            ts = ts.tz_localize(None)
+        return ts.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        clean = s.replace("Z", "").replace("T", " ")
+        return clean[:19]
+
+
+def extract_recent_fills_and_rolls(
+    orders: List[Dict[str, Any]], 
+    history_events: Optional[List[Dict[str, Any]]] = None,
+    open_positions: Optional[List[Dict[str, Any]]] = None
+) -> Tuple[Dict[str, float], List[Dict[str, Any]]]:
     """Extrae precios de cierre y detecta parejas de rolls desde órdenes ejecutadas e historial reciente."""
     from collections import defaultdict
-    fills_by_symbol = {}
-    roll_pairs = []
+    fills_by_symbol: Dict[str, float] = {}
+    roll_pairs: List[Dict[str, Any]] = []
+    
+    open_symbols = set()
+    if open_positions:
+        open_symbols = {p.get("raw_symbol") for p in open_positions if p.get("raw_symbol")}
 
-    # 1. Analizar órdenes del día / activas
+    single_closes: List[Dict[str, Any]] = []
+    single_opens: List[Dict[str, Any]] = []
+
+    # 1. Analizar órdenes del día / recientes
     for o in orders:
         if o.get("status") != "filled":
             continue
@@ -225,6 +251,14 @@ def extract_recent_fills_and_rolls(orders: List[Dict[str, Any]], history_events:
         legs = o.get("leg", [])
         if isinstance(legs, dict):
             legs = [legs]
+        elif not legs and (o.get("class") == "option" or o.get("option_symbol")):
+            # Orden individual (single leg)
+            legs = [{
+                "side": o.get("side"),
+                "option_symbol": o.get("option_symbol"),
+                "avg_fill_price": o.get("avg_fill_price"),
+                "transaction_date": o.get("transaction_date") or o.get("create_date")
+            }]
         
         closing_legs = []
         opening_legs = []
@@ -237,27 +271,90 @@ def extract_recent_fills_and_rolls(orders: List[Dict[str, Any]], history_events:
             if "close" in side and sym:
                 closing_legs.append(l)
                 fills_by_symbol[sym] = price
+                if len(legs) == 1:
+                    single_closes.append(l)
             elif "open" in side and sym:
                 opening_legs.append(l)
                 fills_by_symbol[sym] = price
+                if len(legs) == 1:
+                    single_opens.append(l)
                 
-        # Roll multileg: tiene pata de cierre y pata de apertura
+        # Roll multileg: tiene tanto patas de cierre como de apertura en la misma orden
         if closing_legs and opening_legs:
             for cl in closing_legs:
+                cl_parsed = parse_occ_symbol(cl.get("option_symbol"))
                 for op in opening_legs:
-                    roll_pairs.append({
-                        "order_id": o.get("id"),
-                        "close_symbol": cl.get("option_symbol"),
-                        "close_price": float(cl.get("avg_fill_price", 0.0) or 0.0),
-                        "close_side": cl.get("side"),
-                        "open_symbol": op.get("option_symbol"),
-                        "open_price": float(op.get("avg_fill_price", 0.0) or 0.0),
-                        "open_side": op.get("side"),
-                        "net_price": float(o.get("avg_fill_price", 0.0) or 0.0),
-                        "date": cl.get("transaction_date") or o.get("transaction_date")
-                    })
+                    op_parsed = parse_occ_symbol(op.get("option_symbol"))
+                    # Coincidencia de ticker y tipo de opción (Call o Put)
+                    if cl_parsed.get("ticker") == op_parsed.get("ticker") and cl_parsed.get("option_type") == op_parsed.get("option_type"):
+                        roll_pairs.append({
+                            "order_id": o.get("id"),
+                            "close_symbol": cl.get("option_symbol"),
+                            "close_price": float(cl.get("avg_fill_price", 0.0) or 0.0),
+                            "close_side": cl.get("side"),
+                            "open_symbol": op.get("option_symbol"),
+                            "open_price": float(op.get("avg_fill_price", 0.0) or 0.0),
+                            "open_side": op.get("side"),
+                            "net_price": float(o.get("avg_fill_price", 0.0) or 0.0),
+                            "date": cl.get("transaction_date") or o.get("transaction_date")
+                        })
 
-    # 2. Analizar historial reciente (para rolls y cierres ejecutados en días previos)
+    # 1.1 Emparejar órdenes individuales (ej. roll manual de Covered Call o CSP en 2 órdenes separadas)
+    for sc in single_closes:
+        c_parsed = parse_occ_symbol(sc.get("option_symbol"))
+        for so in single_opens:
+            o_parsed = parse_occ_symbol(so.get("option_symbol"))
+            if c_parsed.get("ticker") == o_parsed.get("ticker") and c_parsed.get("option_type") == o_parsed.get("option_type"):
+                c_sym = sc.get("option_symbol")
+                o_sym = so.get("option_symbol")
+                if c_sym != o_sym:
+                    already = any(rp.get("close_symbol") == c_sym and rp.get("open_symbol") == o_sym for rp in roll_pairs)
+                    if not already:
+                        sc_p = float(sc.get("avg_fill_price", 0.0) or 0.0)
+                        so_p = float(so.get("avg_fill_price", 0.0) or 0.0)
+                        roll_pairs.append({
+                            "order_id": f"single_roll_{c_sym}_{o_sym}",
+                            "close_symbol": c_sym,
+                            "close_price": sc_p,
+                            "close_side": sc.get("side"),
+                            "open_symbol": o_sym,
+                            "open_price": so_p,
+                            "open_side": so.get("side"),
+                            "net_price": so_p - sc_p,
+                            "date": so.get("transaction_date") or sc.get("transaction_date")
+                        })
+
+    # 1.2 Detección de Rolls Multi-Salto (ej. doble roll intradía A -> B y B -> C)
+    # Permite encadenar A directamente con C conociendo la pata intermedia B
+    direct_rolls = list(roll_pairs)
+    chains_by_close = {rp["close_symbol"]: rp for rp in direct_rolls}
+    chained_rolls = []
+    for rp in direct_rolls:
+        target = rp.get("open_symbol")
+        if target in chains_by_close:
+            next_rp = chains_by_close[target]
+            c_sym = rp.get("close_symbol")
+            final_sym = next_rp.get("open_symbol")
+            already = any(r.get("close_symbol") == c_sym and r.get("open_symbol") == final_sym for r in roll_pairs)
+            if not already and c_sym != final_sym:
+                chained_rolls.append({
+                    "order_id": f"chain_{rp.get('order_id')}_{next_rp.get('order_id')}",
+                    "close_symbol": c_sym,
+                    "close_price": rp.get("close_price", 0.0),
+                    "close_side": rp.get("close_side"),
+                    "open_symbol": final_sym,
+                    "open_price": next_rp.get("open_price", 0.0),
+                    "open_side": next_rp.get("open_side"),
+                    "net_price": (rp.get("net_price", 0.0) or 0.0) + (next_rp.get("net_price", 0.0) or 0.0),
+                    "date": next_rp.get("date") or rp.get("date"),
+                    "intermediate_symbol": target,
+                    "intermediate_open_price": rp.get("open_price", 0.0),
+                    "intermediate_close_price": next_rp.get("close_price", 0.0)
+                })
+    if chained_rolls:
+        roll_pairs.extend(chained_rolls)
+
+    # 2. Analizar historial reciente (sólo para fills y rolls antiguos no presentes en órdenes)
     if history_events:
         by_date_and_ticker = defaultdict(lambda: {"buy": [], "sell": []})
         for e in history_events:
@@ -275,16 +372,29 @@ def extract_recent_fills_and_rolls(orders: List[Dict[str, Any]], history_events:
                     
                     if qty > 0:
                         by_date_and_ticker[(dt, ticker)]["buy"].append({
-                            "symbol": sym, "price": price, "qty": qty, "date": e.get("date")
+                            "symbol": sym, "price": price, "qty": qty, "date": e.get("date"), "parsed": parsed
                         })
                     elif qty < 0:
                         by_date_and_ticker[(dt, ticker)]["sell"].append({
-                            "symbol": sym, "price": price, "qty": abs(qty), "date": e.get("date")
+                            "symbol": sym, "price": price, "qty": abs(qty), "date": e.get("date"), "parsed": parsed
                         })
         
         for (dt, ticker), group in by_date_and_ticker.items():
             for b in group["buy"]:
                 for s in group["sell"]:
+                    # Reglas estrictas para historial:
+                    # - La pata abierta DEBE estar actualmente abierta en Tradier
+                    # - Mismo ticker y mismo tipo de opción
+                    # - Distinto vencimiento (evita falsos rolls entre patas de un spread/Iron Condor del mismo día)
+                    b_p = b.get("parsed", {})
+                    s_p = s.get("parsed", {})
+                    if b_p.get("option_type") != s_p.get("option_type"):
+                        continue
+                    if b_p.get("expiry") == s_p.get("expiry"):
+                        continue
+                    if open_symbols and s["symbol"] not in open_symbols:
+                        continue
+
                     already = any(rp.get("close_symbol") == b["symbol"] and rp.get("open_symbol") == s["symbol"] for rp in roll_pairs)
                     if not already:
                         roll_pairs.append({
@@ -565,10 +675,113 @@ def batch_sync_all(JournalManager, df: pd.DataFrame, recon: Dict[str, Any], roll
 
             new_id = str(uuid4())[:8]
             setup_val = "VIX alto / IV Crush" if "VIX" in nw["ticker"] else ("La Rueda (The Wheel)" if ("CSP" in strat_suggest or "Rueda" in strat_suggest or "CC (" in strat_suggest) else "Otro")
+            
+            parent_id_val = pd.NA
+            chain_id_val = new_id
+            wheel_parent_val = pd.NA
+            cc_chain_val = pd.NA
+            cc_prima_val = 0.0
+
+            # 1. Vincular si proviene de un Roll detectado en Tradier
+            candidate_rps = [rp for rp in roll_pairs if rp.get("open_symbol") == nw.get("raw_symbol")]
+            matched_rp = None
+            for rp in candidate_rps:
+                c_p = parse_occ_symbol(rp["close_symbol"])
+                matches = cur_df[(cur_df["Ticker"] == c_p["ticker"]) & (cur_df["Strike"] == c_p["strike"]) & (cur_df["Expiry"].astype(str).str.startswith(str(c_p["expiry"])))]
+                if len(matches) > 0:
+                    matched_rp = rp
+                    break
+            if not matched_rp and candidate_rps:
+                matched_rp = next((rp for rp in candidate_rps if rp.get("intermediate_symbol")), candidate_rps[0])
+
+            if matched_rp:
+                if matched_rp.get("intermediate_symbol"):
+                    inter_sym = matched_rp["intermediate_symbol"]
+                    inter_parsed = parse_occ_symbol(inter_sym)
+                    existing_inter = cur_df[
+                        (cur_df["Ticker"] == inter_parsed["ticker"]) &
+                        (cur_df["Strike"] == inter_parsed["strike"]) &
+                        (cur_df["Expiry"].astype(str).str.startswith(str(inter_parsed["expiry"])))
+                    ]
+                    if len(existing_inter) > 0:
+                        parent_id_val = existing_inter.iloc[-1]["ID"]
+                        chain_id_val = existing_inter.iloc[-1]["ChainID"]
+                    else:
+                        c_p = parse_occ_symbol(matched_rp["close_symbol"])
+                        grand_rows = cur_df[(cur_df["Ticker"] == c_p["ticker"]) & (cur_df["Strike"] == c_p["strike"]) & (cur_df["Expiry"].astype(str).str.startswith(str(c_p["expiry"])))]
+                        grand_id = grand_rows.iloc[-1]["ID"] if len(grand_rows) > 0 else pd.NA
+                        grand_chain = grand_rows.iloc[-1]["ChainID"] if len(grand_rows) > 0 else new_id
+                        
+                        inter_id = str(uuid4())[:8]
+                        p_in = float(matched_rp.get("intermediate_open_price", 0.0))
+                        p_out = float(matched_rp.get("intermediate_close_price", 0.0))
+                        inter_rec = {
+                            "ID": inter_id,
+                            "ChainID": grand_chain,
+                            "ParentID": grand_id,
+                            "Ticker": inter_parsed["ticker"],
+                            "FechaApertura": sanitize_date_for_df(matched_rp.get("date")),
+                            "Expiry": pd.to_datetime(inter_parsed["expiry"]).normalize(),
+                            "Estrategia": strat_suggest,
+                            "Setup": setup_val,
+                            "Tags": "TradierSync",
+                            "Side": nw["side"],
+                            "OptionType": inter_parsed["option_type"],
+                            "Strike": inter_parsed["strike"],
+                            "Delta": 0.0,
+                            "PrimaRecibida": p_in,
+                            "CostoCierre": p_out,
+                            "Contratos": nw["contratos"],
+                            "BuyingPower": inter_parsed["strike"] * 100 * nw["contratos"] if inter_parsed["strike"] > 0 else 0.0,
+                            "BreakEven": max(0.0, inter_parsed["strike"] - p_in) if inter_parsed["option_type"] == "Put" else inter_parsed["strike"] + p_in,
+                            "BreakEven_Upper": 0.0,
+                            "POP": 70.0,
+                            "Estado": "Rolada",
+                            "Notas": f"Pata intermedia de doble roll intradía ({inter_sym})",
+                            "UpdatedAt": datetime.now().isoformat(),
+                            "FechaCierre": sanitize_date_for_df(matched_rp.get("date")),
+                            "MaxProfitUSD": p_in * 100 * nw["contratos"],
+                            "ProfitPct": 0.0,
+                            "PnL_Capital_Pct": 0.0,
+                            "PrecioAccionCierre": 0.0,
+                            "PnL_USD_Realizado": (p_in - p_out) * 100 * nw["contratos"] if nw["side"] == "Sell" else (p_out - p_in) * 100 * nw["contratos"],
+                            "Comisiones": 0.0,
+                            "EarningsDate": pd.NA,
+                            "DividendosDate": pd.NA,
+                            "Broker": "Tradier",
+                            "WheelParentChainID": grand_chain,
+                            "CostBaseReal": 0.0,
+                            "CoveredCallChainID": pd.NA,
+                            "CoveredCallPrima": 0.0,
+                            "WheelLeg": "sell_put" if "CSP" in strat_suggest else pd.NA
+                        }
+                        cur_df = pd.concat([cur_df, pd.DataFrame([inter_rec])], ignore_index=True)
+                        parent_id_val = inter_id
+                        chain_id_val = grand_chain
+                else:
+                    c_p = parse_occ_symbol(matched_rp["close_symbol"])
+                    closed_rows = cur_df[(cur_df["Ticker"] == c_p["ticker"]) & (cur_df["Strike"] == c_p["strike"]) & (cur_df["Expiry"].astype(str).str.startswith(str(c_p["expiry"])))]
+                    if len(closed_rows) > 0:
+                        parent_id_val = closed_rows.iloc[-1]["ID"]
+                        chain_id_val = closed_rows.iloc[-1]["ChainID"]
+
+            # 2. Covered Call vinculado a Acción en Cartera (Rueda)
+            if nw["side"] == "Sell" and nw["option_type"] == "Call":
+                stock_match = cur_df[(cur_df["Ticker"] == nw["ticker"]) & (cur_df["OptionType"] == "Stock") & (cur_df["Estado"] == "Abierta")]
+                if len(stock_match) > 0:
+                    stock_row = stock_match.iloc[0]
+                    parent_id_val = stock_row["ID"]
+                    chain_id_val = stock_row["ChainID"]
+                    wheel_parent_val = stock_row["ChainID"]
+                    cc_chain_val = stock_row["ChainID"]
+                    cc_prima_val = nw["unit_premium"]
+                    strat_suggest = "CC (Covered Call)"
+                    setup_val = "La Rueda (The Wheel)"
+
             new_records.append({
                 "ID": new_id,
-                "ChainID": new_id,
-                "ParentID": pd.NA,
+                "ChainID": chain_id_val,
+                "ParentID": parent_id_val,
                 "Ticker": nw["ticker"],
                 "FechaApertura": pd.to_datetime(nw["date_acquired"]).normalize() if nw["date_acquired"] else pd.Timestamp.now().normalize(),
                 "Expiry": pd.to_datetime(nw["expiry"]).normalize() if nw["expiry"] else pd.Timestamp.now().normalize(),
@@ -599,10 +812,10 @@ def batch_sync_all(JournalManager, df: pd.DataFrame, recon: Dict[str, Any], roll
                 "EarningsDate": pd.NA,
                 "DividendosDate": pd.NA,
                 "Broker": "Tradier",
-                "WheelParentChainID": pd.NA,
+                "WheelParentChainID": wheel_parent_val,
                 "CostBaseReal": 0.0,
-                "CoveredCallChainID": pd.NA,
-                "CoveredCallPrima": 0.0,
+                "CoveredCallChainID": cc_chain_val,
+                "CoveredCallPrima": cc_prima_val,
                 "WheelLeg": "sell_put" if "CSP" in strat_suggest else ("covered_call" if "CC (" in strat_suggest else pd.NA)
             })
             n_imported += 1
@@ -631,12 +844,72 @@ def batch_sync_all(JournalManager, df: pd.DataFrame, recon: Dict[str, Any], roll
 
         if matched_roll:
             cur_df.at[real_i, "Estado"] = "Rolada"
-            cur_df.at[real_i, "FechaCierre"] = str(matched_roll.get("date") or datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            cur_df.at[real_i, "FechaCierre"] = sanitize_date_for_df(matched_roll.get("date"))
             roll_close_p = float(matched_roll.get("close_price", close_price) or close_price)
             cur_df.at[real_i, "CostoCierre"] = roll_close_p
             pnl_realizado = (p_rec - roll_close_p) * 100 * cnt if side_val == "Sell" else (roll_close_p - p_rec) * 100 * cnt
             cur_df.at[real_i, "PnL_USD_Realizado"] = pnl_realizado
             cur_df.at[real_i, "UpdatedAt"] = datetime.now().isoformat()
+
+            # Gestión de roll encadenado (ej. doble roll intradía)
+            target_parent_id = mis["strikelog_id"]
+            if matched_roll.get("intermediate_symbol"):
+                inter_sym = matched_roll["intermediate_symbol"]
+                inter_parsed = parse_occ_symbol(inter_sym)
+                inter_exists = cur_df[
+                    (cur_df["Ticker"] == inter_parsed["ticker"]) &
+                    (cur_df["Strike"] == inter_parsed["strike"]) &
+                    (cur_df["Expiry"] == inter_parsed["expiry"])
+                ]
+                if len(inter_exists) == 0:
+                    inter_id = str(uuid4())[:8]
+                    p_in = float(matched_roll.get("intermediate_open_price", 0.0))
+                    p_out = float(matched_roll.get("intermediate_close_price", 0.0))
+                    inter_pnl = (p_in - p_out) * 100 * cnt if side_val == "Sell" else (p_out - p_in) * 100 * cnt
+                    inter_rec = {
+                        "ID": inter_id,
+                        "ChainID": cur_df.at[real_i, "ChainID"] if pd.notna(cur_df.at[real_i, "ChainID"]) else inter_id,
+                        "ParentID": mis["strikelog_id"],
+                        "Ticker": inter_parsed["ticker"],
+                        "FechaApertura": sanitize_date_for_df(matched_roll.get("date")),
+                        "Expiry": pd.to_datetime(inter_parsed["expiry"]).normalize(),
+                        "Estrategia": cur_df.at[real_i, "Estrategia"],
+                        "Setup": cur_df.at[real_i, "Setup"],
+                        "Tags": "TradierSync",
+                        "Side": side_val,
+                        "OptionType": inter_parsed["option_type"],
+                        "Strike": inter_parsed["strike"],
+                        "Delta": 0.0,
+                        "PrimaRecibida": p_in,
+                        "CostoCierre": p_out,
+                        "Contratos": cnt,
+                        "BuyingPower": inter_parsed["strike"] * 100 * cnt if inter_parsed["strike"] > 0 else 0.0,
+                        "BreakEven": max(0.0, inter_parsed["strike"] - p_in) if inter_parsed["option_type"] == "Put" else inter_parsed["strike"] + p_in,
+                        "BreakEven_Upper": 0.0,
+                        "POP": 70.0,
+                        "Estado": "Rolada",
+                        "Notas": f"Pata intermedia de doble roll intradía ({inter_sym})",
+                        "UpdatedAt": datetime.now().isoformat(),
+                        "FechaCierre": sanitize_date_for_df(matched_roll.get("date")),
+                        "MaxProfitUSD": p_in * 100 * cnt,
+                        "ProfitPct": 0.0,
+                        "PnL_Capital_Pct": 0.0,
+                        "PrecioAccionCierre": 0.0,
+                        "PnL_USD_Realizado": inter_pnl,
+                        "Comisiones": 0.0,
+                        "EarningsDate": pd.NA,
+                        "DividendosDate": pd.NA,
+                        "Broker": "Tradier",
+                        "WheelParentChainID": cur_df.at[real_i, "WheelParentChainID"],
+                        "CostBaseReal": 0.0,
+                        "CoveredCallChainID": pd.NA,
+                        "CoveredCallPrima": 0.0,
+                        "WheelLeg": cur_df.at[real_i, "WheelLeg"]
+                    }
+                    cur_df = pd.concat([cur_df, pd.DataFrame([inter_rec])], ignore_index=True)
+                    target_parent_id = inter_id
+                else:
+                    target_parent_id = inter_exists.iloc[-1]["ID"]
 
             open_parsed = parse_occ_symbol(matched_roll["open_symbol"])
             new_leg_idx = cur_df.index[
@@ -646,21 +919,11 @@ def batch_sync_all(JournalManager, df: pd.DataFrame, recon: Dict[str, Any], roll
                 (cur_df["Estado"] == "Abierta")
             ]
             if len(new_leg_idx) > 0:
-                cur_df.at[new_leg_idx[0], "ParentID"] = mis["strikelog_id"]
+                cur_df.at[new_leg_idx[0], "ParentID"] = target_parent_id
             n_resolved += 1
         else:
-            cands = cur_df.index[
-                (cur_df["Ticker"] == mis["ticker"]) &
-                (cur_df["Estado"] == "Abierta") &
-                (cur_df["ID"] != mis["strikelog_id"])
-            ]
-            if len(cands) > 0 and close_price > 0:
-                cur_df.at[real_i, "Estado"] = "Rolada"
-                cur_df.at[cands[-1], "ParentID"] = mis["strikelog_id"]
-            else:
-                cur_df.at[real_i, "Estado"] = "Cerrada"
-
-            cur_df.at[real_i, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cur_df.at[real_i, "Estado"] = "Cerrada"
+            cur_df.at[real_i, "FechaCierre"] = sanitize_date_for_df(datetime.now())
             cur_df.at[real_i, "CostoCierre"] = close_price
             pnl_realizado = (p_rec - close_price) * 100 * cnt if side_val == "Sell" else (close_price - p_rec) * 100 * cnt
             cur_df.at[real_i, "PnL_USD_Realizado"] = pnl_realizado
@@ -702,7 +965,8 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
 
     orders_list = orders_res.get("orders", []) if orders_res.get("success") else []
     hist_events = hist_res.get("events", []) if hist_res.get("success") else []
-    fills_by_symbol, roll_pairs = extract_recent_fills_and_rolls(orders_list, hist_events)
+    pos_list = pos_res.get("positions", []) if pos_res.get("success") else []
+    fills_by_symbol, roll_pairs = extract_recent_fills_and_rolls(orders_list, hist_events, pos_list)
 
     balances = bal_res.get("balances", {})
     t_equity = float(balances.get("total_equity", 0.0) or 0.0)
@@ -860,7 +1124,7 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
                         if len(rec_idx) > 0:
                             real_i = rec_idx[0]
                             df.at[real_i, "Estado"] = "Rolada"
-                            df.at[real_i, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            df.at[real_i, "FechaCierre"] = sanitize_date_for_df(matched_roll.get("date"))
                             df.at[real_i, "CostoCierre"] = close_price
                             p_rec = float(df.at[real_i, "PrimaRecibida"] or 0.0)
                             cnt = float(df.at[real_i, "Contratos"] or 1.0)
@@ -869,6 +1133,65 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
                             df.at[real_i, "PnL_USD_Realizado"] = pnl_realizado
                             df.at[real_i, "UpdatedAt"] = datetime.now().isoformat()
                             
+                            target_parent_id = mis["strikelog_id"]
+                            if matched_roll.get("intermediate_symbol"):
+                                inter_sym = matched_roll["intermediate_symbol"]
+                                inter_parsed = parse_occ_symbol(inter_sym)
+                                inter_exists = df[
+                                    (df["Ticker"] == inter_parsed["ticker"]) &
+                                    (df["Strike"] == inter_parsed["strike"]) &
+                                    (df["Expiry"] == inter_parsed["expiry"])
+                                ]
+                                if len(inter_exists) == 0:
+                                    inter_id = str(uuid4())[:8]
+                                    p_in = float(matched_roll.get("intermediate_open_price", 0.0))
+                                    p_out = float(matched_roll.get("intermediate_close_price", 0.0))
+                                    inter_pnl = (p_in - p_out) * 100 * cnt if side_val == "Sell" else (p_out - p_in) * 100 * cnt
+                                    inter_rec = {
+                                        "ID": inter_id,
+                                        "ChainID": df.at[real_i, "ChainID"] if pd.notna(df.at[real_i, "ChainID"]) else inter_id,
+                                        "ParentID": mis["strikelog_id"],
+                                        "Ticker": inter_parsed["ticker"],
+                                        "FechaApertura": sanitize_date_for_df(matched_roll.get("date")),
+                                        "Expiry": pd.to_datetime(inter_parsed["expiry"]).normalize(),
+                                        "Estrategia": df.at[real_i, "Estrategia"],
+                                        "Setup": df.at[real_i, "Setup"],
+                                        "Tags": "TradierSync",
+                                        "Side": side_val,
+                                        "OptionType": inter_parsed["option_type"],
+                                        "Strike": inter_parsed["strike"],
+                                        "Delta": 0.0,
+                                        "PrimaRecibida": p_in,
+                                        "CostoCierre": p_out,
+                                        "Contratos": cnt,
+                                        "BuyingPower": inter_parsed["strike"] * 100 * cnt if inter_parsed["strike"] > 0 else 0.0,
+                                        "BreakEven": max(0.0, inter_parsed["strike"] - p_in) if inter_parsed["option_type"] == "Put" else inter_parsed["strike"] + p_in,
+                                        "BreakEven_Upper": 0.0,
+                                        "POP": 70.0,
+                                        "Estado": "Rolada",
+                                        "Notas": f"Pata intermedia de doble roll intradía ({inter_sym})",
+                                        "UpdatedAt": datetime.now().isoformat(),
+                                        "FechaCierre": sanitize_date_for_df(matched_roll.get("date")),
+                                        "MaxProfitUSD": p_in * 100 * cnt,
+                                        "ProfitPct": 0.0,
+                                        "PnL_Capital_Pct": 0.0,
+                                        "PrecioAccionCierre": 0.0,
+                                        "PnL_USD_Realizado": inter_pnl,
+                                        "Comisiones": 0.0,
+                                        "EarningsDate": pd.NA,
+                                        "DividendosDate": pd.NA,
+                                        "Broker": "Tradier",
+                                        "WheelParentChainID": df.at[real_i, "WheelParentChainID"],
+                                        "CostBaseReal": 0.0,
+                                        "CoveredCallChainID": pd.NA,
+                                        "CoveredCallPrima": 0.0,
+                                        "WheelLeg": df.at[real_i, "WheelLeg"]
+                                    }
+                                    df = pd.concat([df, pd.DataFrame([inter_rec])], ignore_index=True)
+                                    target_parent_id = inter_id
+                                else:
+                                    target_parent_id = inter_exists.iloc[-1]["ID"]
+
                             open_parsed = parse_occ_symbol(matched_roll["open_symbol"])
                             new_leg_idx = df.index[
                                 (df["Ticker"] == open_parsed["ticker"]) &
@@ -877,7 +1200,7 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
                                 (df["Estado"] == "Abierta")
                             ]
                             if len(new_leg_idx) > 0:
-                                df.at[new_leg_idx[0], "ParentID"] = mis["strikelog_id"]
+                                df.at[new_leg_idx[0], "ParentID"] = target_parent_id
 
                             st.session_state.df = JournalManager.save_with_backup(df)
                             st.success(f"Posición {mis['ticker']} actualizada como Rolada y enlazada.")
@@ -889,7 +1212,7 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
                         if len(rec_idx) > 0:
                             real_i = rec_idx[0]
                             df.at[real_i, "Estado"] = "Cerrada"
-                            df.at[real_i, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            df.at[real_i, "FechaCierre"] = sanitize_date_for_df(datetime.now())
                             df.at[real_i, "CostoCierre"] = close_price
                             p_rec = float(df.at[real_i, "PrimaRecibida"] or 0.0)
                             cnt = float(df.at[real_i, "Contratos"] or 1.0)
@@ -904,7 +1227,7 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
                         if len(rec_idx) > 0:
                             real_i = rec_idx[0]
                             df.at[real_i, "Estado"] = "Rolada"
-                            df.at[real_i, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            df.at[real_i, "FechaCierre"] = sanitize_date_for_df(datetime.now())
                             df.at[real_i, "CostoCierre"] = close_price
                             p_rec = float(df.at[real_i, "PrimaRecibida"] or 0.0)
                             cnt = float(df.at[real_i, "Contratos"] or 1.0)
@@ -928,7 +1251,7 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
                         if len(rec_idx) > 0:
                             real_i = rec_idx[0]
                             df.at[real_i, "Estado"] = "Asignada"
-                            df.at[real_i, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            df.at[real_i, "FechaCierre"] = sanitize_date_for_df(datetime.now())
                             df.at[real_i, "CostoCierre"] = 0.0
                             p_rec = float(df.at[real_i, "PrimaRecibida"] or 0.0)
                             cnt = float(df.at[real_i, "Contratos"] or 1.0)
@@ -945,7 +1268,7 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
                         if len(rec_idx) > 0:
                             real_i = rec_idx[0]
                             df.at[real_i, "Estado"] = "Cerrada"
-                            df.at[real_i, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            df.at[real_i, "FechaCierre"] = sanitize_date_for_df(datetime.now())
                             df.at[real_i, "CostoCierre"] = close_price
                             p_rec = float(df.at[real_i, "PrimaRecibida"] or 0.0)
                             cnt = float(df.at[real_i, "Contratos"] or 1.0)
@@ -961,7 +1284,7 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
                         if len(rec_idx) > 0:
                             real_i = rec_idx[0]
                             df.at[real_i, "Estado"] = "Rolada"
-                            df.at[real_i, "FechaCierre"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            df.at[real_i, "FechaCierre"] = sanitize_date_for_df(datetime.now())
                             df.at[real_i, "CostoCierre"] = close_price
                             p_rec = float(df.at[real_i, "PrimaRecibida"] or 0.0)
                             cnt = float(df.at[real_i, "Contratos"] or 1.0)
@@ -1114,10 +1437,113 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
                 if c_n3.button("➕ Añadir a Cartera", key=f"btn_add_rec_{idx_n}", type="primary"):
                     new_id = str(uuid4())[:8]
                     setup_val = "VIX alto / IV Crush" if "VIX" in nw["ticker"] else ("La Rueda (The Wheel)" if ("CSP" in sel_strat or "Rueda" in sel_strat or "CC (" in sel_strat) else "Otro")
+                    
+                    parent_id_val = pd.NA
+                    chain_id_val = new_id
+                    wheel_parent_val = pd.NA
+                    cc_chain_val = pd.NA
+                    cc_prima_val = 0.0
+
+                    # 1. Vincular si proviene de un Roll detectado en Tradier
+                    candidate_rps = [rp for rp in roll_pairs if rp.get("open_symbol") == nw.get("raw_symbol")]
+                    matched_rp = None
+                    for rp in candidate_rps:
+                        c_p = parse_occ_symbol(rp["close_symbol"])
+                        matches = df[(df["Ticker"] == c_p["ticker"]) & (df["Strike"] == c_p["strike"]) & (df["Expiry"].astype(str).str.startswith(str(c_p["expiry"])))]
+                        if len(matches) > 0:
+                            matched_rp = rp
+                            break
+                    if not matched_rp and candidate_rps:
+                        matched_rp = next((rp for rp in candidate_rps if rp.get("intermediate_symbol")), candidate_rps[0])
+
+                    if matched_rp:
+                        if matched_rp.get("intermediate_symbol"):
+                            inter_sym = matched_rp["intermediate_symbol"]
+                            inter_parsed = parse_occ_symbol(inter_sym)
+                            existing_inter = df[
+                                (df["Ticker"] == inter_parsed["ticker"]) &
+                                (df["Strike"] == inter_parsed["strike"]) &
+                                (df["Expiry"].astype(str).str.startswith(str(inter_parsed["expiry"])))
+                            ]
+                            if len(existing_inter) > 0:
+                                parent_id_val = existing_inter.iloc[-1]["ID"]
+                                chain_id_val = existing_inter.iloc[-1]["ChainID"]
+                            else:
+                                c_p = parse_occ_symbol(matched_rp["close_symbol"])
+                                grand_rows = df[(df["Ticker"] == c_p["ticker"]) & (df["Strike"] == c_p["strike"]) & (df["Expiry"].astype(str).str.startswith(str(c_p["expiry"])))]
+                                grand_id = grand_rows.iloc[-1]["ID"] if len(grand_rows) > 0 else pd.NA
+                                grand_chain = grand_rows.iloc[-1]["ChainID"] if len(grand_rows) > 0 else new_id
+                                
+                                inter_id = str(uuid4())[:8]
+                                p_in = float(matched_rp.get("intermediate_open_price", 0.0))
+                                p_out = float(matched_rp.get("intermediate_close_price", 0.0))
+                                inter_rec = {
+                                    "ID": inter_id,
+                                    "ChainID": grand_chain,
+                                    "ParentID": grand_id,
+                                    "Ticker": inter_parsed["ticker"],
+                                    "FechaApertura": sanitize_date_for_df(matched_rp.get("date")),
+                                    "Expiry": pd.to_datetime(inter_parsed["expiry"]).normalize(),
+                                    "Estrategia": sel_strat,
+                                    "Setup": setup_val,
+                                    "Tags": "TradierSync",
+                                    "Side": nw["side"],
+                                    "OptionType": inter_parsed["option_type"],
+                                    "Strike": inter_parsed["strike"],
+                                    "Delta": 0.0,
+                                    "PrimaRecibida": p_in,
+                                    "CostoCierre": p_out,
+                                    "Contratos": nw["contratos"],
+                                    "BuyingPower": inter_parsed["strike"] * 100 * nw["contratos"] if inter_parsed["strike"] > 0 else 0.0,
+                                    "BreakEven": max(0.0, inter_parsed["strike"] - p_in) if inter_parsed["option_type"] == "Put" else inter_parsed["strike"] + p_in,
+                                    "BreakEven_Upper": 0.0,
+                                    "POP": 70.0,
+                                    "Estado": "Rolada",
+                                    "Notas": f"Pata intermedia de doble roll intradía ({inter_sym})",
+                                    "UpdatedAt": datetime.now().isoformat(),
+                                    "FechaCierre": sanitize_date_for_df(matched_rp.get("date")),
+                                    "MaxProfitUSD": p_in * 100 * nw["contratos"],
+                                    "ProfitPct": 0.0,
+                                    "PnL_Capital_Pct": 0.0,
+                                    "PrecioAccionCierre": 0.0,
+                                    "PnL_USD_Realizado": (p_in - p_out) * 100 * nw["contratos"] if nw["side"] == "Sell" else (p_out - p_in) * 100 * nw["contratos"],
+                                    "Comisiones": 0.0,
+                                    "EarningsDate": pd.NA,
+                                    "DividendosDate": pd.NA,
+                                    "Broker": "Tradier",
+                                    "WheelParentChainID": grand_chain,
+                                    "CostBaseReal": 0.0,
+                                    "CoveredCallChainID": pd.NA,
+                                    "CoveredCallPrima": 0.0,
+                                    "WheelLeg": "sell_put" if "CSP" in sel_strat else pd.NA
+                                }
+                                df = pd.concat([df, pd.DataFrame([inter_rec])], ignore_index=True)
+                                parent_id_val = inter_id
+                                chain_id_val = grand_chain
+                        else:
+                            c_p = parse_occ_symbol(matched_rp["close_symbol"])
+                            closed_rows = df[(df["Ticker"] == c_p["ticker"]) & (df["Strike"] == c_p["strike"]) & (df["Expiry"].astype(str).str.startswith(str(c_p["expiry"])))]
+                            if len(closed_rows) > 0:
+                                parent_id_val = closed_rows.iloc[-1]["ID"]
+                                chain_id_val = closed_rows.iloc[-1]["ChainID"]
+
+                    # 2. Covered Call vinculado a Acción en Cartera (Rueda)
+                    if (sel_strat == "CC (Covered Call)" or (nw["side"] == "Sell" and nw["option_type"] == "Call")):
+                        stock_match = df[(df["Ticker"] == nw["ticker"]) & (df["OptionType"] == "Stock") & (df["Estado"] == "Abierta")]
+                        if len(stock_match) > 0:
+                            stock_row = stock_match.iloc[0]
+                            parent_id_val = stock_row["ID"]
+                            chain_id_val = stock_row["ChainID"]
+                            wheel_parent_val = stock_row["ChainID"]
+                            cc_chain_val = stock_row["ChainID"]
+                            cc_prima_val = nw["unit_premium"]
+                            sel_strat = "CC (Covered Call)"
+                            setup_val = "La Rueda (The Wheel)"
+
                     new_rec = {
                         "ID": new_id,
-                        "ChainID": new_id,
-                        "ParentID": pd.NA,
+                        "ChainID": chain_id_val,
+                        "ParentID": parent_id_val,
                         "Ticker": nw["ticker"],
                         "FechaApertura": pd.to_datetime(nw["date_acquired"]).normalize() if nw["date_acquired"] else pd.Timestamp.now().normalize(),
                         "Expiry": pd.to_datetime(nw["expiry"]).normalize() if nw["expiry"] else pd.Timestamp.now().normalize(),
@@ -1148,10 +1574,10 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
                         "EarningsDate": pd.NA,
                         "DividendosDate": pd.NA,
                         "Broker": "Tradier",
-                        "WheelParentChainID": pd.NA,
+                        "WheelParentChainID": wheel_parent_val,
                         "CostBaseReal": 0.0,
-                        "CoveredCallChainID": pd.NA,
-                        "CoveredCallPrima": 0.0,
+                        "CoveredCallChainID": cc_chain_val,
+                        "CoveredCallPrima": cc_prima_val,
                         "WheelLeg": "sell_put" if "CSP" in sel_strat else ("covered_call" if "CC (" in sel_strat else pd.NA)
                     }
                     new_df = pd.concat([df.dropna(how='all', axis=0), pd.DataFrame([new_rec])], ignore_index=True)

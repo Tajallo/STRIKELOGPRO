@@ -770,13 +770,18 @@ def batch_sync_all(JournalManager, df: pd.DataFrame, recon: Dict[str, Any], roll
                 stock_match = cur_df[(cur_df["Ticker"] == nw["ticker"]) & (cur_df["OptionType"] == "Stock") & (cur_df["Estado"] == "Abierta")]
                 if len(stock_match) > 0:
                     stock_row = stock_match.iloc[0]
-                    parent_id_val = stock_row["ID"]
-                    chain_id_val = stock_row["ChainID"]
+                    stock_idx = stock_match.index[0]
+                    if not matched_rp:
+                        parent_id_val = stock_row["ID"]
+                        chain_id_val = new_id
                     wheel_parent_val = stock_row["ChainID"]
-                    cc_chain_val = stock_row["ChainID"]
-                    cc_prima_val = nw["unit_premium"]
+                    cc_chain_val = pd.NA
+                    cc_prima_val = 0.0
                     strat_suggest = "CC (Covered Call)"
                     setup_val = "La Rueda (The Wheel)"
+                    # Actualizar en las acciones la vinculación con el nuevo CC
+                    cur_df.at[stock_idx, "CoveredCallChainID"] = chain_id_val
+                    cur_df.at[stock_idx, "CoveredCallPrima"] = nw["unit_premium"]
 
             new_records.append({
                 "ID": new_id,
@@ -1532,13 +1537,17 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
                         stock_match = df[(df["Ticker"] == nw["ticker"]) & (df["OptionType"] == "Stock") & (df["Estado"] == "Abierta")]
                         if len(stock_match) > 0:
                             stock_row = stock_match.iloc[0]
-                            parent_id_val = stock_row["ID"]
-                            chain_id_val = stock_row["ChainID"]
+                            stock_idx = stock_match.index[0]
+                            if not matched_rp:
+                                parent_id_val = stock_row["ID"]
+                                chain_id_val = new_id
                             wheel_parent_val = stock_row["ChainID"]
-                            cc_chain_val = stock_row["ChainID"]
-                            cc_prima_val = nw["unit_premium"]
+                            cc_chain_val = pd.NA
+                            cc_prima_val = 0.0
                             sel_strat = "CC (Covered Call)"
                             setup_val = "La Rueda (The Wheel)"
+                            df.at[stock_idx, "CoveredCallChainID"] = chain_id_val
+                            df.at[stock_idx, "CoveredCallPrima"] = nw["unit_premium"]
 
                     new_rec = {
                         "ID": new_id,

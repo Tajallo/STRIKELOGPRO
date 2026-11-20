@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Corrección de Importación y Visualización de Covered Calls (GAP 22C 31-Dic)**:
+  - **Independencia de ChainID para Covered Calls**: Al importar un Covered Call desde Tradier, se asignaba por error el `ChainID` de la posición de acciones al registro de la opción, provocando que se fusionaran bajo una sola fila en Cartera Activa y ocultando el Covered Call. Se corrigió tanto en `batch_sync_all` como en el modal de sincronización individual para que la opción conserve su propio `ChainID` de cadena/roll y se vincule a las acciones vía `WheelParentChainID` y actualizando `CoveredCallChainID` en el registro del stock.
+  - **Trazabilidad de Rolls en Covered Calls**: Se restauró la genealogía completa del roll de GAP (`23C 20-Nov @ $0.01` marcado como `Rolada` con PnL de +$154 -> `22C 31-Dic @ $0.81` abierto con 9 rolls acumulados y 41 DTE).
+  - **Métricas Directas en La Rueda**: En el bucle de `Covered Calls Activos` del panel La Rueda, se renderizan directamente las métricas del registro activo (`cc_row`) en lugar del primer registro histórico del ChainID, garantizando la visualización inmediata del strike actual ($22.00) y su fecha de vencimiento (31 Dic 2026).
+
+
 - **Fila de Encabezados y Tabulación en La Rueda (Posiciones de Acciones Asignadas)**:
   - **Cabecera de Columnas Dedicada**: Se incorporó una barra superior con estilo de panel/tarjeta (`background: rgba(255,255,255,0.025)`, borde sutil y esquinas redondeadas) situada justo sobre las posiciones de acciones en La Rueda, definiendo con exactitud sus 7 columnas:
     - `Ticker` (68px, centrado)

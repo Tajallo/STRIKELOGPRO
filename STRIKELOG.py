@@ -4035,16 +4035,14 @@ def render_active_portfolio(df):
                     st.markdown("<div style='margin-top: 16px; margin-bottom: 8px; font-size: 12.5px; font-weight: 700; color: #38bdf8; display: flex; align-items: center; gap: 6px;'><span>📋</span> Covered Calls Activos</div>", unsafe_allow_html=True)
                     for _, cc_row in cc_activos.iterrows():
                         cc_chain_val = cc_row["ChainID"]
-                        cc_linked = df[df["ChainID"] == cc_chain_val]
-                        if not cc_linked.empty:
-                            cc_leg = cc_linked.iloc[0]
-                            cc_strike_metric = float(cc_leg.get('Strike', 0))
-                            cc_prima_metric = float(cc_leg.get('PrimaRecibida', 0))
-                            cc_cnt_metric = int(cc_leg.get('Contratos', 1))
-                            try:
-                                exp_cc_str = pd.to_datetime(cc_leg["Expiry"]).strftime("%d %b %Y")
-                            except:
-                                exp_cc_str = "N/A"
+                        cc_leg = cc_row
+                        cc_strike_metric = float(cc_leg.get('Strike', 0))
+                        cc_prima_metric = float(cc_leg.get('PrimaRecibida', 0))
+                        cc_cnt_metric = int(cc_leg.get('Contratos', 1))
+                        try:
+                            exp_cc_str = pd.to_datetime(cc_leg["Expiry"]).strftime("%d %b %Y")
+                        except:
+                            exp_cc_str = "N/A"
                             
                             st.markdown(
                                 f"<div style='background: rgba(30, 41, 59, 0.35); border: 1px solid rgba(56, 189, 248, 0.25); border-left: 3px solid #38bdf8; border-radius: 8px; padding: 12px 16px; margin-bottom: 12px;'>"

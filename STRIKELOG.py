@@ -2517,7 +2517,7 @@ def render_active_portfolio(df):
         # Etiquetas de las 7 columnas tabuladas en formato Badge / Recuadro
         # Col 4: Contratos o Acciones
         if is_stock_position:
-            contr_badge = f":gray-background[**{int(qty_active)} acc.**]"
+            contr_badge = f":gray-background[**{int(qty_active * 100)} acc.**]"
         else:
             contr_badge = f":gray-background[**{int(qty_active)} contr.**]"
 
@@ -2563,7 +2563,10 @@ def render_active_portfolio(df):
             strat_lbl = clean_strat
 
         # Col 2: Vencimiento
-        exp_badge = f":blue-background[**📅 {exp_str_title}**]" if exp_str_title else ":blue-background[**∞ Stock**]"
+        if is_stock_position:
+            exp_badge = ":blue-background[**∞ Stock**]"
+        else:
+            exp_badge = f":blue-background[**📅 {exp_str_title}**]" if exp_str_title else ":gray-background[**--**]"
 
         # Construir partes del encabezado tabulado en 7 columnas alineadas
         title_parts = [
@@ -6411,7 +6414,11 @@ def render_history(df):
             strat_lbl = clean_strat
 
         # Col 2: Vencimiento
-        exp_badge = f":blue-background[**📅 {exp_str_title}**]" if exp_str_title else ":blue-background[**∞ Stock**]"
+        is_stock_position = (c_data["_group"].iloc[0].get("OptionType") == "Stock" or clean_strat in ["Long Stock", "Long Stock (Asignación)"])
+        if is_stock_position:
+            exp_badge = ":blue-background[**∞ Stock**]"
+        else:
+            exp_badge = f":blue-background[**📅 {exp_str_title}**]" if exp_str_title else ":gray-background[**--**]"
 
         # Col 4: Estado
         if c_data["Estado"] == "Rolada":

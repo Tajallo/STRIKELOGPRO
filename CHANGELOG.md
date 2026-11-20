@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Corrección de Indicador de Vencimiento y Cantidad de Acciones para Posiciones de Stock (NKE / GAP)**:
+  - **Badge de Vencimiento `∞ Stock`**: Las posiciones de tenencia de acciones procedentes de asignación tienen configurada internamente la fecha perpetua `2099-12-31`. El formateador de encabezados interpretaba el mes y día (`31 Dec`) en vez de reconocer que se trataba de una posición de acciones sin vencimiento. Se corrigió para mostrar siempre `:blue-background[**∞ Stock**]`.
+  - **Alineación de Unidades (`100 acc.`)**: Para posiciones de stock se calculaba `{int(qty)} acc.` mostrando erróneamente `1 acc.` en lugar de multiplicar los contratos de asignación por 100 (`100 acc.`).
+
+
 - **Corrección de Importación y Visualización de Covered Calls (GAP 22C 31-Dic)**:
   - **Independencia de ChainID para Covered Calls**: Al importar un Covered Call desde Tradier, se asignaba por error el `ChainID` de la posición de acciones al registro de la opción, provocando que se fusionaran bajo una sola fila en Cartera Activa y ocultando el Covered Call. Se corrigió tanto en `batch_sync_all` como en el modal de sincronización individual para que la opción conserve su propio `ChainID` de cadena/roll y se vincule a las acciones vía `WheelParentChainID` y actualizando `CoveredCallChainID` en el registro del stock.
   - **Trazabilidad de Rolls en Covered Calls**: Se restauró la genealogía completa del roll de GAP (`23C 20-Nov @ $0.01` marcado como `Rolada` con PnL de +$154 -> `22C 31-Dic @ $0.81` abierto con 9 rolls acumulados y 41 DTE).

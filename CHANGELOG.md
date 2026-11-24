@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Diferenciación de Patas vs Roles (`Patas / Rolls / Contr.`) y Limpieza de Encabezados en Historial**:
+  - **Identificador de Estructura de Campaña**: Se rediseñó la columna 8 del Historial (`Patas / Rolls / Contr.`) para distinguir con total nitidez entre patas simultáneas de la estrategia y eventos de roll en el tiempo. Una estrategia de 1 sola pata con 1 roll (como el CSP de F) ahora muestra con precisión `1 pata · 1 roll (x5)` en lugar de inducir a error con `2 patas (x5)`. Para estrategias multileg (como Put Spreads o Iron Condors), muestra con exactitud `2 patas (x1)` o `4 patas (x1)`.
+  - **Eliminación de Strikes Duplicados**: El formateo de strikes en la columna 3 ahora toma los strikes del ciclo final de cierre, evitando mostrar duplicados como `12 / 12 CSP` o `11.5 / 11.5 CSP` en operaciones roladas al mismo nivel.
+  - **Vencimiento del Ciclo Final**: La columna de vencimiento ahora toma la fecha del contrato vigente al momento del cierre (`27 Nov`) en lugar de arrastrar la fecha de vencimiento ya expirada del primer contrato rolado (`20 Nov`).
+
 - **Botón Directo `⚡ Sinc. 0DTE` y Filtrado a Nivel de Campaña en el Historial**:
   - **Botón Directo en Barra Superior**: Se añadió el botón `⚡ Sinc. 0DTE` en la barra superior tanto de **Cartera Activa** como de **Historial de Operaciones**. Al pulsarlo, abre directamente el asistente de sincronización enfocado en la pestaña de operaciones intradía / 0DTE (`⚡ Intradía / 0DTE`), eliminando la necesidad de buscarlo dentro de submenús.
   - **Reestructuración del Filtrado en Historial (`render_history`)**: Anteriormente, filtros como `Estado: Cerrada` o el rango de fechas se aplicaban a nivel de fila individual antes de agrupar las campañas por `ChainID`. Esto provocaba que en operaciones roladas (como F, NKE, NFLX), las patas anteriores (`Rolada`) se eliminaran del cálculo antes de sumar el PnL, mostrando erróneamente solo la ganancia de la pata final (ej. +$255 en F en lugar de los +$31 netos). Ahora la agrupación por `ChainID` se realiza primero conservando todas las patas de la campaña, y los filtros (Estado, Ticker, Fechas, Setup, etc.) se aplican a nivel de campaña completa, garantizando el conteo exacto de patas (`2 patas (x5)`) y el PnL neto real consolidated en todo momento.

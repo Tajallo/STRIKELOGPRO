@@ -5996,10 +5996,10 @@ def render_history(df):
         justify-content: center !important;
         text-align: center !important;
     }
-    /* Col 8: Patas y Contratos */
+    /* Col 8: Patas, Rolls y Contratos */
     div[data-testid="stExpander"] summary p > span[style*="background-color"]:nth-of-type(8) {
-        min-width: 115px !important;
-        max-width: 115px !important;
+        min-width: 145px !important;
+        max-width: 145px !important;
         justify-content: center !important;
         text-align: center !important;
     }
@@ -6407,7 +6407,7 @@ def render_history(df):
                 <span style="min-width: 115px; max-width: 115px; text-align: center; flex-shrink: 0;">Fecha Cierre</span>
                 <span style="min-width: 130px; max-width: 130px; text-align: center; flex-shrink: 0;">PnL Realizado</span>
                 <span style="min-width: 95px; max-width: 95px; text-align: center; flex-shrink: 0;">% Retorno</span>
-                <span style="min-width: 115px; max-width: 115px; text-align: center; flex-shrink: 0;">Patas / Contr.</span>
+                <span style="min-width: 145px; max-width: 145px; text-align: center; flex-shrink: 0;">Patas / Rolls / Contr.</span>
             </div>
             """,
             unsafe_allow_html=True
@@ -6416,7 +6416,26 @@ def render_history(df):
     for c_data in page_chains:
         pnl   = c_data["PnL_Total"]
         pct   = c_data["ProfitPct"]
-        legs_label = f"{c_data['_legs']} patas" if c_data["_legs"] > 1 else "1 pata"
+
+        # Identificar las patas del último ciclo (las patas activas al momento del cierre)
+        group_df = c_data["_group"]
+        latest_cierre = c_data["FechaCierre"]
+        closing_legs = group_df[group_df["FechaCierre"] == latest_cierre] if pd.notna(latest_cierre) else group_df.tail(1)
+        if closing_legs.empty:
+            closing_legs = group_df.tail(1)
+
+        n_legs = len(closing_legs)
+        legs_str = f"{n_legs} patas" if n_legs > 1 else "1 pata"
+
+        # Conteo de eventos de roll en la campaña
+        rolled_rows = group_df[group_df["Estado"] == "Rolada"]
+        n_rolls = rolled_rows["FechaCierre"].nunique() if not rolled_rows.empty else 0
+
+        if n_rolls > 0:
+            roll_str = f"{n_rolls} roll" if n_rolls == 1 else f"{n_rolls} rolls"
+            structure_label = f"{legs_str} · {roll_str}"
+        else:
+            structure_label = legs_str
 
         try:
             fecha_str = pd.to_datetime(c_data["FechaCierre"]).strftime("%Y-%m-%d")
@@ -6424,12 +6443,12 @@ def render_history(df):
             fecha_str = "Sin fecha"
             
         try:
-            exp_date_obj = pd.to_datetime(c_data["_group"].iloc[0]["Expiry"])
+            exp_date_obj = pd.to_datetime(closing_legs.iloc[0]["Expiry"])
             exp_str_title = exp_date_obj.strftime("%d %b")
         except:
             exp_str_title = ""
 
-        strikes_short = " / ".join(f"{float(r['Strike']):g}" for _, r in c_data["_group"].iterrows())
+        strikes_short = " / ".join(f"{float(r['Strike']):g}" for _, r in closing_legs.iterrows())
 
         # Limpieza y formateo compacto de la estrategia
         clean_strat = (
@@ -6447,7 +6466,7 @@ def render_history(df):
             strat_lbl = clean_strat
 
         # Col 2: Vencimiento
-        is_stock_position = (c_data["_group"].iloc[0].get("OptionType") == "Stock" or clean_strat in ["Long Stock", "Long Stock (Asignación)"])
+        is_stock_position = (closing_legs.iloc[0].get("OptionType") == "Stock" or clean_strat in ["Long Stock", "Long Stock (Asignación)"])
         if is_stock_position:
             exp_badge = ":blue-background[**∞ Stock**]"
         else:
@@ -6474,8 +6493,8 @@ def render_history(df):
             pnl_badge = ":gray-background[**💵 $0.00**]"
             pct_badge = ":gray-background[**0.0%**]"
 
-        # Col 8: Patas / Contratos
-        patas_badge = f":gray-background[**{legs_label} (x{c_data['Contratos']})**]"
+        # Col 8: Patas / Rolls / Contratos
+        patas_badge = f":gray-background[**{structure_label} (x{c_data['Contratos']})**]"
 
         # Construcción del encabezado tabulado en 8 columnas
         hist_title_parts = [

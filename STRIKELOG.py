@@ -6448,7 +6448,7 @@ def render_history(df):
         except:
             exp_str_title = ""
 
-        strikes_short = " / ".join(f"{float(r['Strike']):g}" for _, r in closing_legs.iterrows())
+        strikes_short = " / ".join(f"{float(r['Strike']):g}" for _, r in c_data["_group"].iterrows())
 
         # Limpieza y formateo compacto de la estrategia
         clean_strat = (

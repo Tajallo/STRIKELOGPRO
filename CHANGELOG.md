@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Paginación Dinámica y Selector de Tamaño de Página en Cartera Activa**:
+  - **Control de Paginación Superior e Inferior**: Incorporado el sistema de paginación idéntico al del Historial en **Cartera Activa** (`[⬅️ Anterior]`, `[Siguiente ➡️]`, `Página X de Y · mostrando A–B de N`).
+  - **Selector por Página (`10, 20, 50, 100`)**: Permite ajustar la cantidad de operaciones simultáneas mostradas en pantalla, optimizando la agilidad de renderizado de los expanders y la navegación en carteras activas extensas.
+
 - **Estandarización Canónica de Spreads y Trazabilidad de Strikes Concatenados en Rolls**:
   - **Estandarización Universal de Spreads**: Alineación completa de toda la bitácora a la convención canónica e institucional de opciones por flujo de caja:
     - Alcistas: **`Put Credit Spread`** *(Bull Put Spread)* y **`Call Debit Spread`** *(Bull Call Spread)*.

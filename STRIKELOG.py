@@ -2289,6 +2289,41 @@ def render_active_portfolio(df):
         chain_dte[chain_id] = (expiry_dt_sort - date.today()).days
     
     sorted_chains = sorted(chain_dte.keys(), key=lambda x: chain_dte[x])
+    total_active_ops = len(sorted_chains)
+
+    # --- Paginación en Cartera Activa ---
+    PAGE_SIZES = [10, 20, 50, 100]
+    if st.session_state.get("active_page_size") not in PAGE_SIZES:
+        st.session_state["active_page_size"] = 20
+    active_page_size = st.session_state["active_page_size"]
+
+    n_active_pages = max(1, -(-total_active_ops // active_page_size))
+    cur_active_page = min(max(int(st.session_state.get("active_page", 1)), 1), n_active_pages)
+    st.session_state["active_page"] = cur_active_page
+    act_p_start = (cur_active_page - 1) * active_page_size
+    act_p_end = min(act_p_start + active_page_size, total_active_ops)
+    page_sorted_chains = sorted_chains[act_p_start:act_p_end]
+
+    def _active_go(delta):
+        st.session_state["active_page"] = st.session_state.get("active_page", 1) + delta
+
+    def _active_size_changed():
+        st.session_state["active_page"] = 1
+
+    def _active_pager(where):
+        pc1, pc2, pc3, pc4 = st.columns([1, 1, 3, 1.4])
+        pc1.button("⬅️ Anterior", key=f"active_prev_{where}", disabled=cur_active_page <= 1,
+                   use_container_width=True, on_click=_active_go, args=(-1,))
+        pc2.button("Siguiente ➡️", key=f"active_next_{where}", disabled=cur_active_page >= n_active_pages,
+                   use_container_width=True, on_click=_active_go, args=(1,))
+        pc3.markdown(f"Página **{cur_active_page}** de **{n_active_pages}** · mostrando {act_p_start + 1}–{act_p_end} de {total_active_ops}")
+        if where == "top":
+            pc4.selectbox("Por página", PAGE_SIZES, key="active_page_size",
+                          format_func=lambda x: f"{x} por página",
+                          on_change=_active_size_changed, label_visibility="collapsed")
+
+    if total_active_ops > 0:
+        _active_pager("top")
     
     if sorted_chains:
         c_dte_hdr, c_card_hdr = st.columns([1, 11])
@@ -2326,7 +2361,7 @@ def render_active_portfolio(df):
                 unsafe_allow_html=True
             )
 
-    for chain_id in sorted_chains:
+    for chain_id in page_sorted_chains:
         group = active_df[active_df["ChainID"] == chain_id]
         first_row = group.iloc[0]
         ticker = first_row["Ticker"]
@@ -3265,6 +3300,9 @@ def render_active_portfolio(df):
                     if btn_cancel.button("🚫 Cancelar", key=f"qcc_cancel_{chain_id}"):
                         del st.session_state[f"quick_close_{chain_id}"]
                         st.rerun()
+
+    if total_active_ops > PAGE_SIZES[0] and n_active_pages > 1:
+        _active_pager("bottom")
 
     st.divider()
 

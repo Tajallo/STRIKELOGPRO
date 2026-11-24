@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Detección e Importación Automática de Operaciones Intradía / 0DTE (SPX/SPXW y Scalping)**:
+  - **Motor Intradía (`detect_intraday_closed_trades` e `import_intraday_trades`)**: Desarrollado un motor inteligente en `tradier_sync.py` capaz de escanear tanto órdenes multileg ejecutadas en la sesión actual (`/orders`) como el historial de trades recientes (`/history`) para detectar operaciones abiertas y cerradas en el mismo día (*round-trips intradía / 0DTE*) que no figuran en las posiciones abiertas de Tradier.
+  - **Nueva Pestaña en Asistente Tradier (`⚡ Intradía / 0DTE`)**: Se añadió una pestaña dedicada y una métrica de conteo en el panel de sincronización de Tradier que desglosa las operaciones intradía detectadas (Spreads, Iron Condors, compras/ventas), mostrando strikes, precios de apertura y cierre, PnL bruto y comisiones, con opciones de importación individual o en lote (`⚡ Importar Todas`).
+  - **Consolidación de Operaciones SPXW**: Registro exacto de las operaciones del 23-Nov (3 Call Debit Spreads: 7260/7270 por -$45, 7270/7280 por -$50, 7270/7285 por +$65; pérdida neta en efectivo de -$42.72) y del 24-Nov (Bull Put Spread 7195/7205 por +$10 e Iron Condor por +$20).
+
+- **Unificación Global de `ChainID` en Campañas de Rolls y Consolidación de PnL Neto Real en el Historial**:
+  - **Integridad de PnL en Rolls**: Se corrigió un problema estructural por el cual cada roll generaba un nuevo `ChainID`, provocando que el Historial mostrara cada roll como un trade huérfano y la pata de cierre como una ganancia aislada no compensada (ej. en F mostraba +$255 en lugar de descontar los -$224 del roll previo).
+  - **Propagación Retroactiva en Toda la Bitácora**: Se ejecutó un algoritmo de genealogía sobre toda la bitácora que unificó bajo el `ChainID` raíz 53 operaciones de rolls históricos (afectando a campañas de F, NKE, NFLX, NVO, RKT, SOFI, DRAM, CIFR, IREN, etc.).
+  - **Visualización Consolidada**: Cada campaña de rolls ahora se presenta en el Historial como una única operación continua cuyo PnL total refleja con absoluta fidelidad el resultado neto real de toda la campaña (ej. F: -$224 + $255 = +$31.00; NKE: -$45 - $82 + $157 = +$30.00; NFLX: -$213.3 - $111.3 + $474.7 = +$150.10).
+
+
 - **Corrección de Indicador de Vencimiento y Cantidad de Acciones para Posiciones de Stock (NKE / GAP)**:
   - **Badge de Vencimiento `∞ Stock`**: Las posiciones de tenencia de acciones procedentes de asignación tienen configurada internamente la fecha perpetua `2099-12-31`. El formateador de encabezados interpretaba el mes y día (`31 Dec`) en vez de reconocer que se trataba de una posición de acciones sin vencimiento. Se corrigió para mostrar siempre `:blue-background[**∞ Stock**]`.
   - **Alineación de Unidades (`100 acc.`)**: Para posiciones de stock se calculaba `{int(qty)} acc.` mostrando erróneamente `1 acc.` en lugar de multiplicar los contratos de asignación por 100 (`100 acc.`).

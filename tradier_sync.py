@@ -938,6 +938,257 @@ def batch_sync_all(JournalManager, df: pd.DataFrame, recon: Dict[str, Any], roll
     return cur_df, n_resolved, n_imported
 
 
+def detect_intraday_closed_trades(orders_list: List[Dict[str, Any]], history_events: List[Dict[str, Any]], current_df: pd.DataFrame) -> List[Dict[str, Any]]:
+    """
+    Detecta operaciones intradía / 0DTE cerradas que NO estén en current_df.
+    Analiza tanto órdenes multileg ejecutadas en la sesión como historial reciente de trades.
+    """
+    from collections import defaultdict
+    existing_keys = set()
+    for _, r in current_df.iterrows():
+        tkr = str(r.get("Ticker", "")).strip().upper()
+        fa = str(r.get("FechaApertura", ""))[:10]
+        stk = round(float(r.get("Strike", 0.0) or 0.0), 2)
+        ot = str(r.get("OptionType", ""))[:1].upper()
+        existing_keys.add((tkr, fa, stk, ot))
+
+    detected = []
+
+    # 1. Detectar desde órdenes multileg de hoy
+    open_multilegs = []
+    close_multilegs = []
+    for o in orders_list:
+        if o.get("status") != "filled":
+            continue
+        cls = o.get("class")
+        legs = o.get("leg", [])
+        if isinstance(legs, dict):
+            legs = [legs]
+        if cls == "multileg" and legs:
+            sides = [str(l.get("side", "")) for l in legs]
+            if all("open" in s for s in sides):
+                open_multilegs.append(o)
+            elif all("close" in s for s in sides):
+                close_multilegs.append(o)
+
+    for op in open_multilegs:
+        op_legs = op.get("leg", [])
+        if isinstance(op_legs, dict):
+            op_legs = [op_legs]
+        op_sym_map = {l.get("option_symbol"): l for l in op_legs}
+        
+        for cl in close_multilegs:
+            cl_legs = cl.get("leg", [])
+            if isinstance(cl_legs, dict):
+                cl_legs = [cl_legs]
+            cl_sym_map = {l.get("option_symbol"): l for l in cl_legs}
+
+            if set(op_sym_map.keys()) == set(cl_sym_map.keys()):
+                date_str = str(op.get("transaction_date"))[:10]
+                first_sym = list(op_sym_map.keys())[0]
+                p_occ = parse_occ_symbol(first_sym)
+                test_key = (p_occ["ticker"], date_str, round(p_occ["strike"], 2), p_occ["option_type"][:1])
+                if test_key in existing_keys:
+                    continue
+
+                parsed_legs = []
+                for sym, o_l in op_sym_map.items():
+                    c_l = cl_sym_map[sym]
+                    parsed = parse_occ_symbol(sym)
+                    o_side = "Sell" if "sell" in str(o_l.get("side", "")).lower() else "Buy"
+                    o_price = float(o_l.get("avg_fill_price", 0.0) or 0.0)
+                    c_price = float(c_l.get("avg_fill_price", 0.0) or 0.0)
+                    cnt = int(float(o_l.get("quantity", 1.0) or 1.0))
+                    
+                    if o_side == "Sell":
+                        pnl = (o_price - c_price) * 100 * cnt
+                    else:
+                        pnl = (c_price - o_price) * 100 * cnt
+
+                    comm = (1.94 * cnt) if "SPX" in parsed["ticker"] else 0.0
+                    parsed_legs.append({
+                        "raw_symbol": sym,
+                        "ticker": parsed["ticker"],
+                        "option_type": parsed["option_type"],
+                        "strike": parsed["strike"],
+                        "expiry": parsed["expiry"],
+                        "side": o_side,
+                        "contratos": cnt,
+                        "open_price": o_price,
+                        "close_price": c_price,
+                        "pnl": pnl,
+                        "comisiones": comm,
+                        "open_time": op.get("transaction_date"),
+                        "close_time": cl.get("transaction_date")
+                    })
+
+                sell_calls = [l for l in parsed_legs if l["side"] == "Sell" and l["option_type"] == "Call"]
+                buy_calls = [l for l in parsed_legs if l["side"] == "Buy" and l["option_type"] == "Call"]
+                sell_puts = [l for l in parsed_legs if l["side"] == "Sell" and l["option_type"] == "Put"]
+                buy_puts = [l for l in parsed_legs if l["side"] == "Buy" and l["option_type"] == "Put"]
+
+                combo_name = "Spread"
+                if len(sell_calls) == 1 and len(buy_calls) == 1 and len(parsed_legs) == 2:
+                    combo_name = "Call Credit Spread" if sell_calls[0]["strike"] < buy_calls[0]["strike"] else "Call Debit Spread"
+                elif len(sell_puts) == 1 and len(buy_puts) == 1 and len(parsed_legs) == 2:
+                    combo_name = "Put Credit Spread" if sell_puts[0]["strike"] > buy_puts[0]["strike"] else "Put Debit Spread"
+                elif len(sell_puts) == 1 and len(sell_calls) == 1 and len(parsed_legs) == 2:
+                    combo_name = "Strangle"
+                elif len(sell_puts) == 1 and len(buy_puts) == 1 and len(sell_calls) == 1 and len(buy_calls) == 1 and len(parsed_legs) == 4:
+                    combo_name = "Iron Condor"
+
+                total_pnl = sum(l["pnl"] for l in parsed_legs)
+                detected.append({
+                    "source": "orders",
+                    "strategy": combo_name,
+                    "ticker": parsed_legs[0]["ticker"],
+                    "date": date_str,
+                    "legs": parsed_legs,
+                    "total_pnl": total_pnl,
+                    "open_time": op.get("transaction_date"),
+                    "close_time": cl.get("transaction_date")
+                })
+
+    # 2. Detectar desde historial reciente (días anteriores como ayer)
+    hist_by_sym_date = defaultdict(lambda: {"buy": [], "sell": []})
+    for ev in history_events:
+        if ev.get("type") != "trade":
+            continue
+        tr = ev.get("trade", {})
+        if tr.get("trade_type") != "option":
+            continue
+        sym = tr.get("symbol", "")
+        dt = str(ev.get("date", ""))[:10]
+        qty = float(tr.get("quantity", 0.0) or 0.0)
+        price = float(tr.get("price", 0.0) or 0.0)
+        comm = float(tr.get("commission", 0.0) or 0.0)
+        
+        if qty > 0:
+            hist_by_sym_date[(dt, sym)]["buy"].append({"price": price, "qty": qty, "comm": comm, "raw": ev})
+        elif qty < 0:
+            hist_by_sym_date[(dt, sym)]["sell"].append({"price": price, "qty": abs(qty), "comm": comm, "raw": ev})
+
+    for (dt, sym), group in hist_by_sym_date.items():
+        parsed = parse_occ_symbol(sym)
+        test_key = (parsed["ticker"], dt, round(parsed["strike"], 2), parsed["option_type"][:1])
+        if test_key in existing_keys:
+            continue
+
+        buys = group["buy"]
+        sells = group["sell"]
+        total_buy_qty = sum(b["qty"] for b in buys)
+        total_sell_qty = sum(s["qty"] for s in sells)
+        matched_qty = min(total_buy_qty, total_sell_qty)
+
+        if matched_qty > 0:
+            avg_buy_price = sum(b["price"] * b["qty"] for b in buys) / total_buy_qty
+            avg_sell_price = sum(s["price"] * s["qty"] for s in sells) / total_sell_qty
+            total_comm = sum(b.get("comm", 0.0) for b in buys) + sum(s.get("comm", 0.0) for s in sells)
+            strat = "Long Call" if parsed["option_type"] == "Call" else "Long Put"
+            pnl = (avg_sell_price - avg_buy_price) * 100 * matched_qty
+
+            detected.append({
+                "source": "history",
+                "strategy": strat,
+                "ticker": parsed["ticker"],
+                "date": dt,
+                "legs": [{
+                    "raw_symbol": sym,
+                    "ticker": parsed["ticker"],
+                    "option_type": parsed["option_type"],
+                    "strike": parsed["strike"],
+                    "expiry": parsed["expiry"],
+                    "side": "Buy",
+                    "contratos": int(matched_qty),
+                    "open_price": round(avg_buy_price, 2),
+                    "close_price": round(avg_sell_price, 2),
+                    "pnl": round(pnl, 2),
+                    "comisiones": total_comm,
+                    "open_time": f"{dt} 09:30:00",
+                    "close_time": f"{dt} 16:00:00"
+                }],
+                "total_pnl": round(pnl, 2),
+                "open_time": f"{dt} 09:30:00",
+                "close_time": f"{dt} 16:00:00"
+            })
+
+    return detected
+
+
+def import_intraday_trades(JournalManager, df: pd.DataFrame, trades_to_import: List[Dict[str, Any]]) -> Tuple[pd.DataFrame, int]:
+    """Importa las operaciones intradía cerradas seleccionadas directamente a la bitácora."""
+    from uuid import uuid4
+    from datetime import datetime
+
+    cur_df = df.copy()
+    new_records = []
+
+    for tr in trades_to_import:
+        chain_id = str(uuid4())[:8]
+        for leg in tr["legs"]:
+            leg_id = str(uuid4())[:8]
+            cnt = int(leg["contratos"])
+            op_p = float(leg["open_price"])
+            cl_p = float(leg["close_price"])
+            pnl = float(leg["pnl"])
+            side = leg["side"]
+            tkr = leg["ticker"]
+            comm = leg.get("comisiones", 0.0)
+            if not comm and "SPX" in tkr:
+                comm = 1.94 * cnt
+
+            bp = op_p * 100 * cnt if side == "Buy" else leg["strike"] * 100 * cnt
+
+            rec = {
+                "ID": leg_id,
+                "ChainID": chain_id,
+                "ParentID": pd.NA,
+                "Ticker": tkr,
+                "FechaApertura": sanitize_date_for_df(leg.get("open_time") or tr.get("open_time")),
+                "Expiry": pd.to_datetime(leg["expiry"]).normalize() if leg.get("expiry") else pd.Timestamp.now().normalize(),
+                "Estrategia": tr["strategy"],
+                "Setup": "0DTE / Scalping",
+                "Tags": "TradierSync,0DTE",
+                "Side": side,
+                "OptionType": leg["option_type"],
+                "Strike": leg["strike"],
+                "Delta": 0.0,
+                "PrimaRecibida": op_p,
+                "CostoCierre": cl_p,
+                "Contratos": cnt,
+                "BuyingPower": bp,
+                "BreakEven": 0.0,
+                "BreakEven_Upper": 0.0,
+                "POP": 50.0,
+                "Estado": "Cerrada",
+                "Notas": f"Operación intradía {tr['strategy']} importada desde Tradier ({leg.get('raw_symbol', '')})",
+                "UpdatedAt": datetime.now().isoformat(),
+                "FechaCierre": sanitize_date_for_df(leg.get("close_time") or tr.get("close_time")),
+                "MaxProfitUSD": max(0.0, pnl),
+                "ProfitPct": 0.0,
+                "PnL_Capital_Pct": 0.0,
+                "PrecioAccionCierre": 0.0,
+                "PnL_USD_Realizado": round(pnl, 2),
+                "Comisiones": comm,
+                "EarningsDate": pd.NA,
+                "DividendosDate": pd.NA,
+                "Broker": "Tradier",
+                "WheelParentChainID": pd.NA,
+                "CostBaseReal": 0.0,
+                "CoveredCallChainID": pd.NA,
+                "CoveredCallPrima": 0.0,
+                "WheelLeg": pd.NA
+            }
+            new_records.append(rec)
+
+    if new_records:
+        cur_df = pd.concat([cur_df.dropna(how='all', axis=0), pd.DataFrame(new_records)], ignore_index=True)
+        if JournalManager is not None:
+            cur_df = JournalManager.save_with_backup(cur_df)
+
+    return cur_df, len(trades_to_import)
+
+
 def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs):
     """
     Renderiza el diálogo modal / asistente interactivo de sincronización con Tradier.
@@ -973,6 +1224,10 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
     pos_list = pos_res.get("positions", []) if pos_res.get("success") else []
     fills_by_symbol, roll_pairs = extract_recent_fills_and_rolls(orders_list, hist_events, pos_list)
 
+    # Detectar operaciones intradía / 0DTE cerradas que no estén en la bitácora
+    intraday_trades = detect_intraday_closed_trades(orders_list, hist_events, df)
+    n_intraday = len(intraday_trades)
+
     balances = bal_res.get("balances", {})
     t_equity = float(balances.get("total_equity", 0.0) or 0.0)
     margin_info = balances.get("margin", {}) or {}
@@ -997,14 +1252,15 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
     n_missing = len(recon["missing_in_tradier"])
     n_new = len(recon["new_in_tradier"])
 
-    m_col1, m_col2, m_col3 = st.columns(3)
+    m_col1, m_col2, m_col3, m_col4 = st.columns(4)
     m_col1.metric("✅ Coincidentes (100% OK)", f"{n_matched} pos.")
     m_col2.metric("⚠️ En StrikeLog pero no en Broker", f"{n_missing} pos.", help="Posiciones abiertas en tu bitácora que ya no figuran en Tradier (probablemente cerradas o roladas en el broker)")
     m_col3.metric("➕ Nuevas en Broker", f"{n_new} pos.", help="Posiciones abiertas en Tradier que aún no has registrado en StrikeLog")
+    m_col4.metric("⚡ Intradía / 0DTE", f"{n_intraday} ops.", help="Operaciones intradía cerradas en el broker (ej. SPX) listas para incorporar al historial")
 
     st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
 
-    tab_status, tab_history = st.tabs(["📊 Estado de Posiciones", "📜 Historial Reciente de Órdenes"])
+    tab_status, tab_intraday, tab_history = st.tabs(["📊 Estado de Posiciones", f"⚡ Intradía / 0DTE ({n_intraday})", "📜 Historial Reciente de Órdenes"])
 
     with tab_status:
         n_ignored = len(recon.get("ignored_stocks", []))
@@ -1593,6 +1849,49 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
                     st.session_state.df = JournalManager.save_with_backup(new_df)
                     st.success(f"Posición {nw['ticker']} agregada con éxito.")
                     st.rerun()
+
+    with tab_intraday:
+        st.caption("⚡ Operaciones abiertas y cerradas en la misma sesión (scalping, 0DTE, combos intradía en SPX/SPXW, etc.).")
+        if n_intraday == 0:
+            st.success("🎉 **¡Al día!** No hay operaciones intradía o 0DTE pendientes de importar. Todas están reflejadas en tu bitácora.")
+        else:
+            c_it_top1, c_it_top2 = st.columns([3, 1.5])
+            c_it_top1.info(f"Se detectaron **{n_intraday} operación(es)** intradía cerradas en Tradier listas para incorporar al historial:")
+            if c_it_top2.button(f"⚡ Importar Todas ({n_intraday})", key="btn_import_all_intraday", type="primary", use_container_width=True):
+                updated_df, count_imp = import_intraday_trades(JournalManager, df, intraday_trades)
+                st.session_state.df = updated_df
+                st.success(f"🎉 ¡Éxito! Se importaron {count_imp} operaciones intradía a tu bitácora.")
+                st.rerun()
+
+            st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+            for idx_it, it in enumerate(intraday_trades):
+                pnl_color = "🟢" if it["total_pnl"] >= 0 else "🔴"
+                with st.container():
+                    c_r1, c_r2, c_r3 = st.columns([2.5, 1.8, 1.2])
+                    c_r1.markdown(f"**{it['ticker']}** | `{it['strategy']}` | Fecha: `{it['date']}`")
+                    c_r2.markdown(f"**Resultado:** {pnl_color} **${it['total_pnl']:+,.2f}** ({len(it['legs'])} pata{'s' if len(it['legs']) > 1 else ''})")
+                    if c_r3.button("➕ Importar", key=f"btn_import_single_intra_{idx_it}", type="secondary", use_container_width=True):
+                        updated_df, _ = import_intraday_trades(JournalManager, df, [it])
+                        st.session_state.df = updated_df
+                        st.success(f"Operación {it['strategy']} {it['ticker']} importada exitosamente.")
+                        st.rerun()
+
+                    with st.expander(f"Ver detalle de patas ({it['ticker']})", expanded=False):
+                        p_df = []
+                        for lg in it["legs"]:
+                            p_df.append({
+                                "Símbolo": lg.get("raw_symbol"),
+                                "Lado": lg["side"],
+                                "Tipo": lg["option_type"],
+                                "Strike": f"${lg['strike']:.2f}",
+                                "Vencimiento": lg["expiry"],
+                                "Contratos": lg["contratos"],
+                                "Apertura": f"${lg['open_price']:.2f}",
+                                "Cierre": f"${lg['close_price']:.2f}",
+                                "PnL ($)": f"${lg['pnl']:+,.2f}"
+                            })
+                        st.dataframe(pd.DataFrame(p_df), hide_index=True, use_container_width=True)
+                    st.markdown("<div style='height: 6px;'></div>", unsafe_allow_html=True)
 
     with tab_history:
         st.caption("Últimas órdenes ejecutadas en Tradier / Sigma Trade.")

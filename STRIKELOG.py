@@ -1756,7 +1756,7 @@ def render_active_portfolio(df):
         
     active_df = df[df["Estado"] == "Abierta"].copy()
     
-    col_title, col_sync_cal, col_sync_tradier = st.columns([2.2, 1.2, 1.2])
+    col_title, col_sync_cal, col_sync_tradier, col_sync_0dte = st.columns([2.0, 1.0, 1.0, 1.0])
     with col_title:
         st.header("📂 Cartera Activa")
     with col_sync_cal:
@@ -1766,8 +1766,14 @@ def render_active_portfolio(df):
                 sync_active_portfolio_calendars(active_df)
     with col_sync_tradier:
         st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
-        if st.button("🔄 Sinc. Tradier", key="sync_tradier_btn", type="primary", width="stretch", help="Sincroniza en tiempo real con Tradier / Sigma Trade: contrasta balances, detecta cierres y nuevas operaciones"):
+        if st.button("🔄 Sinc. Tradier", key="sync_tradier_btn", type="secondary", width="stretch", help="Sincroniza en tiempo real con Tradier / Sigma Trade: contrasta balances, detecta cierres y nuevas operaciones"):
             st.session_state["show_tradier_sync"] = True
+            st.session_state["tradier_active_tab"] = "status"
+    with col_sync_0dte:
+        st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+        if st.button("⚡ Sinc. 0DTE", key="sync_0dte_btn", type="primary", width="stretch", help="Detecta e importa operaciones cerradas en el mismo día (0DTE/SPX e intradía)"):
+            st.session_state["show_tradier_sync"] = True
+            st.session_state["tradier_active_tab"] = "0dte"
 
     # Modal interactivo de sincronización con Tradier
     if st.session_state.get("show_tradier_sync", False):
@@ -5878,7 +5884,24 @@ def render_history(df):
         st.divider()
         st.stop()
 
-    st.header("📜 Historial de Operaciones")
+    col_h_title, col_h_sync_0dte, col_h_sync_tradier = st.columns([2.2, 1.2, 1.2])
+    with col_h_title:
+        st.header("📜 Historial de Operaciones")
+    with col_h_sync_0dte:
+        st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+        if st.button("⚡ Sinc. 0DTE", key="hist_sync_0dte_btn", type="primary", use_container_width=True, help="Detecta e importa operaciones cerradas en el mismo día (0DTE/SPX) desde Tradier"):
+            st.session_state["show_tradier_sync"] = True
+            st.session_state["tradier_active_tab"] = "0dte"
+    with col_h_sync_tradier:
+        st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+        if st.button("🔄 Sinc. Tradier", key="hist_sync_tradier_btn", type="secondary", use_container_width=True, help="Sincroniza balances y operaciones con Tradier"):
+            st.session_state["show_tradier_sync"] = True
+            st.session_state["tradier_active_tab"] = "status"
+
+    if st.session_state.get("show_tradier_sync", False):
+        with st.expander("⚡ **Asistente de Sincronización Tradier / Sigma Trade**", expanded=True):
+            render_tradier_sync_modal(JournalManager, st.session_state.df)
+        st.divider()
     if "hist_success_msg" in st.session_state:
         st.success(st.session_state.pop("hist_success_msg"), icon="✅")
 
@@ -6137,79 +6160,42 @@ def render_history(df):
         )
 
     # =========================================================
-    # --- APLICAR FILTROS BÁSICOS (sobre filas individuales) ---
+    # --- AGRUPAR POR CHAIN (una operación = un ChainID) ---
     # =========================================================
-
-    # Calcular flag 0DTE
+    # Calcular flag 0DTE sobre patas individuales
     hist_df["__is_0dte"] = (
         pd.to_datetime(hist_df["Expiry"], errors="coerce").dt.date ==
         pd.to_datetime(hist_df["FechaApertura"], errors="coerce").dt.date
     )
 
-    if t_filt != "Todos":       hist_df = hist_df[hist_df["Ticker"] == t_filt]
-    if s_filt != "Todos":       hist_df = hist_df[hist_df["Setup"] == s_filt]
-    if e_filt != "Todos":       hist_df = hist_df[hist_df["Estrategia"] == e_filt]
-    if estado_filt != "Todos":  hist_df = hist_df[hist_df["Estado"] == estado_filt]
-    if tags_filt.strip():
-        hist_df = hist_df[
-            hist_df["Tags"].fillna("").str.contains(tags_filt.strip(), case=False, na=False)
-        ]
-    # Filtro 0DTE
-    if filtro_0dte_h == "⚡ Solo 0DTE":
-        hist_df = hist_df[hist_df["__is_0dte"] == True]
-    elif filtro_0dte_h == "🚫 Sin 0DTE":
-        hist_df = hist_df[hist_df["__is_0dte"] == False]
-
-    # Excluir tickers
-    if excluir_tickers_h:
-        hist_df = hist_df[~hist_df["Ticker"].isin(excluir_tickers_h)]
-    if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
-        start_ts = pd.Timestamp(date_range[0])
-        end_ts = pd.Timestamp(date_range[1]) + pd.Timedelta(hours=23, minutes=59, seconds=59)
-        if t_filt != "Todos":
-            hist_df = hist_df[
-                (hist_df["__dt_sort"].isna()) |
-                ((hist_df["__dt_sort"] >= start_ts) & (hist_df["__dt_sort"] <= end_ts))
-            ]
-        else:
-            hist_df = hist_df[
-                (hist_df["__dt_sort"] >= start_ts) & (hist_df["__dt_sort"] <= end_ts)
-            ]
-
-    if hist_df.empty:
-        st.info("No hay operaciones que coincidan con los filtros seleccionados.")
-        return
-
-    # =========================================================
-    # --- AGRUPAR POR CHAIN (una operación = un ChainID) ---
-    # =========================================================
     chain_summaries = []
     for chain_id, group in hist_df.groupby("ChainID"):
-        group_sorted = group.sort_values("PnL_USD_Realizado", ascending=False)
-        main_leg = group_sorted.iloc[0]
+        # Ordenamos las patas cronológicamente: la última representa el estado actual de la campaña
+        group_dt = group.sort_values("__dt_sort", ascending=True, na_position="first")
+        latest_leg = group_dt.iloc[-1]
 
-        # PnL total de la operación (suma de todas las patas)
+        # PnL total real acumulado de toda la operación (suma de todas las patas y roles)
         total_pnl = round(group["PnL_USD_Realizado"].sum(), 2)
 
         # Prima neta total (suma de todas las patas)
         prima_total = group["PrimaRecibida"].sum()
 
-        # MaxProfitUSD guardado (solo en pata 0 para evitar duplicados)
+        # MaxProfitUSD guardado (máximo entre patas para evitar duplicados)
         max_profit_usd = group["MaxProfitUSD"].max()
 
         # % de captura sobre la prima máxima
         if max_profit_usd > 0:
             profit_pct = (total_pnl / max_profit_usd) * 100
         elif prima_total > 0:
-            mp_calc = prima_total * int(main_leg["Contratos"]) * 100
+            mp_calc = prima_total * int(latest_leg["Contratos"]) * 100
             profit_pct = (total_pnl / mp_calc * 100) if mp_calc > 0 else 0.0
         else:
             profit_pct = 0.0
 
-        # Días en trade
+        # Días en trade: desde la apertura más temprana hasta el cierre más tardío
         try:
-            apertura = pd.to_datetime(main_leg["FechaApertura"]).date()
-            cierre_d = pd.to_datetime(main_leg["FechaCierre"]).date() if not pd.isna(main_leg["FechaCierre"]) else date.today()
+            apertura = pd.to_datetime(group["FechaApertura"].min()).date()
+            cierre_d = pd.to_datetime(latest_leg["FechaCierre"]).date() if not pd.isna(latest_leg["FechaCierre"]) else date.today()
             dit = (cierre_d - apertura).days
         except:
             dit = 0
@@ -6220,26 +6206,68 @@ def render_history(df):
             for _, r in group.iterrows()
         )
 
+        # Tags combinados de la campaña
+        all_tags = " ".join(group["Tags"].fillna("").astype(str).unique()).strip()
+
+        # Determinar si la campaña incluye 0DTE
+        is_0dte_campaign = bool(group["__is_0dte"].any())
+
         chain_summaries.append({
             "ChainID":    chain_id,
-            "Ticker":     main_leg["Ticker"],
-            "Estrategia": main_leg["Estrategia"],
-            "Estado":     main_leg["Estado"],
-            "FechaCierre":main_leg["FechaCierre"],
-            "__dt_sort":  main_leg["__dt_sort"],
+            "Ticker":     latest_leg["Ticker"],
+            "Estrategia": latest_leg["Estrategia"],
+            "Estado":     latest_leg["Estado"],
+            "FechaCierre":latest_leg["FechaCierre"],
+            "__dt_sort":  latest_leg["__dt_sort"],
             "PnL_Total":  total_pnl,
             "ProfitPct":  profit_pct,
             "Prima_Neta": prima_total,
-            "Contratos":  int(main_leg["Contratos"]),
+            "Contratos":  int(latest_leg["Contratos"]),
             "DIT":        dit,
-            "Setup":      safe_str(main_leg.get("Setup"), ""),
-            "Tags":       safe_str(main_leg.get("Tags"), ""),
+            "Setup":      safe_str(latest_leg.get("Setup"), ""),
+            "Tags":       all_tags,
             "StrikesStr": strikes_str,
+            "__is_0dte":  is_0dte_campaign,
             "_group":     group,
             "_legs":      len(group),
         })
 
-    # --- Filtros sobre los resúmenes de cadena ---
+    # =========================================================
+    # --- APLICAR FILTROS SOBRE LAS CAMPAÑAS AGRUPADAS ---
+    # =========================================================
+    if t_filt != "Todos":
+        chain_summaries = [c for c in chain_summaries if c["Ticker"] == t_filt]
+    if s_filt != "Todos":
+        chain_summaries = [c for c in chain_summaries if c["Setup"] == s_filt]
+    if e_filt != "Todos":
+        chain_summaries = [c for c in chain_summaries if c["Estrategia"] == e_filt]
+    if estado_filt != "Todos":
+        if estado_filt == "Rolada":
+            # Coincide si el estado final es Rolada o si alguna pata de la campaña fue un roll
+            chain_summaries = [c for c in chain_summaries if c["Estado"] == "Rolada" or any(r["Estado"] == "Rolada" for _, r in c["_group"].iterrows())]
+        else:
+            chain_summaries = [c for c in chain_summaries if c["Estado"] == estado_filt]
+    if tags_filt.strip():
+        chain_summaries = [c for c in chain_summaries if tags_filt.strip().lower() in c["Tags"].lower()]
+    if filtro_0dte_h == "⚡ Solo 0DTE":
+        chain_summaries = [c for c in chain_summaries if c["__is_0dte"]]
+    elif filtro_0dte_h == "🚫 Sin 0DTE":
+        chain_summaries = [c for c in chain_summaries if not c["__is_0dte"]]
+    if excluir_tickers_h:
+        chain_summaries = [c for c in chain_summaries if c["Ticker"] not in excluir_tickers_h]
+    if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+        start_ts = pd.Timestamp(date_range[0])
+        end_ts = pd.Timestamp(date_range[1]) + pd.Timedelta(hours=23, minutes=59, seconds=59)
+        if t_filt != "Todos":
+            chain_summaries = [
+                c for c in chain_summaries
+                if pd.isna(c["__dt_sort"]) or (start_ts <= c["__dt_sort"] <= end_ts)
+            ]
+        else:
+            chain_summaries = [
+                c for c in chain_summaries
+                if pd.notna(c["__dt_sort"]) and (start_ts <= c["__dt_sort"] <= end_ts)
+            ]
     chain_summaries = [c for c in chain_summaries if pnl_range[0] <= round(c["PnL_Total"], 2) <= pnl_range[1]]
     if resultado_filt == "✅ Ganadoras":
         chain_summaries = [c for c in chain_summaries if c["PnL_Total"] >= 0 and (c["Estado"] != "Rolada" if estado_filt != "Rolada" else True)]

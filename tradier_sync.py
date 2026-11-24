@@ -1260,7 +1260,11 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
 
     st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
 
-    tab_status, tab_intraday, tab_history = st.tabs(["📊 Estado de Posiciones", f"⚡ Intradía / 0DTE ({n_intraday})", "📜 Historial Reciente de Órdenes"])
+    is_0dte_active = (st.session_state.get("tradier_active_tab") == "0dte")
+    if is_0dte_active:
+        tab_intraday, tab_status, tab_history = st.tabs([f"⚡ Intradía / 0DTE ({n_intraday})", "📊 Estado de Posiciones", "📜 Historial Reciente de Órdenes"])
+    else:
+        tab_status, tab_intraday, tab_history = st.tabs(["📊 Estado de Posiciones", f"⚡ Intradía / 0DTE ({n_intraday})", "📜 Historial Reciente de Órdenes"])
 
     with tab_status:
         n_ignored = len(recon.get("ignored_stocks", []))

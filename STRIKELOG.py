@@ -416,6 +416,11 @@ class JournalManager:
                 shutil.copy(FILE_NAME, f"{BACKUP_DIR}/journal_{timestamp}.csv.bak")
             df = JournalManager.normalize_df(df)
             df.to_csv(FILE_NAME, index=False)
+            try:
+                if hasattr(st, "session_state"):
+                    st.session_state["_csv_mtime"] = os.path.getmtime(FILE_NAME)
+            except Exception:
+                pass
             return df
         except PermissionError:
             st.error(f"❌ Error al guardar: El archivo '{FILE_NAME}' está bloqueado. Ciérralo si lo tienes abierto en Excel.")
@@ -6763,8 +6768,11 @@ def main():
         unsafe_allow_javascript=True
     )
 
-    if "df" not in st.session_state:
+    # Auto-recarga automática si el archivo CSV en disco ha sido modificado
+    csv_mtime = os.path.getmtime(FILE_NAME) if os.path.exists(FILE_NAME) else None
+    if "df" not in st.session_state or st.session_state.get("_csv_mtime") != csv_mtime:
         st.session_state.df = JournalManager.load_data()
+        st.session_state["_csv_mtime"] = csv_mtime
         
     # Soporte para redirección automática (ej: botón Duplicar Express)
     nav_override = st.session_state.pop("nav_override", None)

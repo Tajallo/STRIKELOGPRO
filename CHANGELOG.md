@@ -2,10 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
-- **Diferenciación de Patas vs Roles (`Patas / Rolls / Contr.`) y Limpieza de Encabezados en Historial**:
-  - **Identificador de Estructura de Campaña**: Se rediseñó la columna 8 del Historial (`Patas / Rolls / Contr.`) para distinguir con total nitidez entre patas simultáneas de la estrategia y eventos de roll en el tiempo. Una estrategia de 1 sola pata con 1 roll (como el CSP de F) ahora muestra con precisión `1 pata · 1 roll (x5)` en lugar de inducir a error con `2 patas (x5)`. Para estrategias multileg (como Put Spreads o Iron Condors), muestra con exactitud `2 patas (x1)` o `4 patas (x1)`.
-  - **Eliminación de Strikes Duplicados**: El formateo de strikes en la columna 3 ahora toma los strikes del ciclo final de cierre, evitando mostrar duplicados como `12 / 12 CSP` o `11.5 / 11.5 CSP` en operaciones roladas al mismo nivel.
-  - **Vencimiento del Ciclo Final**: La columna de vencimiento ahora toma la fecha del contrato vigente al momento del cierre (`27 Nov`) en lugar de arrastrar la fecha de vencimiento ya expirada del primer contrato rolado (`20 Nov`).
+- **Estandarización Canónica de Spreads y Trazabilidad de Strikes Concatenados en Rolls**:
+  - **Estandarización Universal de Spreads**: Alineación completa de toda la bitácora a la convención canónica e institucional de opciones por flujo de caja:
+    - Alcistas: **`Put Credit Spread`** *(Bull Put Spread)* y **`Call Debit Spread`** *(Bull Call Spread)*.
+    - Bajistas: **`Put Debit Spread`** *(Bear Put Spread)* y **`Call Credit Spread`** *(Bear Call Spread)*.
+    - Se reclasificaron los registros provisionales a `Put Credit Spread` para garantizar coherencia al 100% en métricas, filtros y agregaciones.
+  - **Trazabilidad Visual de Strikes Concatenados**: En la columna *Estrategia & Strikes* del Historial se preserva la concatenación de la secuencia de strikes de toda la cadena (ej. `12 / 12 CSP`, `11.5 / 11.5 CSP` o `12 / 11 CSP`), permitiendo auditar visualmente a simple vista la evolución de los strikes rolados a lo largo del tiempo.
+  - **Identificador de Estructura de Campaña (`Patas / Rolls / Contr.`)**: La columna 8 del Historial desglosa nítidamente la estructura separando patas simultáneas de la estrategia frente a rolls cronológicos (ej. `1 pata · 1 roll (x5)` para F frente a `2 patas (x1)` para Put Credit Spreads y `4 patas (x1)` para Iron Condors).
+  - **Vencimiento del Ciclo Final**: La columna de vencimiento toma la fecha del contrato vigente al momento del cierre (`27 Nov`) en lugar de arrastrar la fecha de vencimiento ya expirada del primer contrato rolado (`20 Nov`).
 
 - **Botón Directo `⚡ Sinc. 0DTE` y Filtrado a Nivel de Campaña en el Historial**:
   - **Botón Directo en Barra Superior**: Se añadió el botón `⚡ Sinc. 0DTE` en la barra superior tanto de **Cartera Activa** como de **Historial de Operaciones**. Al pulsarlo, abre directamente el asistente de sincronización enfocado en la pestaña de operaciones intradía / 0DTE (`⚡ Intradía / 0DTE`), eliminando la necesidad de buscarlo dentro de submenús.

@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Calendario Mensual de Profits Netos en el Cuadro de Mando**:
+  - Añadido el **Calendario Mensual (PnL Neto)** en `STRIKELOG.py` con selector de mes, celdas diarias en verde/rojo según beneficio o pérdida neta por campaña cerrada (`FechaCierre`) y columna lateral **`📊 Total` (`SEM`)** con el acumulado semanal.
+
 - **Restauración de Conteo de Rolls e Historial en Cartera Activa (`get_campaign_steps`)**:
   - Corregido `get_campaign_steps` en `STRIKELOG.py` para agrupar por `(ChainID, profundidad de ParentID)` en lugar de solo `ChainID`. Al haberse unificado el `ChainID` en campañas completas de rolls (como `IREN`, `DRAM`, `RKLB`, `CIFR`), agrupar únicamente por `ChainID` colapsaba todos los pasos en uno solo y mostraba `0 rolls` ocultando el BE global y el historial desplegable de la posición.
 

@@ -1596,6 +1596,119 @@ def render_dashboard(df):
             )
             st.plotly_chart(fig_monthly, width="stretch")
 
+    # --- CALENDARIO MENSUAL DE PROFITS NETOS ---
+    if not closed_campaigns_df.empty:
+        import calendar as _pycal
+        cal_src = closed_campaigns_df.dropna(subset=["FechaCierre"]).copy()
+        if not cal_src.empty:
+            cal_src["__ym"] = cal_src["FechaCierre"].dt.to_period("M")
+            avail_periods = sorted(cal_src["__ym"].unique(), reverse=True)
+            MESES_ES_CAL = {1: 'Enero', 2: 'Febrero', 3: 'Marzo', 4: 'Abril', 5: 'Mayo', 6: 'Junio', 7: 'Julio', 8: 'Agosto', 9: 'Septiembre', 10: 'Octubre', 11: 'Noviembre', 12: 'Diciembre'}
+            period_labels = {p: f"{MESES_ES_CAL.get(p.month, p.month)} {p.year}" for p in avail_periods}
+
+            c_cal_h1, c_cal_h2 = st.columns([3.5, 1.5])
+            c_cal_h1.markdown("### 🗓️ Calendario Mensual (PnL Neto)")
+            sel_period = c_cal_h2.selectbox(
+                "Mes del Calendario",
+                options=avail_periods,
+                format_func=lambda p: period_labels[p],
+                key="dash_cal_month",
+                label_visibility="collapsed",
+            )
+
+            cal_month_df = cal_src[cal_src["__ym"] == sel_period].copy()
+            cal_month_df["__day"] = cal_month_df["FechaCierre"].dt.day
+            daily_agg = cal_month_df.groupby("__day").agg(
+                PnL=("PnL_Neto", "sum"),
+                Ops=("ChainID", "nunique"),
+            ).to_dict("index")
+
+            month_total_net = float(cal_month_df["PnL_Neto"].sum())
+            month_color = "#10b981" if month_total_net >= 0 else "#ef4444"
+            month_str = f"+${month_total_net:,.2f}" if month_total_net >= 0 else f"-${abs(month_total_net):,.2f}"
+            st.caption(f"Total {period_labels[sel_period]}: <span style='color:{month_color}; font-weight:700;'>{month_str}</span> ({int(cal_month_df['ChainID'].nunique())} campañas cerradas)", unsafe_allow_html=True)
+
+            cal_matrix = _pycal.Calendar(firstweekday=0).monthdayscalendar(sel_period.year, sel_period.month)
+            headers_html = "".join(
+                f"<div style='text-align:center; font-size:12px; color:#8b949e; font-weight:600; padding-bottom:6px;'>{h}</div>"
+                for h in ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom", "📊 Total"]
+            )
+
+            def _fmt_cal_usd(val: float) -> str:
+                if abs(val - round(val)) < 0.01:
+                    return f"+${val:,.0f}" if val >= 0 else f"-${abs(val):,.0f}"
+                return f"+${val:,.2f}" if val >= 0 else f"-${abs(val):,.2f}"
+
+            cells_html = []
+            for week in cal_matrix:
+                week_sum = 0.0
+                week_ops = 0
+                for d_num in week:
+                    if d_num == 0:
+                        cells_html.append("<div style='min-height:62px;'></div>")
+                        continue
+                    info = daily_agg.get(d_num)
+                    if info:
+                        d_pnl = float(info["PnL"])
+                        d_ops = int(info["Ops"])
+                        week_sum += d_pnl
+                        week_ops += d_ops
+                        if d_pnl >= 0:
+                            bg = "rgba(16, 185, 129, 0.14)"
+                            bd = "rgba(16, 185, 129, 0.38)"
+                            txt_c = "#34d399"
+                        else:
+                            bg = "rgba(239, 68, 68, 0.14)"
+                            bd = "rgba(239, 68, 68, 0.38)"
+                            txt_c = "#f87171"
+                        val_txt = _fmt_cal_usd(d_pnl)
+                        tip = f"Día {d_num}: {'+' if d_pnl >= 0 else '-'}${abs(d_pnl):,.2f} ({d_ops} op{'s' if d_ops != 1 else ''})"
+                        cells_html.append(
+                            f"<div title='{tip}' style='min-height:62px; border-radius:8px; background:{bg}; border:1px solid {bd}; "
+                            f"display:flex; flex-direction:column; align-items:center; justify-content:center; padding:6px 4px;'>"
+                            f"<div style='font-size:13px; font-weight:700; color:#e6edf3; line-height:1.2;'>{d_num}</div>"
+                            f"<div style='font-size:12px; font-weight:700; color:{txt_c}; margin-top:2px;'>{val_txt}</div>"
+                            f"</div>"
+                        )
+                    else:
+                        cells_html.append(
+                            f"<div style='min-height:62px; border-radius:8px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06); "
+                            f"display:flex; align-items:center; justify-content:center;'>"
+                            f"<span style='font-size:12px; color:#6e7681; font-weight:600;'>{d_num}</span>"
+                            f"</div>"
+                        )
+
+                # Columna 8: Total Semanal (SEM)
+                if week_ops > 0:
+                    w_bg = "rgba(16, 185, 129, 0.12)" if week_sum >= 0 else "rgba(239, 68, 68, 0.12)"
+                    w_bd = "#10b981" if week_sum >= 0 else "#ef4444"
+                    w_txt = "#34d399" if week_sum >= 0 else "#f87171"
+                    w_val = _fmt_cal_usd(week_sum)
+                    cells_html.append(
+                        f"<div title='Semana: {'+' if week_sum >= 0 else '-'}${abs(week_sum):,.2f} ({week_ops} ops)' "
+                        f"style='min-height:62px; border-radius:8px; background:{w_bg}; border:1.5px solid {w_bd}; "
+                        f"display:flex; flex-direction:column; align-items:center; justify-content:center; padding:6px 4px;'>"
+                        f"<div style='font-size:10px; font-weight:700; color:#8b949e; letter-spacing:0.6px;'>SEM</div>"
+                        f"<div style='font-size:13px; font-weight:800; color:{w_txt}; margin-top:2px;'>{w_val}</div>"
+                        f"</div>"
+                    )
+                else:
+                    cells_html.append(
+                        "<div style='min-height:62px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.06); "
+                        "display:flex; flex-direction:column; align-items:center; justify-content:center; padding:6px 4px;'>"
+                        "<div style='font-size:10px; font-weight:700; color:#6e7681; letter-spacing:0.6px;'>SEM</div>"
+                        "<div style='font-size:12px; color:#6e7681; margin-top:2px;'>--</div>"
+                        "</div>"
+                    )
+
+            grid_html = (
+                "<div style='display:grid; grid-template-columns:repeat(8, minmax(0, 1fr)); gap:8px; margin-top:6px; margin-bottom:18px;'>"
+                + headers_html
+                + "".join(cells_html)
+                + "</div>"
+            )
+            st.markdown(grid_html, unsafe_allow_html=True)
+
     # Gráficos de análisis por categoría (colapsados, usando campañas cerradas netas)
     with st.expander("🔍 Análisis por Categoría", expanded=False):
         col_cat1, col_cat2 = st.columns(2)

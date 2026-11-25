@@ -1124,20 +1124,46 @@ def render_dashboard(df):
         if ticker_filter != "Todos Tickers":
             df_view = df_view[df_view["Ticker"] == ticker_filter]
         
+        # Identificar campañas vivas (con alguna pata Abierta) vs cerradas
+        open_chain_ids = set(df_view[df_view["Estado"] == "Abierta"]["ChainID"].dropna().unique())
+
         if periodo_filter != "Todo el Historial":
             filtro_val = meses[periodo_filter]
-            fecha_ref = pd.to_datetime(df_view["FechaCierre"], errors="coerce").fillna(
-                pd.to_datetime(df_view["FechaApertura"], errors="coerce")
-            )
-            if filtro_val == "today":
-                df_view = df_view[fecha_ref.dt.date == date.today()]
-            elif filtro_val == "week":
-                week_start = date.today() - timedelta(days=date.today().weekday())  # Lunes
-                df_view = df_view[fecha_ref.dt.date >= week_start]
-            else:
+
+            def _in_period(dt_series: pd.Series) -> pd.Series:
+                if filtro_val == "today":
+                    return dt_series.dt.date == date.today()
+                elif filtro_val == "week":
+                    week_start = date.today() - timedelta(days=date.today().weekday())
+                    return dt_series.dt.date >= week_start
                 fmt = "%Y-%m" if len(filtro_val) == 7 else "%Y"
-                df_view["FechaFiltro"] = fecha_ref.dt.strftime(fmt)
-                df_view = df_view[df_view["FechaFiltro"] == filtro_val]
+                return dt_series.dt.strftime(fmt) == filtro_val
+
+            if estado_filter == "Rolada":
+                fecha_ref = pd.to_datetime(df_view["FechaCierre"], errors="coerce").fillna(
+                    pd.to_datetime(df_view["FechaApertura"], errors="coerce")
+                )
+                df_view = df_view[_in_period(fecha_ref)]
+            else:
+                df_tmp = df_view.copy()
+                df_tmp["__fa"] = pd.to_datetime(df_tmp["FechaApertura"], errors="coerce")
+                df_tmp["__fc"] = pd.to_datetime(df_tmp["FechaCierre"], errors="coerce")
+                df_tmp["__dt_sort"] = df_tmp["__fc"].fillna(df_tmp["__fa"])
+
+                matched_cids = set()
+                for cid, g in df_tmp.groupby("ChainID"):
+                    g_s = g.sort_values("__dt_sort", ascending=True, na_position="first")
+                    has_open = (g_s["Estado"] == "Abierta").any()
+                    if not has_open:
+                        last_leg = g_s.iloc[-1]
+                        if last_leg["Estado"] in ("Cerrada", "Asignada") and pd.notna(last_leg["__fc"]):
+                            if _in_period(pd.Series([last_leg["__fc"]])).iloc[0]:
+                                matched_cids.add(cid)
+                    else:
+                        open_legs = g_s[g_s["Estado"] == "Abierta"]
+                        if _in_period(open_legs["__fa"]).any():
+                            matched_cids.add(cid)
+                df_view = df_view[df_view["ChainID"].isin(matched_cids)]
             
         if setup_filter != "Todos los Setups":
             df_view = df_view[df_view["Setup"] == setup_filter]
@@ -1155,7 +1181,14 @@ def render_dashboard(df):
         if excluir_tickers:
             df_view = df_view[~df_view["Ticker"].isin(excluir_tickers)]
         
-        closed_trades = df_view[df_view["Estado"].isin(["Cerrada", "Rolada", "Asignada"])].copy()
+        if estado_filter == "Rolada":
+            closed_trades = df_view[df_view["Estado"].isin(["Cerrada", "Rolada", "Asignada"])].copy()
+        else:
+            # Excluir patas 'Rolada' de campañas que siguen abiertas (ej. IREN, DRAM) para no contaminar el PnL realizado
+            closed_trades = df_view[
+                df_view["Estado"].isin(["Cerrada", "Rolada", "Asignada"]) &
+                (~df_view["ChainID"].isin(open_chain_ids))
+            ].copy()
         open_trades = df_view[df_view["Estado"] == "Abierta"].copy()
         
         # --- KPIs DE ALTO NIVEL ---

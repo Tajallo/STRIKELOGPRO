@@ -2,8 +2,8 @@
 
 All notable changes to this project will be documented in this file.
 
-- **Filtro de Periodo del Cuadro de Mando por `FechaCierre`**:
-  - Actualizado el filtro `Periodo` (`Hoy`, `Esta Semana`, `Este Mes`, `Mes Pasado`, `Este Año`) en `STRIKELOG.py` para usar `FechaCierre` (con respaldo a `FechaApertura` en posiciones abiertas), reflejando el PnL realmente realizado en el periodo aunque las posiciones se abrieran en semanas anteriores.
+- **Filtro de Periodo del Cuadro de Mando a Nivel de Campaña (`ChainID`)**:
+  - Actualizado el filtro `Periodo` y el cálculo de `closed_trades` en `STRIKELOG.py` para evaluar las campañas completas por su `FechaCierre` final (arrastrando sus patas `Rolada` previas cuando la campaña ya cerró, y excluyendo las patas `Rolada` de campañas que aún siguen abiertas), haciendo que el **PnL Neto Real** del Cuadro de Mando coincida exactamente con el Historial de Operaciones.
 
 - **Corrección de Falsos Rolls en Órdenes Individuales (`extract_recent_fills_and_rolls`)**:
   - Evitado que el emparejamiento de rolls en 2 órdenes separadas (`single_closes` + `single_opens`) confunda una operación intradía ya cerrada (como `NU 11P` abierta a las 15:48 y cerrada a las 19:34) con el destino de un cierre posterior (`NU 12P` cerrado a las 19:36).

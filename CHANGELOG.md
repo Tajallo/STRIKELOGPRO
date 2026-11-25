@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Corrección de `UnboundLocalError` al Añadir Pata Individual en Sincronización con Tradier**:
+  - Corregido en `render_tradier_sync_modal` (`tradier_sync.py`) el acceso a `nw["ticker"]` y `nw["contratos"]` (en lugar de `leg`) al pulsar `➕ Añadir a Cartera` en la sección de patas individuales.
+
 - **Descuento Automático de Fees Reales de SPX/SPXW (`$1.06`/pata/lado) y PnL Neto en Historial y 0DTE**:
   - **Tarifa Tradier SPX/SPXW (`$1.06` por contrato, pata y lado)**: Actualizada en `get_fee_rate` (`STRIKELOG.py`) y centralizada en `_tradier_spx_leg_fee` (`tradier_sync.py`), aplicando `$2.12` ida y vuelta por pata (`$4.24` en un spread de 2 patas abierto y cerrado), mientras las acciones/ETFs estándar se mantienen en `$0.00` bajo la tarifa plana de \$10/mes.
   - **PnL Neto Consistente sin Doble Descuento**: `PnL_USD_Realizado` se mantiene como PnL bruto (compatible con el Dashboard) y tanto el **Historial de Operaciones** (`render_history`) como el asistente **`⚡ Intradía / 0DTE`** (`detect_intraday_closed_trades` / `tab_intraday`) ahora calculan y muestran el **PnL Neto real (`Bruto - Comisiones`)**.

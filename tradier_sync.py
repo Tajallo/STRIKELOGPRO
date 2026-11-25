@@ -1907,7 +1907,7 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
                         "PnL_Capital_Pct": 0.0,
                         "PrecioAccionCierre": 0.0,
                         "PnL_USD_Realizado": 0.0,
-                        "Comisiones": _tradier_spx_leg_fee(leg["ticker"], leg["contratos"], round_trip=False),
+                        "Comisiones": _tradier_spx_leg_fee(nw["ticker"], nw["contratos"], round_trip=False),
                         "EarningsDate": pd.NA,
                         "DividendosDate": pd.NA,
                         "Broker": "Tradier",

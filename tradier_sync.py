@@ -550,7 +550,186 @@ DEFAULT_ESTRATEGIAS = [
 ]
 
 
-def batch_sync_all(JournalManager, df: pd.DataFrame, recon: Dict[str, Any], roll_pairs: List[Dict[str, Any]], fills_by_symbol: Dict[str, float], strat_list: List[str]) -> Tuple[pd.DataFrame, int, int]:
+def _apply_roll_to_df(
+    df: pd.DataFrame,
+    mis: Dict[str, Any],
+    matched_roll: Dict[str, Any],
+    close_price: float,
+    new_in_tradier: Optional[List[Dict[str, Any]]] = None,
+) -> Tuple[pd.DataFrame, bool]:
+    """
+    Marca la pata anterior como 'Rolada', registra una pata intermedia intradía si existe,
+    y enlaza o crea automáticamente la nueva pata abierta resultante del roll.
+    Devuelve (updated_df, created_new_leg).
+    """
+    from uuid import uuid4
+
+    cur_df = df.copy()
+    rec_idx = cur_df.index[cur_df["ID"] == mis["strikelog_id"]]
+    if len(rec_idx) == 0:
+        return cur_df, False
+    real_i = rec_idx[0]
+
+    p_rec = float(cur_df.at[real_i, "PrimaRecibida"] or 0.0)
+    cnt = float(cur_df.at[real_i, "Contratos"] or 1.0)
+    side_val = str(cur_df.at[real_i, "Side"])
+
+    cur_df.at[real_i, "Estado"] = "Rolada"
+    cur_df.at[real_i, "FechaCierre"] = sanitize_date_for_df(matched_roll.get("date"))
+    cur_df.at[real_i, "CostoCierre"] = close_price
+    pnl_realizado = (p_rec - close_price) * 100 * cnt if side_val == "Sell" else (close_price - p_rec) * 100 * cnt
+    cur_df.at[real_i, "PnL_USD_Realizado"] = pnl_realizado
+    cur_df.at[real_i, "UpdatedAt"] = datetime.now().isoformat()
+
+    parent_chain_id = cur_df.at[real_i, "ChainID"] if pd.notna(cur_df.at[real_i, "ChainID"]) else mis["strikelog_id"]
+    target_parent_id = mis["strikelog_id"]
+
+    if matched_roll.get("intermediate_symbol"):
+        inter_sym = matched_roll["intermediate_symbol"]
+        inter_parsed = parse_occ_symbol(inter_sym)
+        inter_exists = cur_df[
+            (cur_df["Ticker"] == inter_parsed["ticker"]) &
+            (cur_df["Strike"] == inter_parsed["strike"]) &
+            (cur_df["Expiry"].astype(str).str.startswith(str(inter_parsed["expiry"])))
+        ]
+        if len(inter_exists) == 0:
+            inter_id = str(uuid4())[:8]
+            p_in = float(matched_roll.get("intermediate_open_price", 0.0))
+            p_out = float(matched_roll.get("intermediate_close_price", 0.0))
+            inter_pnl = (p_in - p_out) * 100 * cnt if side_val == "Sell" else (p_out - p_in) * 100 * cnt
+            inter_rec = {
+                "ID": inter_id,
+                "ChainID": parent_chain_id,
+                "ParentID": mis["strikelog_id"],
+                "Ticker": inter_parsed["ticker"],
+                "FechaApertura": sanitize_date_for_df(matched_roll.get("date")),
+                "Expiry": pd.to_datetime(inter_parsed["expiry"]).normalize(),
+                "Estrategia": cur_df.at[real_i, "Estrategia"],
+                "Setup": cur_df.at[real_i, "Setup"],
+                "Tags": "TradierSync",
+                "Side": side_val,
+                "OptionType": inter_parsed["option_type"],
+                "Strike": inter_parsed["strike"],
+                "Delta": 0.0,
+                "PrimaRecibida": p_in,
+                "CostoCierre": p_out,
+                "Contratos": cnt,
+                "BuyingPower": inter_parsed["strike"] * 100 * cnt if inter_parsed["strike"] > 0 else 0.0,
+                "BreakEven": max(0.0, inter_parsed["strike"] - p_in) if inter_parsed["option_type"] == "Put" else inter_parsed["strike"] + p_in,
+                "BreakEven_Upper": 0.0,
+                "POP": 70.0,
+                "Estado": "Rolada",
+                "Notas": f"Pata intermedia de doble roll intradía ({inter_sym})",
+                "UpdatedAt": datetime.now().isoformat(),
+                "FechaCierre": sanitize_date_for_df(matched_roll.get("date")),
+                "MaxProfitUSD": p_in * 100 * cnt,
+                "ProfitPct": 0.0,
+                "PnL_Capital_Pct": 0.0,
+                "PrecioAccionCierre": 0.0,
+                "PnL_USD_Realizado": inter_pnl,
+                "Comisiones": 0.0,
+                "EarningsDate": pd.NA,
+                "DividendosDate": pd.NA,
+                "Broker": "Tradier",
+                "WheelParentChainID": cur_df.at[real_i, "WheelParentChainID"],
+                "CostBaseReal": 0.0,
+                "CoveredCallChainID": pd.NA,
+                "CoveredCallPrima": 0.0,
+                "WheelLeg": cur_df.at[real_i, "WheelLeg"]
+            }
+            cur_df = pd.concat([cur_df, pd.DataFrame([inter_rec])], ignore_index=True)
+            target_parent_id = inter_id
+        else:
+            target_parent_id = inter_exists.iloc[-1]["ID"]
+
+    open_sym = matched_roll["open_symbol"]
+    open_parsed = parse_occ_symbol(open_sym)
+    new_leg_idx = cur_df.index[
+        (cur_df["Ticker"] == open_parsed["ticker"]) &
+        (cur_df["Strike"] == open_parsed["strike"]) &
+        (cur_df["Expiry"].astype(str).str.startswith(str(open_parsed["expiry"]))) &
+        (cur_df["Estado"] == "Abierta")
+    ]
+    created_new_leg = False
+    if len(new_leg_idx) > 0:
+        cur_df.at[new_leg_idx[0], "ParentID"] = target_parent_id
+        if pd.isna(cur_df.at[new_leg_idx[0], "ChainID"]) or not str(cur_df.at[new_leg_idx[0], "ChainID"]).strip():
+            cur_df.at[new_leg_idx[0], "ChainID"] = parent_chain_id
+    else:
+        nw = next((x for x in (new_in_tradier or []) if x.get("raw_symbol") == open_sym), None)
+        new_id = str(uuid4())[:8]
+        new_ticker = nw["ticker"] if nw else open_parsed["ticker"]
+        new_side = nw["side"] if nw else side_val
+        new_opt_type = nw["option_type"] if nw else open_parsed["option_type"]
+        new_strike = float(nw["strike"]) if nw else float(open_parsed["strike"])
+        new_expiry_raw = nw["expiry"] if nw else open_parsed["expiry"]
+        new_contratos = int(nw["contratos"]) if nw else int(cnt)
+        new_prem = float(nw["unit_premium"]) if nw else float(matched_roll.get("open_price", 0.0) or 0.0)
+        new_date_acq = nw.get("date_acquired") if nw else matched_roll.get("date")
+        old_strat = str(cur_df.at[real_i, "Estrategia"] or "")
+        old_setup = str(cur_df.at[real_i, "Setup"] or "La Rueda (The Wheel)")
+        wheel_parent_val = cur_df.at[real_i, "WheelParentChainID"]
+        wheel_leg_val = cur_df.at[real_i, "WheelLeg"]
+
+        if (old_strat == "CC (Covered Call)" or (new_side == "Sell" and new_opt_type == "Call")):
+            stock_match = cur_df[(cur_df["Ticker"] == new_ticker) & (cur_df["OptionType"] == "Stock") & (cur_df["Estado"] == "Abierta")]
+            if len(stock_match) > 0:
+                stock_row = stock_match.iloc[0]
+                stock_idx = stock_match.index[0]
+                if pd.isna(wheel_parent_val):
+                    wheel_parent_val = stock_row["ChainID"]
+                cur_df.at[stock_idx, "CoveredCallChainID"] = parent_chain_id
+                cur_df.at[stock_idx, "CoveredCallPrima"] = new_prem
+                if pd.isna(wheel_leg_val):
+                    wheel_leg_val = "covered_call"
+
+        new_rec = {
+            "ID": new_id,
+            "ChainID": parent_chain_id,
+            "ParentID": target_parent_id,
+            "Ticker": new_ticker,
+            "FechaApertura": pd.to_datetime(new_date_acq).normalize() if new_date_acq else pd.Timestamp.now().normalize(),
+            "Expiry": pd.to_datetime(new_expiry_raw).normalize() if new_expiry_raw else pd.Timestamp.now().normalize(),
+            "Estrategia": old_strat,
+            "Setup": old_setup,
+            "Tags": "TradierSync",
+            "Side": new_side,
+            "OptionType": new_opt_type,
+            "Strike": new_strike,
+            "Delta": 0.0,
+            "PrimaRecibida": new_prem,
+            "CostoCierre": 0.0,
+            "Contratos": new_contratos,
+            "BuyingPower": new_strike * 100 * new_contratos if new_strike > 0 else 0.0,
+            "BreakEven": max(0.0, new_strike - new_prem) if new_opt_type == "Put" else new_strike + new_prem,
+            "BreakEven_Upper": 0.0,
+            "POP": 70.0,
+            "Estado": "Abierta",
+            "Notas": f"Rolado desde {mis['ticker']} ${mis['strike']} ({open_sym})",
+            "UpdatedAt": datetime.now().isoformat(),
+            "FechaCierre": pd.NA,
+            "MaxProfitUSD": new_prem * 100 * new_contratos,
+            "ProfitPct": 0.0,
+            "PnL_Capital_Pct": 0.0,
+            "PrecioAccionCierre": 0.0,
+            "PnL_USD_Realizado": 0.0,
+            "Comisiones": 0.0,
+            "EarningsDate": pd.NA,
+            "DividendosDate": pd.NA,
+            "Broker": "Tradier",
+            "WheelParentChainID": wheel_parent_val,
+            "CostBaseReal": 0.0,
+            "CoveredCallChainID": pd.NA,
+            "CoveredCallPrima": 0.0,
+            "WheelLeg": wheel_leg_val
+        }
+        cur_df = pd.concat([cur_df.dropna(how='all', axis=0), pd.DataFrame([new_rec])], ignore_index=True)
+        created_new_leg = True
+
+    return cur_df, created_new_leg
+
+
+def batch_sync_all(JournalManager, df: pd.DataFrame, recon: Dict[str, Any], roll_pairs: List[Dict[str, Any]], fills_by_symbol: Dict[str, float], strat_list: List[str], fallback_new_in_tradier: Optional[List[Dict[str, Any]]] = None) -> Tuple[pd.DataFrame, int, int]:
     """
     Sincroniza en lote todas las discrepancias detectadas:
     1. Importa nuevas posiciones (combos multi-pata e individuales).
@@ -848,83 +1027,16 @@ def batch_sync_all(JournalManager, df: pd.DataFrame, recon: Dict[str, Any], roll
         side_val = str(cur_df.at[real_i, "Side"])
 
         if matched_roll:
-            cur_df.at[real_i, "Estado"] = "Rolada"
-            cur_df.at[real_i, "FechaCierre"] = sanitize_date_for_df(matched_roll.get("date"))
             roll_close_p = float(matched_roll.get("close_price", close_price) or close_price)
-            cur_df.at[real_i, "CostoCierre"] = roll_close_p
-            pnl_realizado = (p_rec - roll_close_p) * 100 * cnt if side_val == "Sell" else (roll_close_p - p_rec) * 100 * cnt
-            cur_df.at[real_i, "PnL_USD_Realizado"] = pnl_realizado
-            cur_df.at[real_i, "UpdatedAt"] = datetime.now().isoformat()
-
-            # Gestión de roll encadenado (ej. doble roll intradía)
-            target_parent_id = mis["strikelog_id"]
-            if matched_roll.get("intermediate_symbol"):
-                inter_sym = matched_roll["intermediate_symbol"]
-                inter_parsed = parse_occ_symbol(inter_sym)
-                inter_exists = cur_df[
-                    (cur_df["Ticker"] == inter_parsed["ticker"]) &
-                    (cur_df["Strike"] == inter_parsed["strike"]) &
-                    (cur_df["Expiry"] == inter_parsed["expiry"])
-                ]
-                if len(inter_exists) == 0:
-                    inter_id = str(uuid4())[:8]
-                    p_in = float(matched_roll.get("intermediate_open_price", 0.0))
-                    p_out = float(matched_roll.get("intermediate_close_price", 0.0))
-                    inter_pnl = (p_in - p_out) * 100 * cnt if side_val == "Sell" else (p_out - p_in) * 100 * cnt
-                    inter_rec = {
-                        "ID": inter_id,
-                        "ChainID": cur_df.at[real_i, "ChainID"] if pd.notna(cur_df.at[real_i, "ChainID"]) else inter_id,
-                        "ParentID": mis["strikelog_id"],
-                        "Ticker": inter_parsed["ticker"],
-                        "FechaApertura": sanitize_date_for_df(matched_roll.get("date")),
-                        "Expiry": pd.to_datetime(inter_parsed["expiry"]).normalize(),
-                        "Estrategia": cur_df.at[real_i, "Estrategia"],
-                        "Setup": cur_df.at[real_i, "Setup"],
-                        "Tags": "TradierSync",
-                        "Side": side_val,
-                        "OptionType": inter_parsed["option_type"],
-                        "Strike": inter_parsed["strike"],
-                        "Delta": 0.0,
-                        "PrimaRecibida": p_in,
-                        "CostoCierre": p_out,
-                        "Contratos": cnt,
-                        "BuyingPower": inter_parsed["strike"] * 100 * cnt if inter_parsed["strike"] > 0 else 0.0,
-                        "BreakEven": max(0.0, inter_parsed["strike"] - p_in) if inter_parsed["option_type"] == "Put" else inter_parsed["strike"] + p_in,
-                        "BreakEven_Upper": 0.0,
-                        "POP": 70.0,
-                        "Estado": "Rolada",
-                        "Notas": f"Pata intermedia de doble roll intradía ({inter_sym})",
-                        "UpdatedAt": datetime.now().isoformat(),
-                        "FechaCierre": sanitize_date_for_df(matched_roll.get("date")),
-                        "MaxProfitUSD": p_in * 100 * cnt,
-                        "ProfitPct": 0.0,
-                        "PnL_Capital_Pct": 0.0,
-                        "PrecioAccionCierre": 0.0,
-                        "PnL_USD_Realizado": inter_pnl,
-                        "Comisiones": 0.0,
-                        "EarningsDate": pd.NA,
-                        "DividendosDate": pd.NA,
-                        "Broker": "Tradier",
-                        "WheelParentChainID": cur_df.at[real_i, "WheelParentChainID"],
-                        "CostBaseReal": 0.0,
-                        "CoveredCallChainID": pd.NA,
-                        "CoveredCallPrima": 0.0,
-                        "WheelLeg": cur_df.at[real_i, "WheelLeg"]
-                    }
-                    cur_df = pd.concat([cur_df, pd.DataFrame([inter_rec])], ignore_index=True)
-                    target_parent_id = inter_id
-                else:
-                    target_parent_id = inter_exists.iloc[-1]["ID"]
-
-            open_parsed = parse_occ_symbol(matched_roll["open_symbol"])
-            new_leg_idx = cur_df.index[
-                (cur_df["Ticker"] == open_parsed["ticker"]) &
-                (cur_df["Strike"] == open_parsed["strike"]) &
-                (cur_df["Expiry"] == open_parsed["expiry"]) &
-                (cur_df["Estado"] == "Abierta")
-            ]
-            if len(new_leg_idx) > 0:
-                cur_df.at[new_leg_idx[0], "ParentID"] = target_parent_id
+            cur_df, created_new_leg = _apply_roll_to_df(
+                cur_df,
+                mis,
+                matched_roll,
+                roll_close_p,
+                new_in_tradier=new_in_tradier or fallback_new_in_tradier,
+            )
+            if created_new_leg:
+                n_imported += 1
             n_resolved += 1
         else:
             cur_df.at[real_i, "Estado"] = "Cerrada"
@@ -1359,9 +1471,18 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
             c_mis_hdr.warning(f"⚠️ **{n_missing} posición(es) registradas como abiertas en StrikeLog no se encuentran en Tradier:**")
             if n_missing > 1:
                 if c_mis_all.button("⚡ Resolver Todas las Faltantes", key="btn_batch_resolve_missing", help="Aplica automáticamente los rolls detectados o cierra estas posiciones"):
-                    updated_df, n_res, _ = batch_sync_all(JournalManager, df, {"missing_in_tradier": recon["missing_in_tradier"], "new_in_tradier": []}, roll_pairs, fills_by_symbol, strat_list)
+                    updated_df, n_res, n_imp = batch_sync_all(
+                        JournalManager,
+                        df,
+                        {"missing_in_tradier": recon["missing_in_tradier"], "new_in_tradier": []},
+                        roll_pairs,
+                        fills_by_symbol,
+                        strat_list,
+                        fallback_new_in_tradier=recon["new_in_tradier"],
+                    )
                     st.session_state.df = JournalManager.save_with_backup(updated_df)
-                    st.success(f"Se resolvieron {n_res} posiciones faltantes.")
+                    msg_imp = f" y se importaron {n_imp} nuevas patas roladas" if n_imp > 0 else ""
+                    st.success(f"Se resolvieron {n_res} posiciones faltantes{msg_imp}.")
                     st.rerun()
             st.caption("Estas operaciones pueden haber sido cerradas, asignadas o roladas en Sigma Trade. Puedes marcarlas como cerradas o roladas aquí:")
             for idx_m, mis in enumerate(recon["missing_in_tradier"]):
@@ -1385,91 +1506,19 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
                 is_short_put = (mis.get("side") == "Sell" and mis.get("option_type") == "Put")
                 if matched_roll:
                     if c_m3.button("🔄 Aplicar Roll", key=f"btn_close_rec_{mis['strikelog_id']}", type="primary"):
-                        rec_idx = df.index[df["ID"] == mis["strikelog_id"]]
-                        if len(rec_idx) > 0:
-                            real_i = rec_idx[0]
-                            df.at[real_i, "Estado"] = "Rolada"
-                            df.at[real_i, "FechaCierre"] = sanitize_date_for_df(matched_roll.get("date"))
-                            df.at[real_i, "CostoCierre"] = close_price
-                            p_rec = float(df.at[real_i, "PrimaRecibida"] or 0.0)
-                            cnt = float(df.at[real_i, "Contratos"] or 1.0)
-                            side_val = str(df.at[real_i, "Side"])
-                            pnl_realizado = (p_rec - close_price) * 100 * cnt if side_val == "Sell" else (close_price - p_rec) * 100 * cnt
-                            df.at[real_i, "PnL_USD_Realizado"] = pnl_realizado
-                            df.at[real_i, "UpdatedAt"] = datetime.now().isoformat()
-                            
-                            target_parent_id = mis["strikelog_id"]
-                            if matched_roll.get("intermediate_symbol"):
-                                inter_sym = matched_roll["intermediate_symbol"]
-                                inter_parsed = parse_occ_symbol(inter_sym)
-                                inter_exists = df[
-                                    (df["Ticker"] == inter_parsed["ticker"]) &
-                                    (df["Strike"] == inter_parsed["strike"]) &
-                                    (df["Expiry"] == inter_parsed["expiry"])
-                                ]
-                                if len(inter_exists) == 0:
-                                    inter_id = str(uuid4())[:8]
-                                    p_in = float(matched_roll.get("intermediate_open_price", 0.0))
-                                    p_out = float(matched_roll.get("intermediate_close_price", 0.0))
-                                    inter_pnl = (p_in - p_out) * 100 * cnt if side_val == "Sell" else (p_out - p_in) * 100 * cnt
-                                    inter_rec = {
-                                        "ID": inter_id,
-                                        "ChainID": df.at[real_i, "ChainID"] if pd.notna(df.at[real_i, "ChainID"]) else inter_id,
-                                        "ParentID": mis["strikelog_id"],
-                                        "Ticker": inter_parsed["ticker"],
-                                        "FechaApertura": sanitize_date_for_df(matched_roll.get("date")),
-                                        "Expiry": pd.to_datetime(inter_parsed["expiry"]).normalize(),
-                                        "Estrategia": df.at[real_i, "Estrategia"],
-                                        "Setup": df.at[real_i, "Setup"],
-                                        "Tags": "TradierSync",
-                                        "Side": side_val,
-                                        "OptionType": inter_parsed["option_type"],
-                                        "Strike": inter_parsed["strike"],
-                                        "Delta": 0.0,
-                                        "PrimaRecibida": p_in,
-                                        "CostoCierre": p_out,
-                                        "Contratos": cnt,
-                                        "BuyingPower": inter_parsed["strike"] * 100 * cnt if inter_parsed["strike"] > 0 else 0.0,
-                                        "BreakEven": max(0.0, inter_parsed["strike"] - p_in) if inter_parsed["option_type"] == "Put" else inter_parsed["strike"] + p_in,
-                                        "BreakEven_Upper": 0.0,
-                                        "POP": 70.0,
-                                        "Estado": "Rolada",
-                                        "Notas": f"Pata intermedia de doble roll intradía ({inter_sym})",
-                                        "UpdatedAt": datetime.now().isoformat(),
-                                        "FechaCierre": sanitize_date_for_df(matched_roll.get("date")),
-                                        "MaxProfitUSD": p_in * 100 * cnt,
-                                        "ProfitPct": 0.0,
-                                        "PnL_Capital_Pct": 0.0,
-                                        "PrecioAccionCierre": 0.0,
-                                        "PnL_USD_Realizado": inter_pnl,
-                                        "Comisiones": 0.0,
-                                        "EarningsDate": pd.NA,
-                                        "DividendosDate": pd.NA,
-                                        "Broker": "Tradier",
-                                        "WheelParentChainID": df.at[real_i, "WheelParentChainID"],
-                                        "CostBaseReal": 0.0,
-                                        "CoveredCallChainID": pd.NA,
-                                        "CoveredCallPrima": 0.0,
-                                        "WheelLeg": df.at[real_i, "WheelLeg"]
-                                    }
-                                    df = pd.concat([df, pd.DataFrame([inter_rec])], ignore_index=True)
-                                    target_parent_id = inter_id
-                                else:
-                                    target_parent_id = inter_exists.iloc[-1]["ID"]
-
-                            open_parsed = parse_occ_symbol(matched_roll["open_symbol"])
-                            new_leg_idx = df.index[
-                                (df["Ticker"] == open_parsed["ticker"]) &
-                                (df["Strike"] == open_parsed["strike"]) &
-                                (df["Expiry"] == open_parsed["expiry"]) &
-                                (df["Estado"] == "Abierta")
-                            ]
-                            if len(new_leg_idx) > 0:
-                                df.at[new_leg_idx[0], "ParentID"] = target_parent_id
-
-                            st.session_state.df = JournalManager.save_with_backup(df)
+                        updated_df, created_new_leg = _apply_roll_to_df(
+                            df,
+                            mis,
+                            matched_roll,
+                            close_price,
+                            new_in_tradier=recon["new_in_tradier"],
+                        )
+                        st.session_state.df = JournalManager.save_with_backup(updated_df)
+                        if created_new_leg:
+                            st.success(f"Roll aplicado en {mis['ticker']}: posición anterior marcada como Rolada y nueva pata añadida y enlazada.")
+                        else:
                             st.success(f"Posición {mis['ticker']} actualizada como Rolada y enlazada.")
-                            st.rerun()
+                        st.rerun()
                 elif is_short_put:
                     c_btn1, c_btn2, c_btn3 = c_m3.columns(3)
                     if c_btn1.button("Cerrar", key=f"btn_close_rec_{mis['strikelog_id']}", help="Marcar como cerrada normalmente (a precio de mercado o $0 si expiró OTM)"):

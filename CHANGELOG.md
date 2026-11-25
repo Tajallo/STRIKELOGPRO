@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Aplicación Completa de Rolls en Sincronización con Tradier (`_apply_roll_to_df`)**:
+  - **Importación y Enlace Automático de la Pata Rolada**: Anteriormente, pulsar `🔄 Aplicar Roll` o `⚡ Resolver Todas las Faltantes` solo marcaba la posición anterior como `Rolada` sin dar de alta la nueva pata abierta en StrikeLog, provocando que al reabrir el panel de sincronización volvieran a aparecer como posiciones nuevas pendientes de añadir individualmente.
+  - **Flujo Unificado (`_apply_roll_to_df`)**: Se extrajo una función compartida utilizada tanto en el botón individual `🔄 Aplicar Roll` como en `batch_sync_all` y `⚡ Resolver Todas las Faltantes` que:
+    - Marca la pata cerrada como `Rolada` con su PnL realizado y registra patas intermedias intradía si las hubo.
+    - Enlaza la nueva pata abierta si ya existía en StrikeLog o la crea e importa automáticamente heredando `ChainID`, `ParentID`, `Estrategia`, `Setup`, `WheelParentChainID` y la vinculación de Covered Calls en La Rueda.
+    - Corrige la comparación de fechas de vencimiento (`Expiry`) para garantizar el enlace fiable entre `Timestamp` y cadenas `YYYY-MM-DD`.
+
 - **Paginación Dinámica y Selector de Tamaño de Página en Cartera Activa**:
   - **Control de Paginación Superior e Inferior**: Incorporado el sistema de paginación idéntico al del Historial en **Cartera Activa** (`[⬅️ Anterior]`, `[Siguiente ➡️]`, `Página X de Y · mostrando A–B de N`).
   - **Selector por Página (`10, 20, 50, 100`)**: Permite ajustar la cantidad de operaciones simultáneas mostradas en pantalla, optimizando la agilidad de renderizado de los expanders y la navegación en carteras activas extensas.

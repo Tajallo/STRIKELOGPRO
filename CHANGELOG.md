@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Corrección de Falsos Rolls en Órdenes Individuales (`extract_recent_fills_and_rolls`)**:
+  - Evitado que el emparejamiento de rolls en 2 órdenes separadas (`single_closes` + `single_opens`) confunda una operación intradía ya cerrada (como `NU 11P` abierta a las 15:48 y cerrada a las 19:34) con el destino de un cierre posterior (`NU 12P` cerrado a las 19:36).
+  - Ahora exige que la pata abierta siga activa en `open_symbols`, tenga polaridad opuesta coherente (`buy_to_close` ↔ `sell_to_open` o `sell_to_close` ↔ `buy_to_open`) y no sea anterior al cierre por más de 5 minutos.
+
 - **Corrección de `UnboundLocalError` al Añadir Pata Individual en Sincronización con Tradier**:
   - Corregido en `render_tradier_sync_modal` (`tradier_sync.py`) el acceso a `nw["ticker"]` y `nw["contratos"]` (en lugar de `leg`) al pulsar `➕ Añadir a Cartera` en la sección de patas individuales.
 

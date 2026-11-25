@@ -301,12 +301,32 @@ def extract_recent_fills_and_rolls(
 
     # 1.1 Emparejar órdenes individuales (ej. roll manual de Covered Call o CSP en 2 órdenes separadas)
     for sc in single_closes:
-        c_parsed = parse_occ_symbol(sc.get("option_symbol"))
+        c_sym = sc.get("option_symbol")
+        c_parsed = parse_occ_symbol(c_sym)
+        c_side = str(sc.get("side", "")).lower()
+        c_dt_str = sc.get("transaction_date")
         for so in single_opens:
-            o_parsed = parse_occ_symbol(so.get("option_symbol"))
+            o_sym = so.get("option_symbol")
+            # La pata nueva debe seguir abierta en el broker (no haberse cerrado también en el día)
+            if open_symbols and o_sym not in open_symbols:
+                continue
+            o_side = str(so.get("side", "")).lower()
+            # Misma dirección de estrategia: buy_to_close <-> sell_to_open, o sell_to_close <-> buy_to_open
+            same_polarity = ("buy" in c_side and "sell" in o_side) or ("sell" in c_side and "buy" in o_side)
+            if not same_polarity:
+                continue
+            # En un roll manual, la apertura ocurre después del cierre (o dentro de una ventana de ±5 min)
+            o_dt_str = so.get("transaction_date")
+            if c_dt_str and o_dt_str:
+                try:
+                    c_ts = pd.to_datetime(c_dt_str)
+                    o_ts = pd.to_datetime(o_dt_str)
+                    if (o_ts - c_ts).total_seconds() < -300:
+                        continue
+                except Exception:
+                    pass
+            o_parsed = parse_occ_symbol(o_sym)
             if c_parsed.get("ticker") == o_parsed.get("ticker") and c_parsed.get("option_type") == o_parsed.get("option_type"):
-                c_sym = sc.get("option_symbol")
-                o_sym = so.get("option_symbol")
                 if c_sym != o_sym:
                     already = any(rp.get("close_symbol") == c_sym and rp.get("open_symbol") == o_sym for rp in roll_pairs)
                     if not already:

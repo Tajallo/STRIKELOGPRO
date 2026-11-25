@@ -101,6 +101,219 @@ def fetch_account_balances(token: Optional[str] = None, account_id: Optional[str
         return {"error": f"Error de conexión con Tradier: {e}"}
 
 
+def fetch_market_quotes(
+    symbols: List[str],
+    greeks: bool = True,
+    token: Optional[str] = None,
+    account_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Obtiene cotizaciones en vivo (bid/ask/last/greeks) desde Tradier para una lista de símbolos."""
+    t = token or TRADIER_TOKEN
+    if not t:
+        return {"error": "Credenciales de Tradier no configuradas."}
+    clean_syms = [str(s).strip().upper() for s in symbols if s and str(s).strip()]
+    if not clean_syms:
+        return {"success": True, "quotes": {}}
+
+    url = f"{BASE_URL}/markets/quotes"
+    quotes_map: Dict[str, Dict[str, Any]] = {}
+    try:
+        for i in range(0, len(clean_syms), 50):
+            batch = clean_syms[i:i + 50]
+            resp = requests.get(
+                url,
+                headers=get_headers(t),
+                params={"symbols": ",".join(batch), "greeks": "true" if greeks else "false"},
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                return {"error": f"Error Tradier Quotes ({resp.status_code}): {resp.text}"}
+            raw_q = resp.json().get("quotes", {}).get("quote", [])
+            if isinstance(raw_q, dict):
+                raw_q = [raw_q]
+            for q in raw_q or []:
+                sym = str(q.get("symbol", "")).strip().upper()
+                if sym:
+                    quotes_map[sym] = q
+        return {"success": True, "quotes": quotes_map}
+    except Exception as e:
+        return {"error": f"Error de conexión obteniendo cotizaciones: {e}"}
+
+
+def compute_live_portfolio_mtm(
+    df: pd.DataFrame,
+    active_df: Optional[pd.DataFrame] = None,
+    token: Optional[str] = None,
+    account_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Calcula el PnL abierto en vivo (Mark-to-Market), griegas (Delta/Theta) y balances reales
+    para las posiciones abiertas actuales sin modificar el DataFrame.
+    """
+    if active_df is None:
+        active_df = df[df["Estado"] == "Abierta"].copy()
+    if active_df.empty:
+        return {
+            "success": True,
+            "positions": [],
+            "total_mtm_legs": 0.0,
+            "total_mtm_campaign": 0.0,
+            "total_delta": 0.0,
+            "total_theta": 0.0,
+            "missing_quotes": 0,
+            "balances": {},
+            "updated_at": datetime.now().strftime("%H:%M:%S"),
+        }
+
+    sym_by_idx: Dict[Any, str] = {}
+    symbols_to_fetch: List[str] = []
+    for idx, r in active_df.iterrows():
+        tkr = str(r.get("Ticker", "")).strip().upper()
+        if tkr == "IIREN":
+            tkr = "IREN"
+        opt_type = str(r.get("OptionType", "")).strip()
+        if opt_type == "Stock":
+            sym = tkr
+        else:
+            sym = build_occ_symbol(tkr, str(r.get("Expiry", ""))[:10], opt_type, float(r.get("Strike", 0.0) or 0.0))
+        if sym:
+            sym_by_idx[idx] = sym
+            if sym not in symbols_to_fetch:
+                symbols_to_fetch.append(sym)
+
+    q_res = fetch_market_quotes(symbols_to_fetch, greeks=True, token=token, account_id=account_id)
+    if not q_res.get("success"):
+        return {"error": q_res.get("error", "No se pudieron obtener cotizaciones en vivo.")}
+    quotes_map = q_res.get("quotes", {})
+
+    b_res = fetch_account_balances(token=token, account_id=account_id)
+    bal_raw = b_res.get("balances", {}) if b_res.get("success") else {}
+    margin_raw = bal_raw.get("margin", {}) if isinstance(bal_raw.get("margin"), dict) else {}
+    balances_clean = {
+        "total_equity": float(bal_raw.get("total_equity") or 0.0),
+        "total_cash": float(bal_raw.get("total_cash") or 0.0),
+        "open_pl": float(bal_raw.get("open_pl") or 0.0),
+        "close_pl": float(bal_raw.get("close_pl") or 0.0),
+        "option_bp": float(margin_raw.get("option_buying_power") or 0.0),
+        "stock_bp": float(margin_raw.get("stock_buying_power") or 0.0),
+        "current_requirement": float(bal_raw.get("current_requirement") or bal_raw.get("option_requirement") or 0.0),
+    }
+
+    prior_rolls_by_chain: Dict[str, float] = {}
+    open_cids = set(active_df["ChainID"].dropna().unique())
+    if open_cids and not df.empty:
+        closed_in_open = df[(df["ChainID"].isin(open_cids)) & (df["Estado"] != "Abierta")]
+        for cid, grp in closed_in_open.groupby("ChainID"):
+            comm_sum = float(grp["Comisiones"].fillna(0.0).sum()) if "Comisiones" in grp.columns else 0.0
+            prior_rolls_by_chain[str(cid)] = float(grp["PnL_USD_Realizado"].fillna(0.0).sum()) - comm_sum
+
+    chain_rows: Dict[str, Dict[str, Any]] = {}
+    total_mtm_legs = 0.0
+    total_delta = 0.0
+    total_theta = 0.0
+    missing_quotes = 0
+
+    for idx, r in active_df.iterrows():
+        cid = str(r.get("ChainID", idx))
+        tkr = str(r.get("Ticker", "")).strip().upper()
+        opt_type = str(r.get("OptionType", "")).strip()
+        side = str(r.get("Side", "Sell")).strip().capitalize()
+        cnt = int(float(r.get("Contratos") or 1))
+        strike = float(r.get("Strike") or 0.0)
+        prima = float(r.get("PrimaRecibida") or 0.0)
+        sym = sym_by_idx.get(idx, "")
+        q = quotes_map.get(sym, {})
+
+        bid = float(q.get("bid") or 0.0)
+        ask = float(q.get("ask") or 0.0)
+        last = float(q.get("last") or 0.0)
+        prevclose = float(q.get("prevclose") or 0.0)
+        if bid > 0 and ask > 0:
+            mark = (bid + ask) / 2.0
+        elif last > 0:
+            mark = last
+        elif prevclose > 0:
+            mark = prevclose
+        else:
+            mark = 0.0
+            missing_quotes += 1
+
+        if opt_type == "Stock":
+            entry_val = strike
+            leg_mtm = (mark - entry_val) * 100.0 * cnt if mark > 0 else 0.0
+            leg_delta = 100.0 * cnt
+            leg_theta = 0.0
+            entry_cost_usd = entry_val * 100.0 * cnt
+            mkt_val_usd = mark * 100.0 * cnt
+        else:
+            if mark > 0 or (q and bid == 0 and ask >= 0):
+                leg_mtm = (prima - mark) * 100.0 * cnt if side == "Sell" else (mark - prima) * 100.0 * cnt
+            else:
+                leg_mtm = 0.0
+            greeks = q.get("greeks") if isinstance(q.get("greeks"), dict) else {}
+            g_delta = float(greeks.get("delta") or 0.0)
+            g_theta = float(greeks.get("theta") or 0.0)
+            sign = -1.0 if side == "Sell" else 1.0
+            leg_delta = sign * g_delta * 100.0 * cnt
+            leg_theta = sign * g_theta * 100.0 * cnt
+            entry_cost_usd = prima * 100.0 * cnt * (1 if side == "Sell" else -1)
+            mkt_val_usd = mark * 100.0 * cnt * (-1 if side == "Sell" else 1)
+
+        total_mtm_legs += leg_mtm
+        total_delta += leg_delta
+        total_theta += leg_theta
+
+        if cid not in chain_rows:
+            chain_rows[cid] = {
+                "ChainID": cid,
+                "Ticker": tkr,
+                "Estrategia": str(r.get("Estrategia", "")),
+                "Expiry": str(r.get("Expiry", ""))[:10] if opt_type != "Stock" else "∞ Stock",
+                "Contratos": cnt,
+                "Patas": 0,
+                "Entrada ($)": 0.0,
+                "Mercado ($)": 0.0,
+                "PnL Patas ($)": 0.0,
+                "Rolls Previos ($)": prior_rolls_by_chain.get(cid, 0.0),
+                "Delta": 0.0,
+                "Theta": 0.0,
+            }
+        cr = chain_rows[cid]
+        cr["Patas"] += 1
+        cr["Entrada ($)"] += entry_cost_usd
+        cr["Mercado ($)"] += mkt_val_usd
+        cr["PnL Patas ($)"] += leg_mtm
+        cr["Delta"] += leg_delta
+        cr["Theta"] += leg_theta
+
+    pos_list = []
+    total_mtm_campaign = 0.0
+    for cr in chain_rows.values():
+        pnl_camp = cr["PnL Patas ($)"] + cr["Rolls Previos ($)"]
+        cr["PnL Global ($)"] = round(pnl_camp, 2)
+        cr["PnL Patas ($)"] = round(cr["PnL Patas ($)"], 2)
+        cr["Rolls Previos ($)"] = round(cr["Rolls Previos ($)"], 2)
+        cr["Entrada ($)"] = round(cr["Entrada ($)"], 2)
+        cr["Mercado ($)"] = round(cr["Mercado ($)"], 2)
+        cr["Delta"] = round(cr["Delta"], 2)
+        cr["Theta"] = round(cr["Theta"], 2)
+        total_mtm_campaign += pnl_camp
+        pos_list.append(cr)
+
+    pos_list.sort(key=lambda x: x["PnL Global ($)"])
+    return {
+        "success": True,
+        "positions": pos_list,
+        "total_mtm_legs": round(total_mtm_legs, 2),
+        "total_mtm_campaign": round(total_mtm_campaign, 2),
+        "total_delta": round(total_delta, 2),
+        "total_theta": round(total_theta, 2),
+        "missing_quotes": missing_quotes,
+        "balances": balances_clean,
+        "updated_at": datetime.now().strftime("%H:%M:%S"),
+    }
+
+
 def fetch_open_positions(token: Optional[str] = None, account_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Obtiene las posiciones abiertas actuales en Tradier.

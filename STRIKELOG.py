@@ -1027,6 +1027,12 @@ def get_roll_history(df, current_id):
 # ----------------------------
 # UI Components
 # ----------------------------
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_live_portfolio_mtm(_df: pd.DataFrame, _active_df: pd.DataFrame, data_sig: str, cache_buster: int = 0) -> dict:
+    """Obtiene y cachea 60s las cotizaciones, MTM, griegas y balances reales de Tradier."""
+    return tradier_sync.compute_live_portfolio_mtm(_df, _active_df)
+
+
 def render_dashboard(df):
     # --- ESTILOS PERSONALIZADOS PARA KPIs ---
     st.markdown("""
@@ -1191,37 +1197,63 @@ def render_dashboard(df):
             ].copy()
         open_trades = df_view[df_view["Estado"] == "Abierta"].copy()
         
-        # --- KPIs DE ALTO NIVEL ---
-        pnl_total = closed_trades["PnL_USD_Realizado"].sum() if not closed_trades.empty else 0.0
-
-        # Los roles son defensas/ajustes de una posición viva, no pérdidas definitivas.
-        # Solo se evalúan como victorias/derrotas si el usuario filtró explícitamente por "Rolada".
-        if estado_filter == "Rolada":
-            eval_trades = closed_trades.copy()
+        # --- CONSTRUIR RESUMEN POR CAMPAÑA (ChainID) PARA MÉTRICAS CONSISTENTES ---
+        if not closed_trades.empty:
+            ct_tmp = closed_trades.copy()
+            ct_tmp["__fa"] = pd.to_datetime(ct_tmp["FechaApertura"], errors="coerce")
+            ct_tmp["__fc"] = pd.to_datetime(ct_tmp["FechaCierre"], errors="coerce")
+            ct_tmp["__dt_sort"] = ct_tmp["__fc"].fillna(ct_tmp["__fa"])
+            camp_rows = []
+            for cid, grp in ct_tmp.groupby("ChainID"):
+                grp_s = grp.sort_values("__dt_sort", ascending=True, na_position="first")
+                last_leg = grp_s.iloc[-1]
+                bruto_c = float(grp_s["PnL_USD_Realizado"].fillna(0.0).sum())
+                comm_c = float(grp_s["Comisiones"].fillna(0.0).sum()) if "Comisiones" in grp_s.columns else 0.0
+                neto_c = bruto_c - comm_c
+                mp_c = float(grp_s["MaxProfitUSD"].fillna(0.0).max())
+                profit_pct_c = (neto_c / mp_c * 100.0) if mp_c > 0 else float(last_leg.get("ProfitPct") or 0.0)
+                camp_rows.append({
+                    "ChainID": cid,
+                    "Ticker": last_leg.get("Ticker", ""),
+                    "Estrategia": last_leg.get("Estrategia", ""),
+                    "Estado": last_leg.get("Estado", ""),
+                    "FechaCierre": last_leg["__dt_sort"],
+                    "PnL_Bruto": round(bruto_c, 2),
+                    "Comisiones": round(comm_c, 2),
+                    "PnL_Neto": round(neto_c, 2),
+                    "ProfitPct": profit_pct_c,
+                })
+            closed_campaigns_df = pd.DataFrame(camp_rows).sort_values("FechaCierre", ascending=True)
         else:
-            eval_trades = closed_trades[closed_trades["Estado"].isin(["Cerrada", "Asignada"])].copy()
+            closed_campaigns_df = pd.DataFrame(columns=["ChainID", "Ticker", "Estrategia", "Estado", "FechaCierre", "PnL_Bruto", "Comisiones", "PnL_Neto", "ProfitPct"])
 
-        wins_df = eval_trades[eval_trades["PnL_USD_Realizado"] > 0] if not eval_trades.empty else pd.DataFrame()
-        losses_df = eval_trades[eval_trades["PnL_USD_Realizado"] < 0] if not eval_trades.empty else pd.DataFrame()
+        # --- KPIs DE ALTO NIVEL (A NIVEL DE CAMPAÑA NETA) ---
+        pnl_total = closed_trades["PnL_USD_Realizado"].sum() if not closed_trades.empty else 0.0
+        total_comisiones = df_view["Comisiones"].sum() if "Comisiones" in df_view.columns else 0.0
+        pnl_neto = pnl_total - total_comisiones
+
+        if estado_filter == "Rolada":
+            eval_campaigns = closed_campaigns_df.copy()
+        else:
+            eval_campaigns = closed_campaigns_df[closed_campaigns_df["Estado"].isin(["Cerrada", "Asignada"])].copy()
+
+        wins_df = eval_campaigns[eval_campaigns["PnL_Neto"] > 0] if not eval_campaigns.empty else pd.DataFrame()
+        losses_df = eval_campaigns[eval_campaigns["PnL_Neto"] < 0] if not eval_campaigns.empty else pd.DataFrame()
         rolls_df = closed_trades[closed_trades["Estado"] == "Rolada"] if not closed_trades.empty else pd.DataFrame()
-        
+
         wins = len(wins_df)
         losses = len(losses_df)
         rolls_count = len(rolls_df)
         total_closed = wins + losses
         win_rate = (wins / total_closed * 100) if total_closed > 0 else 0.0
-        
+
         capture_eff = wins_df["ProfitPct"].mean() if not wins_df.empty else 0.0
-        total_won = wins_df["PnL_USD_Realizado"].sum() if not wins_df.empty else 0.0
-        total_lost = abs(losses_df["PnL_USD_Realizado"].sum()) if not losses_df.empty else 0.0
+        total_won = wins_df["PnL_Neto"].sum() if not wins_df.empty else 0.0
+        total_lost = abs(losses_df["PnL_Neto"].sum()) if not losses_df.empty else 0.0
         profit_factor = (total_won / total_lost) if total_lost > 0 else (total_won if total_won > 0 else 0.0)
-        
-        total_comisiones = df_view["Comisiones"].sum() if "Comisiones" in df_view.columns else 0.0
-        pnl_neto = pnl_total - total_comisiones
-        
-        # Expectativa Matemática por Trade (Expectancy)
-        avg_win = wins_df["PnL_USD_Realizado"].mean() if not wins_df.empty else 0.0
-        avg_loss = abs(losses_df["PnL_USD_Realizado"].mean()) if not losses_df.empty else 0.0
+
+        avg_win = wins_df["PnL_Neto"].mean() if not wins_df.empty else 0.0
+        avg_loss = abs(losses_df["PnL_Neto"].mean()) if not losses_df.empty else 0.0
         win_prob = win_rate / 100.0
         loss_prob = (100.0 - win_rate) / 100.0
         expectancy_trade = (win_prob * avg_win) - (loss_prob * avg_loss) if total_closed > 0 else 0.0
@@ -1229,30 +1261,96 @@ def render_dashboard(df):
         # Conteo de operaciones (ChainID) para visibilidad de cantidad
         total_chains_in_view = df_view["ChainID"].nunique() if not df_view.empty else 0
         open_chains_in_view = open_trades["ChainID"].nunique() if not open_trades.empty else 0
-        closed_chains_in_view = eval_trades["ChainID"].nunique() if not eval_trades.empty else 0
+        closed_chains_in_view = eval_campaigns["ChainID"].nunique() if not eval_campaigns.empty else 0
 
-        # --- MINI-RESUMEN DE CARTERA ACTIVA HOY ---
-        open_positions_count = len(open_trades["ChainID"].unique()) if not open_trades.empty else 0
-        open_primas_pending, net_profit_otm_dash = calculate_open_positions_net_otm_profit(df, open_trades) if not open_trades.empty else (0.0, 0.0)
-        open_bp_total = sum(calculate_position_bp(r) for _, r in open_trades.iterrows()) if not open_trades.empty else 0.0
-        open_tradier_margin = sum(calculate_tradier_margin(r) for _, r in open_trades.iterrows()) if not open_trades.empty else 0.0
+        # --- RESUMEN EJECUTIVO: CARTERA ACTIVA HOY (SIEMPRE CARTERA COMPLETA EN MERCADO) ---
+        active_full_df = df[df["Estado"] == "Abierta"].copy()
+        if ticker_filter != "Todos Tickers":
+            active_full_df = active_full_df[active_full_df["Ticker"] == ticker_filter]
+        if excluir_tickers:
+            active_full_df = active_full_df[~active_full_df["Ticker"].isin(excluir_tickers)]
+
+        open_positions_count = len(active_full_df["ChainID"].unique()) if not active_full_df.empty else 0
+        open_primas_pending, net_profit_otm_dash = calculate_open_positions_net_otm_profit(df, active_full_df) if not active_full_df.empty else (0.0, 0.0)
+        open_bp_total = sum(calculate_position_bp(r) for _, r in active_full_df.iterrows()) if not active_full_df.empty else 0.0
+        open_tradier_margin = sum(calculate_tradier_margin(r) for _, r in active_full_df.iterrows()) if not active_full_df.empty else 0.0
         acc_cfg_dash = AccountConfig.load()
         cap_total_dash = float(acc_cfg_dash.get("capital_total", 50075.46))
         option_bp_dash = max(0.0, cap_total_dash - open_tradier_margin)
 
-        st.markdown("#### 🚀 Resumen Ejecutivo: Cartera Activa Hoy")
-        ca1, ca2, ca3, ca4 = st.columns(4)
-        ca1.metric("📦 Posiciones Abiertas", f"{open_positions_count} trade{'s' if open_positions_count != 1 else ''}", help="Operaciones que tienes actualmente en mercado")
+        c_hdr_live1, c_hdr_live2 = st.columns([4.2, 1.2])
+        c_hdr_live1.markdown("#### 🚀 Resumen Ejecutivo: Cartera Activa Hoy")
+        if c_hdr_live2.button("🔄 Actualizar Mercado", key="btn_refresh_dash_live", use_container_width=True, help="Actualiza cotizaciones, MTM, griegas y balances en vivo desde Tradier"):
+            st.session_state["dash_live_buster"] = st.session_state.get("dash_live_buster", 0) + 1
+
+        data_sig_live = f"{len(active_full_df)}_{str(df['UpdatedAt'].max() if 'UpdatedAt' in df.columns and not df.empty else '')}"
+        live_mtm = _cached_live_portfolio_mtm(
+            df,
+            active_full_df,
+            data_sig_live,
+            st.session_state.get("dash_live_buster", 0),
+        ) if not active_full_df.empty else {"success": True, "positions": [], "total_mtm_legs": 0.0, "total_mtm_campaign": 0.0, "total_delta": 0.0, "total_theta": 0.0, "balances": {}}
+
+        has_live = bool(live_mtm.get("success"))
+        bal_live = live_mtm.get("balances", {}) if has_live else {}
+
+        ca1, ca2, ca3, ca4, ca5 = st.columns(5)
+        ca1.metric("📦 Posiciones Abiertas", f"{open_positions_count} trade{'s' if open_positions_count != 1 else ''}", help="Operaciones activas actualmente en el mercado (sin recortar por periodo)")
         deficit_dash = open_primas_pending - net_profit_otm_dash
         ca2.metric(
-            "💵 Crédito Pendiente (Primas)",
+            "💵 Crédito Pendiente",
             f"${open_primas_pending:,.0f}",
             delta=f"Neto OTM: +${net_profit_otm_dash:,.0f}",
             delta_color="normal",
             help=f"Crédito bruto de primas abiertas: ${open_primas_pending:,.2f} USD.\n\n🎯 Beneficio neto real si expiran OTM: +${net_profit_otm_dash:,.2f} USD (descontadas pérdidas previas de rolls: -${deficit_dash:,.2f} USD)."
         )
-        ca3.metric("🏦 Margen Bloqueado Tradier", f"${open_tradier_margin:,.2f}", delta=f"Option BP Libre: ${option_bp_dash:,.0f}", delta_color="normal", help=f"Margen real que Tradier/Sigma te bloquea en cuenta Reg-T (~20% en CSPs + valor de stock).\nTe deja aproximadamente ${option_bp_dash:,.0f} de Option BP libre en el broker.")
-        ca4.metric("🔒 Asignación 100% Cash", f"${open_bp_total:,.2f}", help="Capital total necesario si todas tus CSPs y acciones fuesen asignadas y pagases el 100% en cash sin apalancamiento.")
+
+        if has_live:
+            mtm_camp = float(live_mtm.get("total_mtm_campaign", 0.0))
+            mtm_legs = float(live_mtm.get("total_mtm_legs", 0.0))
+            mtm_camp_str = f"+${mtm_camp:,.2f}" if mtm_camp >= 0 else f"-${abs(mtm_camp):,.2f}"
+            mtm_legs_str = f"Patas actuales: {'+' if mtm_legs >= 0 else '-'}${abs(mtm_legs):,.0f}"
+            ca3.metric(
+                "📊 Si Cierro Hoy (MTM)",
+                mtm_camp_str,
+                delta=mtm_legs_str,
+                delta_color="normal",
+                help=f"Valoración en vivo (mark = (bid+ask)/2) si cerraras todas las posiciones abiertas ahora mismo.\n• PnL Global con Rolls previos: {mtm_camp_str}\n• PnL solo patas actuales: {'+' if mtm_legs >= 0 else '-'}${abs(mtm_legs):,.2f}\nActualizado: {live_mtm.get('updated_at', '-')}"
+            )
+        else:
+            ca3.metric("📊 Si Cierro Hoy (MTM)", "--", delta="Sin conexión Tradier", delta_color="off", help=str(live_mtm.get("error", "No disponible")))
+
+        real_eq = float(bal_live.get("total_equity") or 0.0)
+        real_opt_bp = float(bal_live.get("option_bp") or 0.0)
+        if real_eq > 0:
+            ca4.metric(
+                "🏦 Equity Tradier",
+                f"${real_eq:,.0f}",
+                delta=f"Option BP Libre: ${real_opt_bp:,.0f}",
+                delta_color="normal",
+                help=f"Balance real de tu cuenta en Tradier.\n• Equity Total: ${real_eq:,.2f}\n• Option BP Libre: ${real_opt_bp:,.2f}\n• Stock BP Libre: ${float(bal_live.get('stock_bp') or 0.0):,.2f}"
+            )
+        else:
+            ca4.metric("🏦 Margen Bloqueado", f"${open_tradier_margin:,.2f}", delta=f"Option BP Libre: ${option_bp_dash:,.0f}", delta_color="normal", help=f"Margen estimado Reg-T (~20% en CSPs + valor de stock).\nTe deja aproximadamente ${option_bp_dash:,.0f} de Option BP libre.")
+
+        ca5.metric("🔒 Asignación 100% Cash", f"${open_bp_total:,.0f}", help="Capital total necesario si todas tus CSPs y acciones fuesen asignadas y pagases el 100% en cash sin apalancamiento.")
+
+        if has_live and live_mtm.get("positions"):
+            t_theta = float(live_mtm.get("total_theta", 0.0))
+            t_delta = float(live_mtm.get("total_delta", 0.0))
+            broker_open_pl = float(bal_live.get("open_pl") or 0.0)
+            stock_bp_real = float(bal_live.get("stock_bp") or 0.0)
+            st.caption(
+                f"⚡ **En vivo ({live_mtm.get('updated_at', '-')})** · "
+                f"**Θ Theta Diario:** `${t_theta:+,.2f}/día` · "
+                f"**Δ Delta Neto:** `{t_delta:+,.1f}` · "
+                f"**P/L Abierto Tradier:** `${broker_open_pl:+,.2f}` · "
+                f"**Stock BP:** `${stock_bp_real:,.0f}`"
+            )
+            with st.expander("📋 Desglose Mark-to-Market por Posición (Si cierras hoy)", expanded=False):
+                mtm_df = pd.DataFrame(live_mtm["positions"])
+                show_cols = ["Ticker", "Estrategia", "Expiry", "Patas", "Entrada ($)", "Mercado ($)", "PnL Patas ($)", "Rolls Previos ($)", "PnL Global ($)", "Delta", "Theta"]
+                st.dataframe(mtm_df[show_cols], hide_index=True, use_container_width=True)
 
         st.divider()
 
@@ -1292,43 +1390,43 @@ def render_dashboard(df):
         net_delta_str = f"${pnl_neto:,.2f}" if pnl_neto >= 0 else f"-${abs(pnl_neto):,.2f}"
         m3.metric("💰 PnL Neto Real", f"${pnl_neto:,.2f}", delta=net_delta_str if pnl_neto != 0 else None, help="Dinero real en tu bolsillo tras restar comisiones")
 
-        # Semáforos For Dummies
+        # Semáforos For Dummies (a nivel de campaña neta)
         wr_status = "🟢 Saludable" if win_rate >= 60 else ("🟡 Moderado" if win_rate >= 50 else "🔴 Riesgo")
-        wr_help = f"Porcentaje de acierto: {wins} ganadas / {losses} pérdidas sobre {total_closed} cerradas"
+        wr_help = f"Porcentaje de acierto por campaña neta: {wins} ganadas / {losses} pérdidas sobre {total_closed} campañas cerradas"
         if rolls_count > 0:
-            wr_help += f" (Se excluyen {rolls_count} roles de las pérdidas para no penalizar ajustes)."
-        wr_delta = f"✅ {wins}W / ❌ {losses}L" + (f" (🔄{rolls_count}r)" if rolls_count > 0 else "")
+            wr_help += f" ({rolls_count} patas roladas integradas en el neto de su campaña)."
+        wr_delta = f"✅ {wins}W / ❌ {losses}L"
         m4.metric("Win Rate", f"{win_rate:.1f}%", delta=wr_delta, help=wr_help)
 
         pf_status = "🟢 Excelente" if profit_factor >= 1.5 else ("🟡 Aceptable" if profit_factor >= 1.0 else "🔴 Pérdida")
-        m5.metric("Profit Factor", f"{profit_factor:.2f}x", delta=pf_status, help="Ratio Ganancia Total / Pérdida Total")
+        m5.metric("Profit Factor", f"{profit_factor:.2f}x", delta=pf_status, help="Ratio Ganancia Neta Total / Pérdida Neta Total por campaña")
 
         exp_status = "🟢 Sistema Ganador" if expectancy_trade > 0 else ("🔴 Pérdida" if expectancy_trade < 0 else "⚪ Neutro")
-        m6.metric("Expectativa/Trade", f"${expectancy_trade:+,.2f}", delta=exp_status, help="Esperanza matemática promedio ganada/perdida por cada operación que abres")
+        m6.metric("Expectativa/Trade", f"${expectancy_trade:+,.2f}", delta=exp_status, help="Esperanza matemática neta promedio por cada campaña cerrada")
 
-        # Drawdown máximo
-        if not closed_trades.empty:
-            sorted_closed = closed_trades.sort_values("FechaCierre")
-            equity_series = sorted_closed["PnL_USD_Realizado"].cumsum()
+        # Drawdown máximo (a nivel de campaña neta)
+        if not closed_campaigns_df.empty:
+            sorted_closed = closed_campaigns_df.sort_values("FechaCierre")
+            equity_series = sorted_closed["PnL_Neto"].cumsum()
             running_max = equity_series.cummax()
             drawdown = running_max - equity_series
             max_dd = drawdown.max()
         else:
             max_dd = 0.0
-        m7.metric("Max Drawdown", f"-${max_dd:,.2f}", help="Mayor caída acumulada desde un pico de equidad")
+        m7.metric("Max Drawdown", f"-${max_dd:,.2f}", help="Mayor caída acumulada neta desde un pico de equidad por campañas")
         
         # --- MÉTRICA: Comisiones 0DTE ---
         comisiones_0dte = df_view[df_view["__is_0dte"] == True]["Comisiones"].sum()
         if comisiones_0dte > 0:
             st.info(f"⚡ **Comisiones acumuladas en 0DTE:** ${comisiones_0dte:,.2f}")
         
-        # Racha actual (Streak) - evaluada sobre operaciones definitivas para que los roles no rompan rachas
-        if not eval_trades.empty:
-            sorted_for_streak = eval_trades.sort_values("FechaCierre", ascending=False)
+        # Racha actual (Streak) - evaluada sobre campañas definitivas netas
+        if not eval_campaigns.empty:
+            sorted_for_streak = eval_campaigns.sort_values("FechaCierre", ascending=False)
             streak = 0
             streak_type = None
             for _, t in sorted_for_streak.iterrows():
-                pnl_val = t["PnL_USD_Realizado"]
+                pnl_val = t["PnL_Neto"]
                 if pnl_val == 0:
                     continue
                 current_type = "win" if pnl_val > 0 else "loss"
@@ -1353,29 +1451,28 @@ def render_dashboard(df):
         # Fila 2: Estadísticas de Eficiencia (colapsadas)
         with st.expander("📊 Detalle Avanzado", expanded=False):
             s1, s2, s3, s4 = st.columns(4)
-            avg_profit = closed_trades["PnL_USD_Realizado"].mean() if not closed_trades.empty else 0
+            avg_profit = closed_campaigns_df["PnL_Neto"].mean() if not closed_campaigns_df.empty else 0
             avg_color = "#00ffa2" if avg_profit >= 0 else "#ff6b6b"
-            s1.markdown(f"**Promedio/Trade:**<br><span style='font-size:18px; color:{avg_color};'>${avg_profit:,.2f}</span>", unsafe_allow_html=True)
+            s1.markdown(f"**Promedio/Campaña:**<br><span style='font-size:18px; color:{avg_color};'>${avg_profit:,.2f}</span>", unsafe_allow_html=True)
             
-            best_ticker = closed_trades.groupby("Ticker")["PnL_USD_Realizado"].sum().idxmax() if not closed_trades.empty else "-"
-            s2.markdown(f"**Top Ticker:**<br><span style='font-size:18px; color:#00ffa2;'>{best_ticker}</span>", unsafe_allow_html=True)
+            best_ticker = closed_campaigns_df.groupby("Ticker")["PnL_Neto"].sum().idxmax() if not closed_campaigns_df.empty else "-"
+            s2.markdown(f"**Top Ticker (Neto):**<br><span style='font-size:18px; color:#00ffa2;'>{best_ticker}</span>", unsafe_allow_html=True)
             
-            total_bp_open = open_trades['BuyingPower'].sum()
+            total_bp_open = active_full_df['BuyingPower'].sum() if not active_full_df.empty else 0.0
             s3.markdown(f"**Capital Reservado:**<br><span style='font-size:18px; color:#ffcc00;'>${total_bp_open:,.0f}</span>", unsafe_allow_html=True)
             
-            active_strats = len(open_trades["ChainID"].unique())
+            active_strats = len(active_full_df["ChainID"].unique()) if not active_full_df.empty else 0
             s4.markdown(f"**Estrat. Activas:**<br><span style='font-size:18px; color:#00d9ff;'>{active_strats}</span>", unsafe_allow_html=True)
         
     st.write("")
     
-    # --- GRÁFICOS PRINCIPALES ---
-    st.markdown("### 📈 Curva de Equidad")
-    if not closed_trades.empty:
-        closed_trades["FechaCierre"] = pd.to_datetime(closed_trades["FechaCierre"])
-        closed_trades = closed_trades.sort_values("FechaCierre")
-        closed_trades["Equity"] = closed_trades["PnL_USD_Realizado"].cumsum()
+    # --- GRÁFICOS PRINCIPALES (POR CAMPAÑA NETA) ---
+    st.markdown("### 📈 Curva de Equidad (Neta)")
+    if not closed_campaigns_df.empty:
+        eq_df = closed_campaigns_df.dropna(subset=["FechaCierre"]).sort_values("FechaCierre").copy()
+        eq_df["Equity"] = eq_df["PnL_Neto"].cumsum()
         
-        fig_equity = px.area(closed_trades, x="FechaCierre", y="Equity", 
+        fig_equity = px.area(eq_df, x="FechaCierre", y="Equity", 
                              template="plotly_dark")
         
         fig_equity.update_traces(line_color="#00FFAA", fillcolor="rgba(0, 255, 170, 0.15)", line_width=3)
@@ -1383,28 +1480,26 @@ def render_dashboard(df):
             height=380, 
             margin=dict(l=10, r=10, t=10, b=10),
             xaxis_title=None,
-            yaxis_title="Balance ($)",
+            yaxis_title="Balance Neto ($)",
             hovermode="x unified"
         )
         st.plotly_chart(fig_equity, width="stretch")
     else:
         st.info("No hay datos para mostrar la curva.")
 
-    # Rendimiento Mensual (diseño moderno, orden cronológico y métricas clave)
-    if not closed_trades.empty:
-        st.markdown("### 📅 Rendimiento Mensual")
-        c_m_df = closed_trades.copy()
-        c_m_df['__dt_cierre'] = pd.to_datetime(c_m_df['FechaCierre'], errors='coerce')
-        c_m_df = c_m_df.dropna(subset=['__dt_cierre'])
+    # Rendimiento Mensual (por campaña neta)
+    if not closed_campaigns_df.empty:
+        st.markdown("### 📅 Rendimiento Mensual (Neto)")
+        c_m_df = closed_campaigns_df.dropna(subset=['FechaCierre']).copy()
         
         if not c_m_df.empty:
-            c_m_df['__periodo'] = c_m_df['__dt_cierre'].dt.to_period('M')
+            c_m_df['__periodo'] = c_m_df['FechaCierre'].dt.to_period('M')
             monthly_pnl = c_m_df.groupby('__periodo').agg(
-                PnL=('PnL_USD_Realizado', 'sum'),
+                PnL=('PnL_Neto', 'sum'),
                 Comisiones=('Comisiones', 'sum'),
                 TotalOps=('ChainID', 'nunique'),
-                Wins=('PnL_USD_Realizado', lambda x: (x > 0).sum()),
-                Losses=('PnL_USD_Realizado', lambda x: (x < 0).sum())
+                Wins=('PnL_Neto', lambda x: (x > 0).sum()),
+                Losses=('PnL_Neto', lambda x: (x < 0).sum())
             ).reset_index().sort_values('__periodo')
             
             MESES_ES = {1: 'Ene', 2: 'Feb', 3: 'Mar', 4: 'Abr', 5: 'May', 6: 'Jun', 7: 'Jul', 8: 'Ago', 9: 'Sep', 10: 'Oct', 11: 'Nov', 12: 'Dic'}

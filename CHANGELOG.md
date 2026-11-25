@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Cuadro de Mando en Vivo (MTM "Si Cierro Hoy", Griegas, Balances Reales y Métricas por Campaña Neta)**:
+  - **Cotizaciones y Mark-to-Market en Vivo (`fetch_market_quotes` y `compute_live_portfolio_mtm` en `tradier_sync.py`)**: Consulta en un lote `/v1/markets/quotes?greeks=true` y `/v1/accounts/{id}/balances` desde Tradier (con caché de 60 s y botón `🔄 Actualizar Mercado`).
+  - **Tarjeta `📊 Si Cierro Hoy (MTM)` y Desglose por Posición**: Muestra el PnL abierto en vivo si liquidaras todas tus posiciones hoy (tanto en patas actuales como en PnL Global descontando rolls previos), más una tabla desplegable por posición con `Entrada ($)`, `Mercado ($)`, `PnL Patas ($)`, `Rolls Previos ($)`, `PnL Global ($)`, `Delta` y `Theta`.
+  - **Balances Reales de Tradier y Exposición en Griegas**: `Cartera Activa Hoy` muestra siempre tu cartera completa en mercado (sin recortar por periodo), presenta el **Equity Total** y **Option BP Libre** reales de Tradier y añade la línea en vivo con **Theta Diario (`$/día`)**, **Delta Neto**, **P/L Abierto Tradier** y **Stock BP**.
+  - **Consistencia por Campaña Neta en todo el Cuadro de Mando**: Unificados `Win Rate`, `Profit Factor`, `Expectativa/Trade`, `Max Drawdown`, `Racha actual`, `Detalle Avanzado`, `Curva de Equidad (Neta)` y `Rendimiento Mensual (Neto)` para evaluarse por campaña completa (`ChainID`) y en PnL neto tras comisiones.
+
 - **Filtro de Periodo del Cuadro de Mando a Nivel de Campaña (`ChainID`)**:
   - Actualizado el filtro `Periodo` y el cálculo de `closed_trades` en `STRIKELOG.py` para evaluar las campañas completas por su `FechaCierre` final (arrastrando sus patas `Rolada` previas cuando la campaña ya cerró, y excluyendo las patas `Rolada` de campañas que aún siguen abiertas), haciendo que el **PnL Neto Real** del Cuadro de Mando coincida exactamente con el Historial de Operaciones.
 

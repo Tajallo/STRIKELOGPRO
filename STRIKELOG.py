@@ -1126,15 +1126,17 @@ def render_dashboard(df):
         
         if periodo_filter != "Todo el Historial":
             filtro_val = meses[periodo_filter]
+            fecha_ref = pd.to_datetime(df_view["FechaCierre"], errors="coerce").fillna(
+                pd.to_datetime(df_view["FechaApertura"], errors="coerce")
+            )
             if filtro_val == "today":
-                today_str = date.today().isoformat()
-                df_view = df_view[pd.to_datetime(df_view["FechaApertura"]).dt.date == date.today()]
+                df_view = df_view[fecha_ref.dt.date == date.today()]
             elif filtro_val == "week":
                 week_start = date.today() - timedelta(days=date.today().weekday())  # Lunes
-                df_view = df_view[pd.to_datetime(df_view["FechaApertura"]).dt.date >= week_start]
+                df_view = df_view[fecha_ref.dt.date >= week_start]
             else:
                 fmt = "%Y-%m" if len(filtro_val) == 7 else "%Y"
-                df_view["FechaFiltro"] = pd.to_datetime(df_view["FechaApertura"]).dt.strftime(fmt)
+                df_view["FechaFiltro"] = fecha_ref.dt.strftime(fmt)
                 df_view = df_view[df_view["FechaFiltro"] == filtro_val]
             
         if setup_filter != "Todos los Setups":

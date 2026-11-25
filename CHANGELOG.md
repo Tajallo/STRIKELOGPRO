@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Restauración de Conteo de Rolls e Historial en Cartera Activa (`get_campaign_steps`)**:
+  - Corregido `get_campaign_steps` en `STRIKELOG.py` para agrupar por `(ChainID, profundidad de ParentID)` en lugar de solo `ChainID`. Al haberse unificado el `ChainID` en campañas completas de rolls (como `IREN`, `DRAM`, `RKLB`, `CIFR`), agrupar únicamente por `ChainID` colapsaba todos los pasos en uno solo y mostraba `0 rolls` ocultando el BE global y el historial desplegable de la posición.
+
 - **Auditoría y Corrección de `Crédito Pendiente / Neto OTM` y `Análisis por Categoría`**:
   - **Neteo de Patas Compradas en `calculate_open_positions_net_otm_profit`**: Corregido el cálculo de `Crédito Pendiente` y `Neto OTM` para restar el coste de patas `Buy` en spreads de débito (ej. `VIX 19/21 Put Debit Spread`) en vez de contar solo la pata corta, evitando inflar el crédito pendiente con primas de estrategias de débito.
   - **Consistencia en `🔍 Análisis por Categoría`**: Tanto `PnL Neto por Estrategia` como `PnL Neto por Setup` ahora usan `closed_trades` netos de comisiones (excluyendo patas `Rolada` de campañas aún abiertas).

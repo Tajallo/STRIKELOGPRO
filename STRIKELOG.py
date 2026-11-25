@@ -998,15 +998,34 @@ def get_campaign_steps(df, start_id):
                     visited.add(sib_parent)
                     queue.append(sib_parent)
                     
-    campaign_df = df[df["ID"].isin(visited)]
+    campaign_df = df[df["ID"].isin(visited)].copy()
+    id_to_parent = dict(zip(campaign_df["ID"], campaign_df["ParentID"]))
+    depths = {}
+
+    def _get_depth(rid, seen=None):
+        if rid in depths:
+            return depths[rid]
+        if seen is None:
+            seen = set()
+        if rid in seen:
+            return 0
+        seen.add(rid)
+        pid = id_to_parent.get(rid)
+        if pd.isna(pid) or str(pid).strip() in ("", "nan", "None", "<NA>") or pid not in id_to_parent:
+            depths[rid] = 0
+        else:
+            depths[rid] = _get_depth(pid, seen) + 1
+        return depths[rid]
+
+    campaign_df["__step_key"] = [(r["ChainID"], _get_depth(r["ID"])) for _, r in campaign_df.iterrows()]
     grouped_steps = []
-    for c_id, step_df in campaign_df.groupby("ChainID"):
-        min_date = pd.to_datetime(step_df["FechaApertura"].min())
+    for step_key, step_df in campaign_df.groupby("__step_key"):
+        min_date = pd.to_datetime(step_df["FechaApertura"], errors="coerce").min()
         if pd.isna(min_date):
             min_date = pd.Timestamp.min
-        grouped_steps.append((c_id, step_df, min_date))
-        
-    grouped_steps.sort(key=lambda x: x[2])
+        grouped_steps.append((step_key[0], step_df, min_date, step_key[1]))
+
+    grouped_steps.sort(key=lambda x: (x[2], x[3]))
     return [(item[0], item[1]) for item in grouped_steps]
 
 def get_roll_history(df, current_id):

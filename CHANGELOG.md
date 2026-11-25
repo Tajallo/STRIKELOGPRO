@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+- **Auditoría y Corrección de `Crédito Pendiente / Neto OTM` y `Análisis por Categoría`**:
+  - **Neteo de Patas Compradas en `calculate_open_positions_net_otm_profit`**: Corregido el cálculo de `Crédito Pendiente` y `Neto OTM` para restar el coste de patas `Buy` en spreads de débito (ej. `VIX 19/21 Put Debit Spread`) en vez de contar solo la pata corta, evitando inflar el crédito pendiente con primas de estrategias de débito.
+  - **Consistencia en `🔍 Análisis por Categoría`**: Tanto `PnL Neto por Estrategia` como `PnL Neto por Setup` ahora usan `closed_trades` netos de comisiones (excluyendo patas `Rolada` de campañas aún abiertas).
+
 - **Cuadro de Mando en Vivo (MTM "Si Cierro Hoy", Griegas, Balances Reales y Métricas por Campaña Neta)**:
   - **Cotizaciones y Mark-to-Market en Vivo (`fetch_market_quotes` y `compute_live_portfolio_mtm` en `tradier_sync.py`)**: Consulta en un lote `/v1/markets/quotes?greeks=true` y `/v1/accounts/{id}/balances` desde Tradier (con caché de 60 s y botón `🔄 Actualizar Mercado`).
   - **Tarjeta `📊 Si Cierro Hoy (MTM)` y Desglose por Posición**: Muestra el PnL abierto en vivo si liquidaras todas tus posiciones hoy (tanto en patas actuales como en PnL Global descontando rolls previos), más una tabla desplegable por posición con `Entrada ($)`, `Mercado ($)`, `PnL Patas ($)`, `Rolls Previos ($)`, `PnL Global ($)`, `Delta` y `Theta`.

@@ -135,9 +135,10 @@ def calculate_tradier_margin(row) -> float:
 def calculate_open_positions_net_otm_profit(df_full: pd.DataFrame, open_df: pd.DataFrame) -> tuple[float, float]:
     """
     Calcula:
-    1. open_primas_gross: Crédito bruto de primas recibidas en las patas abiertas actuales.
+    1. open_primas_gross: Crédito neto de primas en las cadenas abiertas de crédito (excluyendo débitos).
     2. net_profit_if_otm: Beneficio neto real si todas las opciones expiran OTM a $0.00,
-       descontando las pérdidas contables realizadas en rolls y defensas previas de la misma cadena.
+       incluyendo el coste de patas compradas (ej. spreads de débito) y descontando
+       las pérdidas contables realizadas en rolls y defensas previas de la misma cadena.
     """
     open_primas_gross = 0.0
     net_profit_if_otm = 0.0
@@ -145,28 +146,31 @@ def calculate_open_positions_net_otm_profit(df_full: pd.DataFrame, open_df: pd.D
     if open_df.empty:
         return 0.0, 0.0
 
-    for _, r in open_df.iterrows():
-        if safe_str(r.get("Side"), "Sell") != "Sell" or safe_str(r.get("OptionType")) == "Stock":
-            continue
+    opt_open = open_df[open_df["OptionType"] != "Stock"]
+    if opt_open.empty:
+        return 0.0, 0.0
 
-        cnt = safe_float(r.get("Contratos"), 1.0)
-        prima_act = safe_float(r.get("PrimaRecibida"), 0.0) * cnt * 100
-        open_primas_gross += prima_act
+    for cid, grp in opt_open.groupby("ChainID"):
+        net_chain_open = 0.0
+        for _, r in grp.iterrows():
+            cnt = safe_float(r.get("Contratos"), 1.0)
+            prem = safe_float(r.get("PrimaRecibida"), 0.0) * cnt * 100
+            if safe_str(r.get("Side"), "Sell") == "Sell":
+                net_chain_open += prem
+            else:
+                net_chain_open -= prem
 
-        # Rastrear hacia atrás por ParentID para acumular pérdidas/ganancias previas de la cadena
+        if net_chain_open > 0:
+            open_primas_gross += net_chain_open
+
+        # Rastrear hacia atrás por ChainID para acumular pérdidas/ganancias previas de la cadena
         pnl_cadena = 0.0
-        curr_parent = r.get("ParentID")
-        seen_parents = set()
-        while pd.notna(curr_parent) and str(curr_parent).strip() not in ["", "nan", "None", "<NA>"] and curr_parent not in seen_parents:
-            seen_parents.add(curr_parent)
-            p_rows = df_full[df_full["ID"] == curr_parent]
-            if p_rows.empty:
-                break
-            p_row = p_rows.iloc[0]
-            pnl_cadena += safe_float(p_row.get("PnL_USD_Realizado"), 0.0)
-            curr_parent = p_row.get("ParentID")
+        closed_prev = df_full[(df_full["ChainID"] == cid) & (df_full["Estado"] != "Abierta")]
+        if not closed_prev.empty:
+            comm_prev = closed_prev["Comisiones"].fillna(0.0).sum() if "Comisiones" in closed_prev.columns else 0.0
+            pnl_cadena = float(closed_prev["PnL_USD_Realizado"].fillna(0.0).sum()) - float(comm_prev)
 
-        net_profit_if_otm += (prima_act + pnl_cadena)
+        net_profit_if_otm += (net_chain_open + pnl_cadena)
 
     return open_primas_gross, net_profit_if_otm
 
@@ -1573,45 +1577,48 @@ def render_dashboard(df):
             )
             st.plotly_chart(fig_monthly, width="stretch")
 
-    # Gráficos de análisis por categoría (colapsados)
+    # Gráficos de análisis por categoría (colapsados, usando campañas cerradas netas)
     with st.expander("🔍 Análisis por Categoría", expanded=False):
         col_cat1, col_cat2 = st.columns(2)
+        cat_df = closed_trades.copy()
+        if not cat_df.empty:
+            cat_df["PnL_Neto_Cat"] = cat_df["PnL_USD_Realizado"].fillna(0.0) - (cat_df["Comisiones"].fillna(0.0) if "Comisiones" in cat_df.columns else 0.0)
         
         with col_cat1:
-            st.markdown("#### 🎯 PnL por Estrategia")
-            if not df_view.empty:
-                strat_data = df_view.groupby("Estrategia")["PnL_USD_Realizado"].sum().reset_index()
-                strat_data = strat_data.sort_values("PnL_USD_Realizado", ascending=True)
+            st.markdown("#### 🎯 PnL Neto por Estrategia")
+            if not cat_df.empty:
+                strat_data = cat_df.groupby("Estrategia")["PnL_Neto_Cat"].sum().reset_index().rename(columns={"PnL_Neto_Cat": "PnL Neto ($)"})
+                strat_data = strat_data.sort_values("PnL Neto ($)", ascending=True)
                 
-                fig_strat = px.bar(strat_data, x="PnL_USD_Realizado", y="Estrategia", 
-                                   orientation='h', color="PnL_USD_Realizado",
+                fig_strat = px.bar(strat_data, x="PnL Neto ($)", y="Estrategia", 
+                                   orientation='h', color="PnL Neto ($)",
                                    color_continuous_scale="RdYlGn",
                                    template="plotly_dark")
                 fig_strat.update_layout(
                     height=350, 
                     showlegend=False, 
                     margin=dict(l=10, r=10, t=10, b=10),
-                    xaxis_title="PnL USD",
+                    xaxis_title="PnL Neto USD",
                     yaxis_title=None,
                     coloraxis_showscale=False
                 )
                 st.plotly_chart(fig_strat, width="stretch")
         
         with col_cat2:
-            st.markdown("#### 🎯 PnL por Setup")
-            if not closed_trades.empty:
-                setup_data = closed_trades.groupby("Setup")["PnL_USD_Realizado"].sum().reset_index()
-                setup_data = setup_data.sort_values("PnL_USD_Realizado", ascending=True)
+            st.markdown("#### 🎯 PnL Neto por Setup")
+            if not cat_df.empty:
+                setup_data = cat_df.groupby("Setup")["PnL_Neto_Cat"].sum().reset_index().rename(columns={"PnL_Neto_Cat": "PnL Neto ($)"})
+                setup_data = setup_data.sort_values("PnL Neto ($)", ascending=True)
                 
-                fig_setup = px.bar(setup_data, x="PnL_USD_Realizado", y="Setup",
-                                   orientation='h', color="PnL_USD_Realizado",
+                fig_setup = px.bar(setup_data, x="PnL Neto ($)", y="Setup",
+                                   orientation='h', color="PnL Neto ($)",
                                    color_continuous_scale="RdYlGn",
                                    template="plotly_dark")
                 fig_setup.update_layout(
                     height=350,
                     showlegend=False,
                     margin=dict(l=10, r=10, t=10, b=10),
-                    xaxis_title="PnL USD",
+                    xaxis_title="PnL Neto USD",
                     yaxis_title=None,
                     coloraxis_showscale=False
                 )

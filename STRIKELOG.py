@@ -281,7 +281,7 @@ def get_fee_rate(broker: str, ticker: str) -> float:
     Retorna la comisión estimada por contrato según broker y subyacente.
     Tradier (Tarifa plana $10/mes Pro):
       - Acciones y ETFs estándar (ej. AAPL, SPY, QQQ): $0.00
-      - SPX (Índice CBOE): $0.97 ($0.35 comisión Tradier + $0.60 Exchange fee CBOE + ~$0.02 OCC/Reg)
+      - SPX / SPXW (Índice CBOE): $1.06 por contrato, pata y lado ($2.12 ida y vuelta por pata)
       - Otros índices (NDX, RUT, VIX, DJX, XSP): $0.95
     IB: $0.65 estándar por contrato.
     """
@@ -289,8 +289,8 @@ def get_fee_rate(broker: str, ticker: str) -> float:
         ticker = str(ticker)
     t_up = ticker.upper()
     if broker == "Tradier":
-        if t_up == "SPX":
-            return 0.97
+        if "SPX" in t_up:
+            return 1.06
         elif t_up in INDICES:
             return 0.95
         return 0.0
@@ -6212,8 +6212,9 @@ def render_history(df):
         group_dt = group.sort_values("__dt_sort", ascending=True, na_position="first")
         latest_leg = group_dt.iloc[-1]
 
-        # PnL total real acumulado de toda la operación (suma de todas las patas y roles)
-        total_pnl = round(group["PnL_USD_Realizado"].sum(), 2)
+        # PnL neto real acumulado de toda la operación (PnL bruto realizado menos comisiones)
+        total_comm = round(group["Comisiones"].sum(), 2) if "Comisiones" in group.columns else 0.0
+        total_pnl = round(group["PnL_USD_Realizado"].sum() - total_comm, 2)
 
         # Prima neta total (suma de todas las patas)
         prima_total = group["PrimaRecibida"].sum()

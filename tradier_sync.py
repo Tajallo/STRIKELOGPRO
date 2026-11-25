@@ -550,6 +550,13 @@ DEFAULT_ESTRATEGIAS = [
 ]
 
 
+def _tradier_spx_leg_fee(ticker: str, contratos: int = 1, round_trip: bool = False) -> float:
+    """Fee fijo adicional de Tradier para SPX/SPXW ($1.06 por contrato, pata y lado)."""
+    if "SPX" in str(ticker).upper():
+        return round(1.06 * int(contratos or 1) * (2 if round_trip else 1), 2)
+    return 0.0
+
+
 def _apply_roll_to_df(
     df: pd.DataFrame,
     mis: Dict[str, Any],
@@ -579,6 +586,9 @@ def _apply_roll_to_df(
     cur_df.at[real_i, "CostoCierre"] = close_price
     pnl_realizado = (p_rec - close_price) * 100 * cnt if side_val == "Sell" else (close_price - p_rec) * 100 * cnt
     cur_df.at[real_i, "PnL_USD_Realizado"] = pnl_realizado
+    close_fee = _tradier_spx_leg_fee(cur_df.at[real_i, "Ticker"], int(cnt), round_trip=False)
+    if close_fee > 0:
+        cur_df.at[real_i, "Comisiones"] = float(cur_df.at[real_i, "Comisiones"] or 0.0) + close_fee
     cur_df.at[real_i, "UpdatedAt"] = datetime.now().isoformat()
 
     parent_chain_id = cur_df.at[real_i, "ChainID"] if pd.notna(cur_df.at[real_i, "ChainID"]) else mis["strikelog_id"]
@@ -713,7 +723,7 @@ def _apply_roll_to_df(
             "PnL_Capital_Pct": 0.0,
             "PrecioAccionCierre": 0.0,
             "PnL_USD_Realizado": 0.0,
-            "Comisiones": 0.0,
+            "Comisiones": _tradier_spx_leg_fee(new_ticker, new_contratos, round_trip=False),
             "EarningsDate": pd.NA,
             "DividendosDate": pd.NA,
             "Broker": "Tradier",
@@ -821,7 +831,7 @@ def batch_sync_all(JournalManager, df: pd.DataFrame, recon: Dict[str, Any], roll
                         "PnL_Capital_Pct": 0.0,
                         "PrecioAccionCierre": 0.0,
                         "PnL_USD_Realizado": 0.0,
-                        "Comisiones": 0.0,
+                        "Comisiones": _tradier_spx_leg_fee(leg["ticker"], leg["contratos"], round_trip=False),
                         "EarningsDate": pd.NA,
                         "DividendosDate": pd.NA,
                         "Broker": "Tradier",
@@ -992,7 +1002,7 @@ def batch_sync_all(JournalManager, df: pd.DataFrame, recon: Dict[str, Any], roll
                 "PnL_Capital_Pct": 0.0,
                 "PrecioAccionCierre": 0.0,
                 "PnL_USD_Realizado": 0.0,
-                "Comisiones": 0.0,
+                "Comisiones": _tradier_spx_leg_fee(nw["ticker"], nw["contratos"], round_trip=False),
                 "EarningsDate": pd.NA,
                 "DividendosDate": pd.NA,
                 "Broker": "Tradier",
@@ -1044,6 +1054,10 @@ def batch_sync_all(JournalManager, df: pd.DataFrame, recon: Dict[str, Any], roll
             cur_df.at[real_i, "CostoCierre"] = close_price
             pnl_realizado = (p_rec - close_price) * 100 * cnt if side_val == "Sell" else (close_price - p_rec) * 100 * cnt
             cur_df.at[real_i, "PnL_USD_Realizado"] = pnl_realizado
+            if close_price > 0.0 or side_val != "Sell":
+                close_fee = _tradier_spx_leg_fee(mis["ticker"], int(cnt), round_trip=False)
+                if close_fee > 0:
+                    cur_df.at[real_i, "Comisiones"] = float(cur_df.at[real_i, "Comisiones"] or 0.0) + close_fee
             cur_df.at[real_i, "UpdatedAt"] = datetime.now().isoformat()
             n_resolved += 1
 
@@ -1117,7 +1131,7 @@ def detect_intraday_closed_trades(orders_list: List[Dict[str, Any]], history_eve
                     else:
                         pnl = (c_price - o_price) * 100 * cnt
 
-                    comm = (1.94 * cnt) if "SPX" in parsed["ticker"] else 0.0
+                    comm = _tradier_spx_leg_fee(parsed["ticker"], cnt, round_trip=True)
                     parsed_legs.append({
                         "raw_symbol": sym,
                         "ticker": parsed["ticker"],
@@ -1150,6 +1164,7 @@ def detect_intraday_closed_trades(orders_list: List[Dict[str, Any]], history_eve
                     combo_name = "Iron Condor"
 
                 total_pnl = sum(l["pnl"] for l in parsed_legs)
+                total_comm = sum(l["comisiones"] for l in parsed_legs)
                 detected.append({
                     "source": "orders",
                     "strategy": combo_name,
@@ -1157,6 +1172,8 @@ def detect_intraday_closed_trades(orders_list: List[Dict[str, Any]], history_eve
                     "date": date_str,
                     "legs": parsed_legs,
                     "total_pnl": total_pnl,
+                    "total_comm": round(total_comm, 2),
+                    "net_pnl": round(total_pnl - total_comm, 2),
                     "open_time": op.get("transaction_date"),
                     "close_time": cl.get("transaction_date")
                 })
@@ -1220,6 +1237,8 @@ def detect_intraday_closed_trades(orders_list: List[Dict[str, Any]], history_eve
                     "close_time": f"{dt} 16:00:00"
                 }],
                 "total_pnl": round(pnl, 2),
+                "total_comm": round(total_comm, 2),
+                "net_pnl": round(pnl - total_comm, 2),
                 "open_time": f"{dt} 09:30:00",
                 "close_time": f"{dt} 16:00:00"
             })
@@ -1246,8 +1265,8 @@ def import_intraday_trades(JournalManager, df: pd.DataFrame, trades_to_import: L
             side = leg["side"]
             tkr = leg["ticker"]
             comm = leg.get("comisiones", 0.0)
-            if not comm and "SPX" in tkr:
-                comm = 1.94 * cnt
+            if not comm:
+                comm = _tradier_spx_leg_fee(tkr, cnt, round_trip=True)
 
             bp = op_p * 100 * cnt if side == "Buy" else leg["strike"] * 100 * cnt
 
@@ -1888,7 +1907,7 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
                         "PnL_Capital_Pct": 0.0,
                         "PrecioAccionCierre": 0.0,
                         "PnL_USD_Realizado": 0.0,
-                        "Comisiones": 0.0,
+                        "Comisiones": _tradier_spx_leg_fee(leg["ticker"], leg["contratos"], round_trip=False),
                         "EarningsDate": pd.NA,
                         "DividendosDate": pd.NA,
                         "Broker": "Tradier",
@@ -1918,11 +1937,14 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
 
             st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
             for idx_it, it in enumerate(intraday_trades):
-                pnl_color = "🟢" if it["total_pnl"] >= 0 else "🔴"
+                total_comm = float(it.get("total_comm", sum(l.get("comisiones", 0.0) for l in it["legs"])))
+                net_pnl = float(it.get("net_pnl", it["total_pnl"] - total_comm))
+                pnl_color = "🟢" if net_pnl >= 0 else "🔴"
                 with st.container():
                     c_r1, c_r2, c_r3 = st.columns([2.5, 1.8, 1.2])
                     c_r1.markdown(f"**{it['ticker']}** | `{it['strategy']}` | Fecha: `{it['date']}`")
-                    c_r2.markdown(f"**Resultado:** {pnl_color} **${it['total_pnl']:+,.2f}** ({len(it['legs'])} pata{'s' if len(it['legs']) > 1 else ''})")
+                    comm_note = f" _(Bruto: ${it['total_pnl']:+,.2f} · Fees: -${total_comm:.2f})_" if total_comm > 0 else ""
+                    c_r2.markdown(f"**Resultado Neto:** {pnl_color} **${net_pnl:+,.2f}** ({len(it['legs'])} pata{'s' if len(it['legs']) > 1 else ''}){comm_note}")
                     if c_r3.button("➕ Importar", key=f"btn_import_single_intra_{idx_it}", type="secondary", use_container_width=True):
                         updated_df, _ = import_intraday_trades(JournalManager, df, [it])
                         st.session_state.df = updated_df
@@ -1932,6 +1954,8 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
                     with st.expander(f"Ver detalle de patas ({it['ticker']})", expanded=False):
                         p_df = []
                         for lg in it["legs"]:
+                            lg_comm = float(lg.get("comisiones", 0.0))
+                            lg_net = float(lg["pnl"]) - lg_comm
                             p_df.append({
                                 "Símbolo": lg.get("raw_symbol"),
                                 "Lado": lg["side"],
@@ -1941,7 +1965,8 @@ def render_tradier_sync_modal(JournalManager, df: pd.DataFrame, *args, **kwargs)
                                 "Contratos": lg["contratos"],
                                 "Apertura": f"${lg['open_price']:.2f}",
                                 "Cierre": f"${lg['close_price']:.2f}",
-                                "PnL ($)": f"${lg['pnl']:+,.2f}"
+                                "Fees ($)": f"-${lg_comm:.2f}" if lg_comm > 0 else "$0.00",
+                                "PnL Neto ($)": f"${lg_net:+,.2f}"
                             })
                         st.dataframe(pd.DataFrame(p_df), hide_index=True, use_container_width=True)
                     st.markdown("<div style='height: 6px;'></div>", unsafe_allow_html=True)
